@@ -1,27 +1,49 @@
-// Package plugin implements the SensitivityScore Kubernetes Scheduler Framework
-// plugin: a Score extension point plugin that ranks nodes by how much interference
-// a job's sensitivity profile S_job would suffer from the node's current measured
-// pressure (docs §2.1).
-package plugin
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package sensitivityscore implements a Score extension point plugin that
+// ranks nodes by interference risk between a job's declared sensitivity
+// profile and each node's current measured pressure — the formal task model
+// Z = {G, R, S} from the dissertation, where S = (LLC, NUMA, Net, IO) ∈ [0,1]^4.
+//
+// This is a direct extension of the working MVP (single "noise" scalar +
+// JSON-file reload) to the full four-dimensional sensitivity vector. The
+// reload mechanism (ticker + os.ReadFile + json.Unmarshal, no fsnotify) is
+// kept unchanged on purpose — it's the part that was already proven to build
+// and run; only the scoring math and the on-disk schema grew.
+package sensitivityscore
 
 import (
 	"context"
-	"fmt"
-	"strconv"
+	"encoding/json"
+	"os"
 	"sync"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
-
-	"github.com/andrey-phd/sensitivityscore-hpc-bench/scheduler-plugin/pkg/resolver"
-	"github.com/andrey-phd/sensitivityscore-hpc-bench/scheduler-plugin/pkg/types"
+	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 )
 
 const Name = "SensitivityScore"
 
-// Annotation keys, per the MVP contract fixed in docs §1.3 — do not invent a new
-// mechanism, the workload manifests in k8s/ already declare these.
+// Annotation keys a job uses to declare its own sensitivity profile S_job.
+// Values are "high" | "medium" | "low" (mapped to 1.0 / 0.5 / 0.0), matching
+// the MVP's boolean annotation but extended from one dimension to four.
 const (
 	annoLLC  = "scheduling.phd/sensitivity-llc"
 	annoNUMA = "scheduling.phd/sensitivity-numa"
@@ -29,160 +51,225 @@ const (
 	annoIO   = "scheduling.phd/sensitivity-io"
 )
 
-const (
-	maxScore int64 = framework.MaxNodeScore // 100
-	minScore int64 = framework.MinNodeScore // 0
-)
+// metricsFilePath - путь к файлу с метриками загрузки нод, монтируется через
+// ConfigMap. Формат JSON расширен с одного числа на объект с 4 полями —
+// см. schema ниже.
+const metricsFilePath = "/etc/sensitivity/node-metrics.json"
 
-// Args mirrors the pluginConfig.args block in
-// k8s/scheduler-config/scheduler-config.yaml.
-type Args struct {
-	RedisAddr          string `json:"redisAddr"`
-	RedisKeyTTLSeconds int    `json:"redisKeyTTLSeconds"`
-	WeightsConfigPath  string `json:"weightsConfigPath"`
-	NodeStateResolver  string `json:"nodeStateResolver"` // "pod-cgroup" | "qemu-process"
+// weightsFilePath - путь к файлу с весами измерений S, тоже монтируется через
+// ConfigMap, тоже перечитывается тем же тикером. Отдельный файл, а не часть
+// node-metrics.json, чтобы менять веса (абляция) не задевая пайплайн метрик.
+const weightsFilePath = "/etc/sensitivity/weights.json"
+
+// refreshInterval - как часто перечитывать оба файла.
+const refreshInterval = 10 * time.Second
+
+// nodePressure - "давление" на ноде по каждому измерению S, 0-100 на каждой
+// оси (100 = "на ноде уже интенсивная нагрузка именно по этому измерению").
+// Раньше был один float64 ("noise"); теперь по одному на LLC/NUMA/Net/IO,
+// чтобы job с разным профилем чувствительности получали разный score на
+// одной и той же ноде.
+type nodePressure struct {
+	LLC  float64 `json:"llc"`
+	NUMA float64 `json:"numa"`
+	Net  float64 `json:"net"`
+	IO   float64 `json:"io"`
 }
 
-// SensitivityScorePlugin implements framework.ScorePlugin.
-type SensitivityScorePlugin struct {
-	handle       framework.Handle
-	metricsCache resolver.MetricsReader
-	nodeResolver resolver.NodeStateResolver
+// nodeMetrics - формат записи в JSON-файле метрик: имя ноды -> nodePressure.
+// Пример файла:
+//
+//	{
+//	  "node-1": {"llc": 20, "numa": 10, "net": 5,  "io": 0},
+//	  "node-2": {"llc": 80, "numa": 60, "net": 10, "io": 5}
+//	}
+type nodeMetrics map[string]nodePressure
+
+// weights - вес каждого измерения в скор-функции, [0, +inf). Хранится
+// отдельным файлом именно для того, чтобы абляционные прогоны (Глава 3:
+// "что если убрать NUMA из score") делались правкой ConfigMap, а не кода.
+// Пример файла: {"llc": 1.0, "numa": 1.0, "net": 1.0, "io": 1.0}
+type weights struct {
+	LLC  float64 `json:"llc"`
+	NUMA float64 `json:"numa"`
+	Net  float64 `json:"net"`
+	IO   float64 `json:"io"`
+}
+
+func defaultWeights() weights {
+	return weights{LLC: 1.0, NUMA: 1.0, Net: 1.0, IO: 1.0}
+}
+
+// SensitivityScore - плагин с in-memory кэшем метрик и весов, оба
+// обновляются периодическим перечитыванием файлов (тот же механизм, что и в
+// MVP — без сетевых вызовов на пути Score()).
+type SensitivityScore struct {
+	handle fwk.Handle
 
 	mu      sync.RWMutex
-	weights types.Weights // hot-reloaded from WeightsConfigPath via fsnotify, see weights_watcher.go
+	metrics nodeMetrics
+	weights weights
 }
 
-var _ framework.ScorePlugin = &SensitivityScorePlugin{}
+var _ fwk.ScorePlugin = &SensitivityScore{}
 
-// New is the factory the scheduler framework calls per the KubeSchedulerConfiguration
-// pluginConfig entry (see cmd/scheduler/main.go for registration).
-func New(_ context.Context, obj runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	args, ok := obj.(*Args)
-	if !ok {
-		return nil, fmt.Errorf("SensitivityScore: want *Args, got %T", obj)
-	}
-
-	cache := newMetricsCacheFromArgs(args)
-
-	var nodeResolver resolver.NodeStateResolver
-	switch args.NodeStateResolver {
-	case "qemu-process":
-		// Real KubeVirt PID-lookup wiring is environment-specific (talks to the
-		// KubeVirt API / virt-launcher pods on the target cluster) — injected by
-		// cmd/scheduler/main.go at startup, not constructed here.
-		return nil, fmt.Errorf("SensitivityScore: qemu-process resolver must be wired in cmd/scheduler/main.go")
-	case "pod-cgroup", "":
-		nodeResolver = resolver.NewPodCgroupResolver(cache)
-	default:
-		return nil, fmt.Errorf("SensitivityScore: unknown nodeStateResolver %q", args.NodeStateResolver)
-	}
-
-	p := &SensitivityScorePlugin{
-		handle:       h,
-		metricsCache: cache,
-		nodeResolver: nodeResolver,
-		weights:      types.DefaultWeights(),
-	}
-
-	if args.WeightsConfigPath != "" {
-		if err := watchWeights(args.WeightsConfigPath, p.setWeights); err != nil {
-			return nil, fmt.Errorf("SensitivityScore: weights watcher: %w", err)
-		}
-	}
-
-	return p, nil
+func (s *SensitivityScore) Name() string {
+	return Name
 }
 
-func (p *SensitivityScorePlugin) Name() string { return Name }
+// Score - формализация Z = {G, R, S} из §2.1 плана: score = 100 -
+// dot(S_job, Pressure_node) * weight, без сетевых вызовов (кэш уже в памяти).
+func (s *SensitivityScore) Score(
+	ctx context.Context,
+	state fwk.CycleState,
+	pod *v1.Pod,
+	nodeInfo fwk.NodeInfo,
+) (int64, *fwk.Status) {
+	nodeName := nodeInfo.Node().Name
 
-func (p *SensitivityScorePlugin) setWeights(w types.Weights) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.weights = w
-}
+	s.mu.RLock()
+	pressure := s.metrics[nodeName] // нулевой nodePressure, если данных для ноды ещё нет
+	w := s.weights
+	s.mu.RUnlock()
 
-func (p *SensitivityScorePlugin) currentWeights() types.Weights {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.weights
-}
+	jobProfile := extractSensitivityVector(pod.Annotations)
 
-// Score implements framework.ScorePlugin. This is the formalization fixed in
-// docs §2.1: score = normalize(maxScore - dot(S_job, Pressure_node) * weight).
-func (p *SensitivityScorePlugin) Score(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	jobProfile := extractSensitivityVector(pod.Annotations) // S_job ∈ [0,1]^4
+	// Взвешенное скалярное произведение профиля job и давления ноды по тем
+	// же 4 измерениям — чем выше произведение, тем больше риск интерференции.
+	interference := jobProfile.llc*pressure.LLC*w.LLC +
+		jobProfile.numa*pressure.NUMA*w.NUMA +
+		jobProfile.net*pressure.Net*w.Net +
+		jobProfile.io*pressure.IO*w.IO
 
-	nodeState, err := p.nodeResolver.Resolve(nodeName)
-	if err != nil {
-		// No data yet (cold node, agent not warmed up) — neutral score rather
-		// than failing scheduling outright; logged for the experiment harness
-		// to flag in job:metrics:* as a potential measurement gap.
-		return maxScore / 2, nil
+	// Знаменатель — теоретический максимум при всех измерениях = 1.0
+	// (сумма весов * 100, т.к. pressure в шкале 0-100). Даёт нормировку в
+	// [0, 100] независимо от того, сколько измерений реально "горячие".
+	maxPossible := (w.LLC + w.NUMA + w.Net + w.IO) * 100
+	var normalized float64
+	if maxPossible > 0 {
+		normalized = interference / maxPossible // в [0,1] при разумных весах
 	}
 
-	interference := dotProduct(jobProfile, nodeState.AsVector(), p.currentWeights())
-	score := normalize(interference)
+	score := int64(100 - normalized*100)
+	if score < fwk.MinNodeScore {
+		score = fwk.MinNodeScore
+	}
+	if score > fwk.MaxNodeScore {
+		score = fwk.MaxNodeScore
+	}
+
+	klog.InfoS("SensitivityScore.Score called",
+		"pod", pod.Name, "node", nodeName,
+		"jobProfile", jobProfile, "pressure", pressure, "score", score)
+
 	return score, nil
 }
 
-func (p *SensitivityScorePlugin) ScoreExtensions() framework.ScoreExtensions { return nil }
+func (s *SensitivityScore) ScoreExtensions() fwk.ScoreExtensions {
+	return nil
+}
 
-// extractSensitivityVector parses S_job = (llc, numa, net, io) ∈ [0,1]^4 from pod
-// annotations. The annotation contract uses high|medium|low buckets (docs §1.3);
-// they're mapped to numeric values here rather than at the manifest level so the
-// score function's math stays purely numeric.
-func extractSensitivityVector(annotations map[string]string) types.SensitivityVector {
+// sensitivityVector - S_job = (llc, numa, net, io) ∈ [0,1]^4, распарсенный
+// из аннотаций пода.
+type sensitivityVector struct {
+	llc, numa, net, io float64
+}
+
+// extractSensitivityVector читает аннотации scheduling.phd/sensitivity-*
+// (high|medium|low -> 1.0|0.5|0.0), см. константы annoLLC и т.д. выше.
+// Совместимо по духу со старой sensitivityAnnotation ("true"/остальное), но
+// на 4 отдельных измерения вместо одного bool.
+func extractSensitivityVector(annotations map[string]string) sensitivityVector {
 	get := func(key string) float64 {
 		switch annotations[key] {
 		case "high":
 			return 1.0
 		case "medium":
 			return 0.5
-		case "low", "":
-			return 0.0
-		default:
-			// Allow a raw float for finer-grained future use, fall back to 0.
-			if v, err := strconv.ParseFloat(annotations[key], 64); err == nil {
-				return v
-			}
+		default: // "low", "", или что угодно нераспознанное — не чувствителен
 			return 0.0
 		}
 	}
-	return types.SensitivityVector{
-		get(annoLLC),
-		get(annoNUMA),
-		get(annoNet),
-		get(annoIO),
+	return sensitivityVector{
+		llc:  get(annoLLC),
+		numa: get(annoNUMA),
+		net:  get(annoNet),
+		io:   get(annoIO),
 	}
 }
 
-// dotProduct computes the weighted interference between a job's sensitivity
-// profile and a node's current pressure: sum_d( S_job[d] * Pressure[d] * weight[d] ).
-func dotProduct(jobProfile types.SensitivityVector, nodePressure [4]float64, w types.Weights) float64 {
-	wv := w.AsVector()
-	var sum float64
-	for d := 0; d < 4; d++ {
-		sum += jobProfile[d] * nodePressure[d] * wv[d]
+// New - конструктор. Как и в MVP, аргументы плагина не используются
+// (_ runtime.Object) — конфигурация целиком через два ConfigMap-файла, без
+// codegen/scheme-регистрации args-типа (см. pkg/podstate для того же
+// паттерна "плагин без Args" в этом репозитории).
+func New(ctx context.Context, _ runtime.Object, h fwk.Handle) (fwk.Plugin, error) {
+	s := &SensitivityScore{
+		handle:  h,
+		metrics: make(nodeMetrics),
+		weights: defaultWeights(),
 	}
-	return sum
+
+	go s.refreshLoop(ctx)
+
+	return s, nil
 }
 
-// normalize maps a raw interference value (theoretical range roughly [0, sum(weights)])
-// onto the framework's [MinNodeScore, MaxNodeScore] range, higher interference -> lower
-// score (we want low-interference nodes preferred for placement).
-func normalize(interference float64) int64 {
-	// Interference is in [0, ~4*maxWeight] in practice; clamp defensively since
-	// weights are operator-editable (ablation studies, docs §2.1) and could in
-	// principle push the raw value outside the expected range.
-	const assumedMax = 4.0 // 4 dimensions, weight=1.0 each, S and Pressure both in [0,1]
-	normalized := interference / assumedMax
-	if normalized < 0 {
-		normalized = 0
+// refreshLoop - раз в refreshInterval перечитывает оба файла (метрики и
+// веса). Один тикер на оба файла — не нужно два фоновых цикла ради двух
+// файлов, которые в любом случае обновляются одним и тем же ConfigMap-mount.
+func (s *SensitivityScore) refreshLoop(ctx context.Context) {
+	s.reloadMetrics()
+	s.reloadWeights()
+
+	ticker := time.NewTicker(refreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reloadMetrics()
+			s.reloadWeights()
+		}
 	}
-	if normalized > 1 {
-		normalized = 1
+}
+
+func (s *SensitivityScore) reloadMetrics() {
+	data, err := os.ReadFile(metricsFilePath)
+	if err != nil {
+		klog.ErrorS(err, "failed to read sensitivity metrics file", "path", metricsFilePath)
+		return
 	}
-	score := float64(maxScore) - normalized*float64(maxScore-minScore)
-	return int64(score)
+
+	var m nodeMetrics
+	if err := json.Unmarshal(data, &m); err != nil {
+		klog.ErrorS(err, "failed to parse sensitivity metrics file")
+		return
+	}
+
+	s.mu.Lock()
+	s.metrics = m
+	s.mu.Unlock()
+}
+
+// reloadWeights читает веса измерений; при отсутствии/ошибке файла тихо
+// остаётся на последних валидных весах (по умолчанию — defaultWeights()),
+// а не роняет плагин — веса менее критичны, чем метрики, и отсутствие файла
+// на первом старте (до применения ConfigMap) не должно ронять scheduler.
+func (s *SensitivityScore) reloadWeights() {
+	data, err := os.ReadFile(weightsFilePath)
+	if err != nil {
+		return // нет файла весов — остаёмся на дефолтных/предыдущих валидных
+	}
+
+	var w weights
+	if err := json.Unmarshal(data, &w); err != nil {
+		klog.ErrorS(err, "failed to parse sensitivity weights file")
+		return
+	}
+
+	s.mu.Lock()
+	s.weights = w
+	s.mu.Unlock()
 }
