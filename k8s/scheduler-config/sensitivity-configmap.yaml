@@ -1,0 +1,25 @@
+# Оба файла в одном ConfigMap — при монтировании как volume каждый ключ
+# становится отдельным файлом в одной директории (/etc/sensitivity/), так
+# что достаточно одного volumeMount вместо двух (см. deployment.yaml).
+#
+# node-metrics.json — для локальной отладки правится руками; в реальном
+# прогоне должен обновляться внешним процессом сбора метрик (LLC/NUMA/Net/IO
+# с узлов), но плагину всё равно, кто именно пишет файл — он просто
+# перечитывает его раз в 10с (refreshInterval в sensitivityscore.go).
+#
+# weights.json — правка этого файла = абляционное исследование (Глава 3):
+# меняешь число, ждёшь ~10с, смотришь на изменившиеся score в логах
+# scheduler-плагина — без пересборки и рестарта пода.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sensitivity-config
+  namespace: scheduler-plugins
+data:
+  node-metrics.json: |
+    {
+      "node-1": {"llc": 20, "numa": 10, "net": 5,  "io": 0},
+      "node-2": {"llc": 80, "numa": 60, "net": 10, "io": 5}
+    }
+  weights.json: |
+    {"llc": 1.0, "numa": 1.0, "net": 1.0, "io": 1.0}

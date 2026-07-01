@@ -1,0 +1,92 @@
+# Не Helm-чарт, а прямой манифест для быстрой локальной отладки — де-шаблонизированная
+# версия manifests/install/charts/as-a-second-scheduler/templates/deployment.yaml
+# из этого же репозитория, плюс добавленный volumeMount для
+# /etc/sensitivity/ (node-metrics.json + weights.json, см.
+# sensitivity-configmap.yaml).
+#
+# image собирается через `make local-image` (см. Makefile репозитория) —
+# после этого замени REPLACE_ME_IMAGE ниже на реальный тег.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: scheduler-plugins
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler-plugins-scheduler
+  namespace: scheduler-plugins
+  labels:
+    component: scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        component: scheduler
+    spec:
+      serviceAccountName: scheduler-plugins-scheduler
+      containers:
+        - name: scheduler-plugins-scheduler
+          image: REPLACE_ME_IMAGE # напр. localhost:5000/scheduler-plugins/kube-scheduler:v0.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/kube-scheduler
+          args:
+            - --config=/etc/kubernetes/scheduler-config.yaml
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 10259
+              scheme: HTTPS
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 10259
+              scheme: HTTPS
+          securityContext:
+            privileged: false
+          volumeMounts:
+            - name: scheduler-config
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - name: sensitivity-config
+              mountPath: /etc/sensitivity
+              readOnly: true
+      hostNetwork: false
+      hostPID: false
+      volumes:
+        - name: scheduler-config
+          configMap:
+            name: scheduler-config
+        - name: sensitivity-config
+          configMap:
+            name: sensitivity-config
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scheduler-plugins-scheduler
+  namespace: scheduler-plugins
+---
+# Права те же, что нужны штатному kube-scheduler (список нод/подов, patch
+# binding и т.д.) — минимальный набор для локальной отладки; на реальном
+# стенде используйте ClusterRole из
+# manifests/install/charts/as-a-second-scheduler (kube-scheduler ClusterRole)
+# вместо этой урезанной версии.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scheduler-plugins-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: scheduler-plugins-scheduler
+    namespace: scheduler-plugins
+roleRef:
+  kind: ClusterRole
+  name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
