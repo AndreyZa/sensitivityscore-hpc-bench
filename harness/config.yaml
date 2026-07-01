@@ -1,0 +1,53 @@
+# config.yaml — experiment plan factors (Программа_экспериментов §7.1).
+#
+# Edit this file to run a pilot series before the full matrix
+# (docs §6, checklist item 9: "Прогнать пилотную серию (1 точка плана, 3 повтора)
+# на A — sanity-check всего пайплайна перед полной матрицей").
+
+configs:
+  - A   # K8s bare-metal: default-scheduler AND sensitivityscore-scheduler, see below
+  - B   # K8s + KubeVirt
+  - C   # Slurm
+  - D   # Slinky / slurm-bridge (overcommit=1.0 only — whole-node allocation, see §3.1)
+
+# For config A, both scheduler variants are run as separate "configs" internally
+# (A-default, A-sensitivityscore) so H1 can do a same-config A/B comparison.
+config_a_schedulers:
+  - default-scheduler
+  - sensitivityscore-scheduler
+
+profiles:
+  - low-s
+  - high-s
+
+overcommit_ratios: [1.0, 1.5, 2.0]
+
+repetitions: 10
+
+cooldown_seconds: 30   # pause between runs, let the node cool from the previous run
+
+# Per-config submission backend, see harness/submit/*.py
+backends:
+  A: k8s
+  B: k8s
+  C: slurm
+  D: k8s   # slurm-bridge: same kubectl path as A, different schedulerName
+
+# Kubernetes connection (used by submit/k8s_submit.py)
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 1800
+
+# Slurm connection (used by submit/slurm_submit.py) — assumes sbatch/sacct/squeue
+# are on PATH, typically run from a login node or a node with Slurm client tools.
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 1800
+
+# Where harness output (results.parquet) is written.
+output:
+  results_dir: "results"
+  results_file: "results.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

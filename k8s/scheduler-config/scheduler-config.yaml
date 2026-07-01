@@ -1,0 +1,32 @@
+# KubeSchedulerConfiguration registering SensitivityScore as a second scheduler
+# profile ("sensitivityscore-scheduler"), so default kube-scheduler keeps running
+# unmodified and the experiment harness can toggle schedulerName per Job (A/B
+# comparison, see docs §1.3 and harness/templates/job-template.yaml.j2).
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: "/etc/kubernetes/scheduler.conf"
+leaderElection:
+  leaderElect: true
+profiles:
+  - schedulerName: sensitivityscore-scheduler
+    plugins:
+      score:
+        enabled:
+          - name: SensitivityScore
+        disabled:
+          - name: "*"   # rely solely on SensitivityScore for scoring in this profile;
+                         # filtering/binding stages still use default plugins
+    pluginConfig:
+      - name: SensitivityScore
+        args:
+          # Redis backend populated by metrics-agent (docs §3.2).
+          redisAddr: "redis.sensitivityscore-system.svc.cluster.local:6379"
+          redisKeyTTLSeconds: 30
+          # Path to the weights ConfigMap mounted into the scheduler pod —
+          # see weights-configmap.yaml. Hot-reloaded by the plugin (fsnotify),
+          # so ablation studies (Глава 3) don't require a scheduler restart.
+          weightsConfigPath: "/etc/sensitivityscore/weights.yaml"
+          # Which NodeStateResolver implementation to use. "pod-cgroup" for config A,
+          # "qemu-process" for config B (KubeVirt). See docs §2.2 / §3.3.
+          nodeStateResolver: "pod-cgroup"

@@ -1,0 +1,31 @@
+# --- Go ---
+scheduler-plugin/*.exe
+metrics-agent/*.exe
+**/bin/
+go.work
+go.work.sum
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Experiment outputs (results are data, not code — keep the repo light) ---
+harness/results/*.parquet
+harness/results/*.out
+analysis/report/
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# --- Terraform/kube local state, if ever added ---
+*.tfstate
+*.tfstate.*
+kubeconfig*

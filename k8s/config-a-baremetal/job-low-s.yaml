@@ -1,0 +1,54 @@
+# Config A (K8s bare-metal) — low-S profile.
+# Annotations follow the SensitivityScore MVP contract (docs §1.3).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: geant4-lows-rep00
+  labels:
+    app: geant4-bench
+    sensitivityscore.phd/config: "A"
+    sensitivityscore.phd/profile: "low-s"
+  annotations:
+    scheduling.phd/sensitivity-llc: "low"
+    scheduling.phd/sensitivity-numa: "low"
+    scheduling.phd/sensitivity-net: "low"
+    scheduling.phd/sensitivity-io: "low"
+    scheduling.phd/job-id: "A-lows-oc1.0-rep00"
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: geant4-bench
+        sensitivityscore.phd/profile: "low-s"
+      annotations:
+        scheduling.phd/sensitivity-llc: "low"
+        scheduling.phd/sensitivity-numa: "low"
+        scheduling.phd/sensitivity-net: "low"
+        scheduling.phd/sensitivity-io: "low"
+        scheduling.phd/job-id: "A-lows-oc1.0-rep00"
+    spec:
+      schedulerName: sensitivityscore-scheduler
+      restartPolicy: Never
+      containers:
+        - name: geant4
+          image: sensitivityscore-bench/geant4:11.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: G4_THREADS
+              value: "1"
+            - name: PHYSICS_LIST
+              value: "QGSP_BERT"
+            - name: N_PRIMARIES
+              value: "10000"
+            - name: OUTPUT_MODE
+              value: "none"
+            - name: RNG_SEED
+              value: "42"
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"

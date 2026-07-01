@@ -1,0 +1,65 @@
+# Config D (Slinky / slurm-bridge).
+#
+# Structurally identical to config-a Jobs (same workload image, same annotations
+# contract) — the only difference is schedulerName: the pod is delegated to the
+# slurm-bridge custom scheduler, which hands node selection to the Slurm controller.
+# Whole-node, exclusive allocation only (see Программа_экспериментов §3.1):
+# co-location experiments (overcommit > 1.0) are NOT possible on this config — only
+# A and B support that. Keep this manifest for the overcommit=1.0 points of the plan.
+#
+# Requirements: Kubernetes >= v1.35, Slurm >= 25.11 (slurm-bridge minimum versions).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: geant4-highs-slinky-rep00
+  labels:
+    app: geant4-bench
+    sensitivityscore.phd/config: "D"
+    sensitivityscore.phd/profile: "high-s"
+  annotations:
+    scheduling.phd/sensitivity-llc: "high"
+    scheduling.phd/sensitivity-numa: "high"
+    scheduling.phd/sensitivity-net: "low"
+    scheduling.phd/sensitivity-io: "low"
+    scheduling.phd/job-id: "D-highs-oc1.0-rep00"
+    # slurm-bridge places by Slurm policy (priority/fairshare/QoS) — it has no
+    # visibility into the S vector. Annotations are still emitted for analysis
+    # parity with A/B/C, not because slurm-bridge consumes them.
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: geant4-bench
+        sensitivityscore.phd/profile: "high-s"
+      annotations:
+        scheduling.phd/sensitivity-llc: "high"
+        scheduling.phd/sensitivity-numa: "high"
+        scheduling.phd/sensitivity-net: "low"
+        scheduling.phd/sensitivity-io: "low"
+        scheduling.phd/job-id: "D-highs-oc1.0-rep00"
+    spec:
+      schedulerName: slurm-bridge
+      restartPolicy: Never
+      containers:
+        - name: geant4
+          image: sensitivityscore-bench/geant4:11.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: G4_THREADS
+              value: "8"
+            - name: PHYSICS_LIST
+              value: "FTFP_BERT_HP"
+            - name: N_PRIMARIES
+              value: "1000000"
+            - name: OUTPUT_MODE
+              value: "ntuple"
+            - name: RNG_SEED
+              value: "42"
+          resources:
+            requests:
+              cpu: "8"
+              memory: "4Gi"
+            limits:
+              cpu: "8"
+              memory: "6Gi"

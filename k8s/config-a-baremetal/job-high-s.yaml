@@ -1,0 +1,54 @@
+# Config A (K8s bare-metal) — high-S profile.
+# Annotations follow the SensitivityScore MVP contract (docs §1.3).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: geant4-highs-rep00
+  labels:
+    app: geant4-bench
+    sensitivityscore.phd/config: "A"
+    sensitivityscore.phd/profile: "high-s"
+  annotations:
+    scheduling.phd/sensitivity-llc: "high"
+    scheduling.phd/sensitivity-numa: "high"
+    scheduling.phd/sensitivity-net: "low"
+    scheduling.phd/sensitivity-io: "low"
+    scheduling.phd/job-id: "A-highs-oc1.0-rep00"
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: geant4-bench
+        sensitivityscore.phd/profile: "high-s"
+      annotations:
+        scheduling.phd/sensitivity-llc: "high"
+        scheduling.phd/sensitivity-numa: "high"
+        scheduling.phd/sensitivity-net: "low"
+        scheduling.phd/sensitivity-io: "low"
+        scheduling.phd/job-id: "A-highs-oc1.0-rep00"
+    spec:
+      schedulerName: sensitivityscore-scheduler
+      restartPolicy: Never
+      containers:
+        - name: geant4
+          image: sensitivityscore-bench/geant4:11.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: G4_THREADS
+              value: "8"          # = physical cores per NUMA domain on the target node
+            - name: PHYSICS_LIST
+              value: "FTFP_BERT_HP"
+            - name: N_PRIMARIES
+              value: "1000000"
+            - name: OUTPUT_MODE
+              value: "ntuple"
+            - name: RNG_SEED
+              value: "42"
+          resources:
+            requests:
+              cpu: "8"
+              memory: "4Gi"
+            limits:
+              cpu: "8"
+              memory: "6Gi"

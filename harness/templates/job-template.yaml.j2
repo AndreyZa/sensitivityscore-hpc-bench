@@ -1,0 +1,57 @@
+{# job-template.yaml.j2 — rendered by harness/submit/k8s_submit.py per
+   (config, profile, overcommit, job_id). Covers configs A, B(as Job not VMI for
+   simplicity of the harness path — real VMI submission can swap this for
+   vmi-template.yaml.j2 if needed), and D (same shape, different schedulerName). #}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ job_id | lower | replace("_", "-") | replace(".", "-") }}
+  namespace: {{ namespace }}
+  labels:
+    app: geant4-bench
+    sensitivityscore.phd/config: "{{ config }}"
+    sensitivityscore.phd/profile: "{{ profile }}"
+  annotations:
+    scheduling.phd/sensitivity-llc: "{{ sensitivity.llc }}"
+    scheduling.phd/sensitivity-numa: "{{ sensitivity.numa }}"
+    scheduling.phd/sensitivity-net: "{{ sensitivity.net }}"
+    scheduling.phd/sensitivity-io: "{{ sensitivity.io }}"
+    scheduling.phd/job-id: "{{ job_id }}"
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: geant4-bench
+        sensitivityscore.phd/profile: "{{ profile }}"
+      annotations:
+        scheduling.phd/sensitivity-llc: "{{ sensitivity.llc }}"
+        scheduling.phd/sensitivity-numa: "{{ sensitivity.numa }}"
+        scheduling.phd/sensitivity-net: "{{ sensitivity.net }}"
+        scheduling.phd/sensitivity-io: "{{ sensitivity.io }}"
+        scheduling.phd/job-id: "{{ job_id }}"
+    spec:
+      schedulerName: {{ scheduler_name }}
+      restartPolicy: Never
+      containers:
+        - name: geant4
+          image: {{ image | default("sensitivityscore-bench/geant4:11.2") }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: G4_THREADS
+              value: "{{ env.G4_THREADS }}"
+            - name: PHYSICS_LIST
+              value: "{{ env.PHYSICS_LIST }}"
+            - name: N_PRIMARIES
+              value: "{{ env.N_PRIMARIES }}"
+            - name: OUTPUT_MODE
+              value: "{{ env.OUTPUT_MODE }}"
+            - name: RNG_SEED
+              value: "{{ env.RNG_SEED }}"
+          resources:
+            requests:
+              cpu: "{{ resources.cpu }}"
+              memory: "{{ resources.memory_request }}"
+            limits:
+              cpu: "{{ resources.cpu }}"
+              memory: "{{ resources.memory_limit }}"

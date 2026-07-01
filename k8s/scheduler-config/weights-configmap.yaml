@@ -1,0 +1,28 @@
+# Per-dimension weights for the SensitivityScore dot-product (docs §2.1):
+#
+#   interference = dotProduct(jobProfile, nodeState.Pressure)
+#   score        = normalize(maxScore - interference * weight)
+#
+# Each dimension of S = {LLC, NUMA, Net, IO} gets its own weight so Глава 3 can run
+# ablations (e.g. zero out numa_weight to see how much NUMA-awareness contributes
+# to H1's effect size) without touching plugin code — just edit this ConfigMap and
+# let the plugin's fsnotify watcher hot-reload it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sensitivityscore-weights
+  namespace: sensitivityscore-system
+data:
+  weights.yaml: |
+    # Baseline weights — all dimensions equally weighted. Sum need not be 1.0;
+    # values are relative, normalize() rescales the final score.
+    llc_weight: 1.0
+    numa_weight: 1.0
+    net_weight: 1.0
+    io_weight: 1.0
+
+    # --- ablation presets (kept here as comments for quick copy/paste during
+    # the Chapter 3 ablation study; not active unless pasted into the block above) ---
+    # no-numa:   llc_weight: 1.0, numa_weight: 0.0, net_weight: 1.0, io_weight: 1.0
+    # llc-only:  llc_weight: 1.0, numa_weight: 0.0, net_weight: 0.0, io_weight: 0.0
+    # numa-only: llc_weight: 0.0, numa_weight: 1.0, net_weight: 0.0, io_weight: 0.0

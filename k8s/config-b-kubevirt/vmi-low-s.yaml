@@ -1,0 +1,58 @@
+# Config B (K8s + KubeVirt) — low-S profile.
+#
+# Same workload as config-a, but running inside a KubeVirt VMI rather than a bare pod —
+# scheduling decision still goes through kube-scheduler/SensitivityScore, but the
+# NodeStateResolver used by the plugin must be QemuProcessResolver here (VMI -> qemu-kvm
+# PID -> cgroup path), since the plugin sees a virt-launcher pod, not a "real" workload
+# pod. See docs/Технический_план_экспериментов.md §2.2 and §3.3.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: geant4-lows-vmi-rep00
+  labels:
+    app: geant4-bench
+    sensitivityscore.phd/config: "B"
+    sensitivityscore.phd/profile: "low-s"
+  annotations:
+    scheduling.phd/sensitivity-llc: "low"
+    scheduling.phd/sensitivity-numa: "low"
+    scheduling.phd/sensitivity-net: "low"
+    scheduling.phd/sensitivity-io: "low"
+    scheduling.phd/job-id: "B-lows-oc1.0-rep00"
+    # Set by the metrics-agent vPMU healthcheck at series start (docs §3.3); kept here
+    # as a documented default so the manifest is self-describing even before the
+    # healthcheck has run once.
+    metrics.phd/approximation: "host-side"
+spec:
+  schedulerName: sensitivityscore-scheduler
+  domain:
+    cpu:
+      cores: 1
+    resources:
+      requests:
+        memory: "1Gi"
+      limits:
+        memory: "2Gi"
+    devices:
+      disks:
+        - name: containerdisk
+          disk:
+            bus: virtio
+        - name: cloudinitdisk
+          disk:
+            bus: virtio
+  volumes:
+    - name: containerdisk
+      containerDisk:
+        image: sensitivityscore-bench/geant4-vmdisk:11.2
+    - name: cloudinitdisk
+      cloudInitNoCloud:
+        userData: |
+          #cloud-config
+          runcmd:
+            - export G4_THREADS=1
+            - export PHYSICS_LIST=QGSP_BERT
+            - export N_PRIMARIES=10000
+            - export OUTPUT_MODE=none
+            - export RNG_SEED=42
+            - /entrypoint.sh

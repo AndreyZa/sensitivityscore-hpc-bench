@@ -1,0 +1,8 @@
+# Local dev convenience: spin up Redis so scheduler-plugin/metrics-agent can be
+# smoke-tested against a real backend without a full cluster.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]

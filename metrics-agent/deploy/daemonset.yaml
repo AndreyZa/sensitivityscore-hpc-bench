@@ -1,0 +1,90 @@
+# DaemonSet — один агент на узел, CAP_PERFMON вместо privileged:true (docs §3.1:
+# "это будет аргументом в защите, что подход безопаснее, чем грубый
+# privileged-доступ").
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sensitivityscore-metrics-agent
+  namespace: sensitivityscore-system
+  labels:
+    app: sensitivityscore-metrics-agent
+spec:
+  selector:
+    matchLabels:
+      app: sensitivityscore-metrics-agent
+  template:
+    metadata:
+      labels:
+        app: sensitivityscore-metrics-agent
+    spec:
+      serviceAccountName: sensitivityscore-metrics-agent
+      hostPID: true # needed to read /proc/<pid>/cgroup for non-pod processes (qemu-kvm, config B)
+      containers:
+        - name: agent
+          image: sensitivityscore-bench/metrics-agent:dev
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["PERFMON", "SYS_PTRACE"] # SYS_PTRACE only needed for cross-namespace /proc reads (config B)
+            privileged: false
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: REDIS_ADDR
+              value: "redis.sensitivityscore-system.svc.cluster.local:6379"
+          volumeMounts:
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: proc
+          hostPath:
+            path: /proc
+      tolerations:
+        - operator: Exists # run on every node, including tainted control-plane/HPC nodes
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sensitivityscore-metrics-agent
+  namespace: sensitivityscore-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sensitivityscore-metrics-agent
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch", "get"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    verbs: ["list", "watch", "get"] # for config B VMI -> qemu PID mapping
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sensitivityscore-metrics-agent
+subjects:
+  - kind: ServiceAccount
+    name: sensitivityscore-metrics-agent
+    namespace: sensitivityscore-system
+roleRef:
+  kind: ClusterRole
+  name: sensitivityscore-metrics-agent
+  apiGroup: rbac.authorization.k8s.io
