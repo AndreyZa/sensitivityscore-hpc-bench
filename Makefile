@@ -20,11 +20,10 @@ SHELL := /bin/bash
 SCHEDULER_PLUGINS_DIR ?= ../scheduler-plugins
 
 # --- Docker-образы ---
-REGISTRY                ?= sensitivityscore-bench
-SCHEDULER_REGISTRY      ?= andreyza/sensitivityscore
-SCHEDULER_RELEASE_VER   ?= v20260708-2e5f9432
+REGISTRY                ?= andreyza
+SCHEDULER_RELEASE_VER   ?= v20260709-55642cf2
 WORKLOAD_IMAGE          ?= $(REGISTRY)/geant4:11.2
-SCHEDULER_IMAGE         ?= $(SCHEDULER_REGISTRY):$(SCHEDULER_RELEASE_VER)
+SCHEDULER_IMAGE         ?= $(REGISTRY)/sensitivityscore:$(SCHEDULER_RELEASE_VER)
 METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
 
 # --- Kubernetes ---
@@ -153,6 +152,25 @@ weights-edit: ## Отредактировать веса измерений S "�
 .PHONY: metrics-edit
 metrics-edit: ## Отредактировать node-metrics.json "на лету" (ручная имитация метрик, до подключения metrics-agent)
 	$(KUBECTL) edit configmap sensitivity-config -n $(NAMESPACE)
+
+# ---------------------------------------------------------------------------
+# Smoke-test планировщика — простой под без Geant4 (Фаза 2 плана)
+# ---------------------------------------------------------------------------
+
+.PHONY: test-pod-highs
+test-pod-highs: ## Засабмитить простой high-S под (busybox+sleep) — быстрая проверка, что SensitivityScore вообще работает
+	$(KUBECTL) apply -f k8s/smoke-test/test-pod-highs.yaml
+	@$(KUBECTL) get pod test-highs -o jsonpath='{.spec.nodeName}{"\n"}'   
+
+.PHONY: test-pod-lows
+test-pod-lows: ## Засабмитить симметричный low-S под — для сравнения score с test-pod-highs
+	$(KUBECTL) apply -f k8s/smoke-test/test-pod-lows.yaml
+	@$(KUBECTL) get pod test-lows -o jsonpath='{.spec.nodeName}{"\n"}'    
+
+.PHONY: test-pod-clean
+test-pod-clean: ## Убрать оба smoke-test пода
+	$(KUBECTL) delete -f k8s/smoke-test/test-pod-highs.yaml --ignore-not-found
+	$(KUBECTL) delete -f k8s/smoke-test/test-pod-lows.yaml --ignore-not-found
 
 # ---------------------------------------------------------------------------
 # Конфигурация A (K8s bare-metal) — ручной smoke-test без харнесса

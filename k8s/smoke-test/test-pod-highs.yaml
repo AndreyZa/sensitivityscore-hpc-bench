@@ -1,0 +1,18 @@
+# Минимальный под для проверки, что SensitivityScore реально участвует в
+# планировании — без Geant4, просто busybox + sleep. Живёт в namespace,
+# который укажешь при apply (по умолчанию — текущий namespace kubectl
+# context, обычно default), НЕ в sensitivityscore-system (это namespace
+# самого планировщика, а не рабочих нагрузок).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-highs
+  annotations:
+    scheduling.phd/sensitivity-llc: "high"
+    scheduling.phd/sensitivity-numa: "high"
+spec:
+  schedulerName: sensitivityscore
+  containers:
+    - name: sleep
+      image: busybox
+      command: ["sleep", "3600"]

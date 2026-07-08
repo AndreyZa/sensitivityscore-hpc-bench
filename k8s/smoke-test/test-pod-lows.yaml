@@ -1,0 +1,15 @@
+# Симметричный вариант test-pod-highs.yaml — низкая чувствительность, для
+# сравнения score между профилями на одной и той же ноде.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-lows
+  annotations:
+    scheduling.phd/sensitivity-llc: "low"
+    scheduling.phd/sensitivity-numa: "low"
+spec:
+  schedulerName: sensitivityscore
+  containers:
+    - name: sleep
+      image: busybox
+      command: ["sleep", "3600"]

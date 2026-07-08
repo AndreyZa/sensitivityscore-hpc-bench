@@ -75,11 +75,8 @@ metadata:
   name: sensitivityscore-scheduler
   namespace: sensitivityscore-system
 ---
-# Права те же, что нужны штатному kube-scheduler (список нод/подов, patch
-# binding и т.д.) — минимальный набор для локальной отладки; на реальном
-# стенде используйте ClusterRole из
-# manifests/install/charts/as-a-second-scheduler (kube-scheduler ClusterRole)
-# вместо этой урезанной версии.
+# Права для основной логики планирования (ноды, поды, bind, leases для
+# leader election) — то же самое, что нужно штатному kube-scheduler.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -91,4 +88,44 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: system:kube-scheduler
+  apiGroup: rbac.authorization.k8s.io
+---
+# Отдельная ClusterRoleBinding для system:volume-scheduler — покрывает
+# StorageClass/PersistentVolume/PersistentVolumeClaim, нужные плагину
+# VolumeBinding (он остаётся активным по умолчанию наравне с нашим
+# SensitivityScore, т.к. scheduler-config.yaml только ДОБАВЛЯЕТ
+# SensitivityScore в score, не отключая остальные default-плагины).
+# Без этой биндинги реальный kube-scheduler падает именно на
+# "storageclasses.storage.k8s.io is forbidden" — задокументировано в
+# официальном гайде Kubernetes "Configure Multiple Schedulers".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sensitivityscore-scheduler-volume
+subjects:
+  - kind: ServiceAccount
+    name: sensitivityscore-scheduler
+    namespace: sensitivityscore-system
+roleRef:
+  kind: ClusterRole
+  name: system:volume-scheduler
+  apiGroup: rbac.authorization.k8s.io
+---
+# Убирает второй warning из логов ("Unable to get configmap/extension-apiserver-authentication
+# in kube-system") — сам планировщик стартует и без этого (код деградирует
+# gracefully, "Continuing without authentication configuration"), но раз
+# сообщение само подсказывает команду фикса — делаем манифестом, чтобы не
+# видеть эти строки в логах при каждом старте пода.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sensitivityscore-scheduler-auth-reader
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: sensitivityscore-scheduler
+    namespace: sensitivityscore-system
+roleRef:
+  kind: Role
+  name: extension-apiserver-authentication-reader
   apiGroup: rbac.authorization.k8s.io
