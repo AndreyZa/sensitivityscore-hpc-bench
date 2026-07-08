@@ -28,7 +28,7 @@ spec:
         scheduling.phd/sensitivity-io: "low"
         scheduling.phd/job-id: "A-highs-oc1.0-rep00"
     spec:
-      schedulerName: sensitivityscore-scheduler
+      schedulerName: sensitivityscore
       restartPolicy: Never
       containers:
         - name: geant4

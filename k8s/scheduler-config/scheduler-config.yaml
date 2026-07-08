@@ -9,8 +9,6 @@ apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 leaderElection:
   leaderElect: false
-clientConnection:
-  kubeconfig: "/etc/kubernetes/scheduler.conf"
 profiles:
   - schedulerName: sensitivityscore
     plugins:

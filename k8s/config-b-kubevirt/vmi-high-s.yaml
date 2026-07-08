@@ -24,7 +24,7 @@ metadata:
     # healthcheck has run once.
     metrics.phd/approximation: "host-side"
 spec:
-  schedulerName: sensitivityscore-scheduler
+  schedulerName: sensitivityscore
   domain:
     cpu:
       cores: 8

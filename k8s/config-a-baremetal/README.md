@@ -6,7 +6,7 @@
 
 ```bash
 # default kube-scheduler (baseline):
-sed 's/schedulerName: sensitivityscore-scheduler/schedulerName: default-scheduler/' \
+sed 's/schedulerName: sensitivityscore/schedulerName: default-scheduler/' \
   job-low-s.yaml | kubectl apply -f -
 
 # SensitivityScore (custom plugin), как есть:

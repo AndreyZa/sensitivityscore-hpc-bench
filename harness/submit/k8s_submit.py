@@ -29,9 +29,9 @@ _env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
 SCHEDULER_NAME_BY_CONFIG = {
     "A-default": "default-scheduler",
-    "A-sensitivityscore": "sensitivityscore-scheduler",
+    "A-sensitivityscore": "sensitivityscore",
     "B-default": "default-scheduler",
-    "B-sensitivityscore": "sensitivityscore-scheduler",
+    "B-sensitivityscore": "sensitivityscore",
     "D": "slurm-bridge",
 }
 

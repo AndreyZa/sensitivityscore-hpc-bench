@@ -5,16 +5,16 @@
 # на A — sanity-check всего пайплайна перед полной матрицей").
 
 configs:
-  - A   # K8s bare-metal: default-scheduler AND sensitivityscore-scheduler, see below
-  - B   # K8s + KubeVirt
-  - C   # Slurm
-  - D   # Slinky / slurm-bridge (overcommit=1.0 only — whole-node allocation, see §3.1)
+  - A # K8s bare-metal: default-scheduler AND sensitivityscore, see below
+  - B # K8s + KubeVirt
+  - C # Slurm
+  - D # Slinky / slurm-bridge (overcommit=1.0 only — whole-node allocation, see §3.1)
 
 # For config A, both scheduler variants are run as separate "configs" internally
 # (A-default, A-sensitivityscore) so H1 can do a same-config A/B comparison.
 config_a_schedulers:
   - default-scheduler
-  - sensitivityscore-scheduler
+  - sensitivityscore
 
 profiles:
   - low-s
@@ -24,14 +24,14 @@ overcommit_ratios: [1.0, 1.5, 2.0]
 
 repetitions: 10
 
-cooldown_seconds: 30   # pause between runs, let the node cool from the previous run
+cooldown_seconds: 30 # pause between runs, let the node cool from the previous run
 
 # Per-config submission backend, see harness/submit/*.py
 backends:
   A: k8s
   B: k8s
   C: slurm
-  D: k8s   # slurm-bridge: same kubectl path as A, different schedulerName
+  D: k8s # slurm-bridge: same kubectl path as A, different schedulerName
 
 # Kubernetes connection (used by submit/k8s_submit.py)
 kubernetes:

@@ -1,21 +1,23 @@
 # Не Helm-чарт, а прямой манифест для быстрой локальной отладки — де-шаблонизированная
 # версия manifests/install/charts/as-a-second-scheduler/templates/deployment.yaml
-# из этого же репозитория, плюс добавленный volumeMount для
-# /etc/sensitivity/ (node-metrics.json + weights.json, см.
+# из репозитория kubernetes-sigs/scheduler-plugins, плюс добавленный
+# volumeMount для /etc/sensitivity/ (node-metrics.json + weights.json, см.
 # sensitivity-configmap.yaml).
 #
-# image собирается через `make local-image` (см. Makefile репозитория) —
-# после этого замени REPLACE_ME_IMAGE ниже на реальный тег.
+# Образ плагина СОБИРАЕТСЯ В ДРУГОМ РЕПОЗИТОРИИ (форк scheduler-plugins,
+# `make -f sensitivityscore.mk ss-image`) — здесь только деплой готового
+# образа. См. Makefile этого репозитория, таргет `scheduler-plugin-image`,
+# который вызывает сборку в форке и передаёт сюда переменную SCHEDULER_IMAGE.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: scheduler-plugins
+  name: sensitivityscore-system
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: scheduler-plugins-scheduler
-  namespace: scheduler-plugins
+  name: sensitivityscore-scheduler
+  namespace: sensitivityscore-system
   labels:
     component: scheduler
 spec:
@@ -28,10 +30,10 @@ spec:
       labels:
         component: scheduler
     spec:
-      serviceAccountName: scheduler-plugins-scheduler
+      serviceAccountName: sensitivityscore-scheduler
       containers:
-        - name: scheduler-plugins-scheduler
-          image: REPLACE_ME_IMAGE # напр. localhost:5000/scheduler-plugins/kube-scheduler:v0.0.0
+        - name: sensitivityscore-scheduler
+          image: REPLACE_ME_IMAGE # подставляется через `make scheduler-deploy` (переменная SCHEDULER_IMAGE)
           imagePullPolicy: IfNotPresent
           command:
             - /bin/kube-scheduler
@@ -70,8 +72,8 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: scheduler-plugins-scheduler
-  namespace: scheduler-plugins
+  name: sensitivityscore-scheduler
+  namespace: sensitivityscore-system
 ---
 # Права те же, что нужны штатному kube-scheduler (список нод/подов, patch
 # binding и т.д.) — минимальный набор для локальной отладки; на реальном
@@ -81,11 +83,11 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: scheduler-plugins-scheduler
+  name: sensitivityscore-scheduler
 subjects:
   - kind: ServiceAccount
-    name: scheduler-plugins-scheduler
-    namespace: scheduler-plugins
+    name: sensitivityscore-scheduler
+    namespace: sensitivityscore-system
 roleRef:
   kind: ClusterRole
   name: system:kube-scheduler

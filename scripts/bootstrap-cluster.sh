@@ -43,11 +43,10 @@ spec:
       targetPort: 6379
 EOF
 
-echo "[bootstrap] applying scheduler weights ConfigMap"
-kubectl apply -f k8s/scheduler-config/weights-configmap.yaml
-
-echo "[bootstrap] done. Next steps:"
-echo "  1. Build & push scheduler-plugin and metrics-agent images"
-echo "  2. Deploy the second scheduler profile using k8s/scheduler-config/scheduler-config.yaml"
-echo "  3. kubectl apply -f metrics-agent/deploy/daemonset.yaml"
-echo "  4. Sanity-check with harness --pilot (see harness/README.md)"
+echo "[bootstrap] done. Namespace + Redis ready (Redis пока не подключён к"
+echo "scheduler-плагину — это отдельный агент metrics-agent, см. его README)."
+echo "Next steps:"
+echo "  1. Собрать образ плагина в форке scheduler-plugins: make scheduler-plugin-image"
+echo "  2. Задеплоить: make scheduler-apply-config scheduler-deploy"
+echo "  3. (опционально) kubectl apply -f metrics-agent/deploy/daemonset.yaml"
+echo "  4. Sanity-check: make pilot (см. harness/README.md)"

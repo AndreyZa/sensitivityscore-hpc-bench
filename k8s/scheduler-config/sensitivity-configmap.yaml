@@ -14,7 +14,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sensitivity-config
-  namespace: scheduler-plugins
+  namespace: sensitivityscore-system
 data:
   node-metrics.json: |
     {
