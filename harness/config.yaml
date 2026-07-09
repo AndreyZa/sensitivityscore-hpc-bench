@@ -45,6 +45,14 @@ slurm:
   job_timeout_seconds: 1800
 
 # Where harness output (results.parquet) is written.
+# Docker-образ нагрузки Geant4 — ДОЛЖЕН совпадать с тем, что реально собран
+# и запушен (`make image-workload`, см. переменную WORKLOAD_IMAGE в
+# корневом Makefile). Раньше это было захардкожено плейсхолдером
+# "sensitivityscore-bench/geant4:11.2" внутри шаблона job-template.yaml.j2
+# и никогда не переопределялось — здесь фактическое значение.
+images:
+  workload: "andreyza/geant4:11.2"
+
 output:
   results_dir: "results"
   results_file: "results.parquet"

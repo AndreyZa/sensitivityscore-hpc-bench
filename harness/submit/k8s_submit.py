@@ -35,6 +35,31 @@ SCHEDULER_NAME_BY_CONFIG = {
     "D": "slurm-bridge",
 }
 
+# Namespaces we've already confirmed exist this process run — avoids
+# re-running `kubectl create namespace` before every single job submission
+# across a full matrix (hundreds of calls otherwise); idempotent either way
+# since it uses --dry-run=client | apply, but no need to hit the API server
+# that often.
+_namespaces_ensured: set[str] = set()
+
+
+def _ensure_namespace(namespace: str) -> None:
+    """Auto-creates the namespace if it doesn't exist yet (idempotent).
+    Fixes: 'Error from server (NotFound): namespaces "..." not found' on the
+    very first job submission against a fresh cluster."""
+    if namespace in _namespaces_ensured:
+        return
+    result = subprocess.run(
+        ["kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["kubectl", "apply", "-f", "-"], input=result.stdout, check=True, text=True
+    )
+    _namespaces_ensured.add(namespace)
+
 
 class K8sJobHandle:
     def __init__(self, job_id: str, k8s_name: str, namespace: str):
@@ -46,10 +71,14 @@ class K8sJobHandle:
         self.end_time: float | None = None
 
 
-def submit_job(job_id: str, config: str, profile: str, overcommit: float, cfg: dict) -> K8sJobHandle:
+def submit_job(
+    job_id: str, config: str, profile: str, overcommit: float, cfg: dict
+) -> K8sJobHandle:
     spec = PROFILES[profile]
     namespace = cfg["kubernetes"]["namespace"]
     scheduler_name = SCHEDULER_NAME_BY_CONFIG.get(config, "default-scheduler")
+
+    _ensure_namespace(namespace)
 
     template = _env.get_template("job-template.yaml.j2")
     manifest = template.render(
@@ -58,6 +87,7 @@ def submit_job(job_id: str, config: str, profile: str, overcommit: float, cfg: d
         profile=profile,
         namespace=namespace,
         scheduler_name=scheduler_name,
+        image=cfg["images"]["workload"],
         env=spec.env,
         sensitivity=spec.sensitivity,
         resources=spec.resources,
@@ -79,9 +109,11 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
     timeout = cfg["kubernetes"]["job_timeout_seconds"]
     subprocess.run(
         [
-            "kubectl", "wait",
+            "kubectl",
+            "wait",
             f"job/{handle.k8s_name}",
-            "-n", handle.namespace,
+            "-n",
+            handle.namespace,
             "--for=condition=complete",
             f"--timeout={timeout}s",
         ],
@@ -93,19 +125,35 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
     # job:metrics:<job_id>:<node> in Redis.
     result = subprocess.run(
         [
-            "kubectl", "get", "pod",
-            "-n", handle.namespace,
-            "-l", f"job-name={handle.k8s_name}",
-            "-o", "jsonpath={.items[0].spec.nodeName}",
+            "kubectl",
+            "get",
+            "pod",
+            "-n",
+            handle.namespace,
+            "-l",
+            f"job-name={handle.k8s_name}",
+            "-o",
+            "jsonpath={.items[0].spec.nodeName}",
         ],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     handle.node = result.stdout.strip()
 
 
-def record_result(handle: K8sJobHandle, job_id: str, config: str, profile: str,
-                   overcommit: float, rep: int, cfg: dict) -> dict:
-    makespan_s = (handle.end_time - handle.start_time) if handle.end_time else float("nan")
+def record_result(
+    handle: K8sJobHandle,
+    job_id: str,
+    config: str,
+    profile: str,
+    overcommit: float,
+    rep: int,
+    cfg: dict,
+) -> dict:
+    makespan_s = (
+        (handle.end_time - handle.start_time) if handle.end_time else float("nan")
+    )
     metrics = fetch_job_metrics(cfg["redis"]["addr"], job_id, handle.node or "unknown")
 
     return {
@@ -123,6 +171,14 @@ def cleanup(handle: K8sJobHandle) -> None:
     """Delete the completed Job so repeated runs don't accumulate cluster state.
     Called by run_experiment.py after record_result()."""
     subprocess.run(
-        ["kubectl", "delete", "job", handle.k8s_name, "-n", handle.namespace, "--ignore-not-found"],
+        [
+            "kubectl",
+            "delete",
+            "job",
+            handle.k8s_name,
+            "-n",
+            handle.namespace,
+            "--ignore-not-found",
+        ],
         check=False,
     )

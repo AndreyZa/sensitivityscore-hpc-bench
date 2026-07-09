@@ -29,7 +29,9 @@ class SlurmJobHandle:
         self.node: str | None = None
 
 
-def submit_job(job_id: str, config: str, profile: str, overcommit: float, cfg: dict) -> SlurmJobHandle:
+def submit_job(
+    job_id: str, config: str, profile: str, overcommit: float, cfg: dict
+) -> SlurmJobHandle:
     spec = PROFILES[profile]
 
     template = _env.get_template("sbatch-template.sh.j2")
@@ -37,6 +39,7 @@ def submit_job(job_id: str, config: str, profile: str, overcommit: float, cfg: d
         job_id=job_id,
         profile=profile,
         overcommit=overcommit,
+        image=cfg["images"]["workload"],
         env=spec.env,
         resources=spec.resources,
     )
@@ -45,7 +48,9 @@ def submit_job(job_id: str, config: str, profile: str, overcommit: float, cfg: d
         f.write(script)
         script_path = f.name
 
-    result = subprocess.run(["sbatch", script_path], check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["sbatch", script_path], check=True, capture_output=True, text=True
+    )
     match = _SBATCH_ID_RE.search(result.stdout)
     if not match:
         raise RuntimeError(f"could not parse sbatch output: {result.stdout!r}")
@@ -61,29 +66,55 @@ def wait_for_completion(handle: SlurmJobHandle, cfg: dict) -> None:
     while time.time() < deadline:
         result = subprocess.run(
             ["squeue", "-j", handle.slurm_job_id, "-h", "-o", "%T"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         state = result.stdout.strip()
         if state == "":  # no longer in the queue -> finished (completed or failed)
             break
         time.sleep(poll_interval)
     else:
-        raise TimeoutError(f"Slurm job {handle.slurm_job_id} did not complete within {timeout}s")
+        raise TimeoutError(
+            f"Slurm job {handle.slurm_job_id} did not complete within {timeout}s"
+        )
 
     # Resolve the node it ran on, for the Redis job:metrics lookup.
     result = subprocess.run(
-        ["sacct", "-j", handle.slurm_job_id, "--format=NodeList", "--noheader", "--parsable2"],
-        capture_output=True, text=True,
+        [
+            "sacct",
+            "-j",
+            handle.slurm_job_id,
+            "--format=NodeList",
+            "--noheader",
+            "--parsable2",
+        ],
+        capture_output=True,
+        text=True,
     )
     lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
     handle.node = lines[0].strip() if lines else None
 
 
-def record_result(handle: SlurmJobHandle, job_id: str, config: str, profile: str,
-                   overcommit: float, rep: int, cfg: dict) -> dict:
+def record_result(
+    handle: SlurmJobHandle,
+    job_id: str,
+    config: str,
+    profile: str,
+    overcommit: float,
+    rep: int,
+    cfg: dict,
+) -> dict:
     result = subprocess.run(
-        ["sacct", "-j", handle.slurm_job_id, "--format=Elapsed", "--noheader", "--parsable2"],
-        capture_output=True, text=True,
+        [
+            "sacct",
+            "-j",
+            handle.slurm_job_id,
+            "--format=Elapsed",
+            "--noheader",
+            "--parsable2",
+        ],
+        capture_output=True,
+        text=True,
     )
     lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
     makespan_s = _parse_elapsed(lines[0]) if lines else float("nan")
