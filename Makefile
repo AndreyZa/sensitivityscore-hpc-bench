@@ -80,6 +80,10 @@ test-go: ## Юнит-тесты metrics-agent
 image-workload: ## Собрать образ нагрузки Geant4 (workload/)
 	docker build -t $(WORKLOAD_IMAGE) ./workload
 
+.PHONY: image-workload-push
+image-workload-push:
+	docker push $(WORKLOAD_IMAGE)
+
 .PHONY: image-metrics-agent
 image-metrics-agent: build-go ## Собрать образ metrics-agent
 	docker build -t $(METRICS_AGENT_IMAGE) ./metrics-agent

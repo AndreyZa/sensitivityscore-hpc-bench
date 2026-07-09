@@ -32,11 +32,11 @@ spec:
       restartPolicy: Never
       containers:
         - name: geant4
-          image: sensitivityscore-bench/geant4:11.2
-          imagePullPolicy: IfNotPresent
+          image: andreyza/geant4:11.2
+          imagePullPolicy: Always
           env:
             - name: G4_THREADS
-              value: "8"          # = physical cores per NUMA domain on the target node
+              value: "8" # = physical cores per NUMA domain on the target node
             - name: PHYSICS_LIST
               value: "FTFP_BERT_HP"
             - name: N_PRIMARIES

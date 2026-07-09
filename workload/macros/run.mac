@@ -3,23 +3,21 @@
 # Placeholders (__X__) are substituted by entrypoint.sh at container start so the
 # same macro file serves both the low-S and high-S profiles. See
 # docs/Технический_план_экспериментов.md §1.2 for the profile table.
+#
+# /run/numberOfThreads MUST precede /run/initialize — it's a PreInit-state
+# UI command (Geant4 "Quick migration guide for Geant4 version 10.x series").
+/run/numberOfThreads __G4_THREADS__
 
 /run/initialize
 
 # RNG seed — fixed per repetition for reproducibility across configs A/B/C/D.
 /random/setSeeds __RNG_SEED__ __RNG_SEED__
 
-# Output mode: "none" -> aggregate-only at end of run (low Disk-IO sensitivity);
-# any other value -> per-event ntuple write every event (high Disk-IO sensitivity).
-/control/alias outputMode __OUTPUT_MODE__
-/control/if {outputMode} != none
-  /analysis/setFileName geant4_run
-  /analysis/h1/set 1 100 0. 100. MeV
-  /analysis/ntuple/create RunTuple "Per-event hit/energy ntuple"
-  /analysis/ntuple/create/column edep
-  /analysis/ntuple/create/column trackLength
-  /analysis/ntuple/finish
-/control/endif
+# NOTE: per-event ntuple output (Disk I/O sensitivity dimension, OUTPUT_MODE
+# in docs §1.2) is not yet wired up here — see entrypoint.sh comment. This
+# macro currently only controls threads/seed/primaries; output-mode UI
+# commands need to be added once verified against TestEm5's actual
+# AnalysisManager setup (varies by Geant4 version).
 
 # Number of primaries drives job duration and measurement stability.
 /run/beamOn __N_PRIMARIES__

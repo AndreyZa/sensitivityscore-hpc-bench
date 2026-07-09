@@ -43,7 +43,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: geant4
-          image: sensitivityscore-bench/geant4:11.2
+          image: andreyza/geant4:11.2
           imagePullPolicy: IfNotPresent
           env:
             - name: G4_THREADS
