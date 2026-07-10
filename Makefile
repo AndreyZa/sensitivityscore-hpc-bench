@@ -68,7 +68,7 @@ scheduler-plugin-test: ## Юнит-тесты плагина в форке
 .PHONY: scheduler-plugin-image
 scheduler-plugin-image: ## Собрать Docker-образ плагина в форке -> $(SCHEDULER_IMAGE)
 	$(MAKE) -C $(SCHEDULER_PLUGINS_DIR) -f sensitivityscore.mk ss-image \
-		REGISTRY=$(SCHEDULER_REGISTRY) RELEASE_VERSION=$(SCHEDULER_RELEASE_VER)
+		REGISTRY=$(REGISTRY) RELEASE_VERSION=$(SCHEDULER_RELEASE_VER)
 
 # ---------------------------------------------------------------------------
 # Go: metrics-agent/ (единственный оставшийся Go-модуль в этом репозитории)

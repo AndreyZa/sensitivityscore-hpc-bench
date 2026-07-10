@@ -34,7 +34,7 @@ spec:
       containers:
         - name: sensitivityscore-scheduler
           image: REPLACE_ME_IMAGE # подставляется через `make scheduler-deploy` (переменная SCHEDULER_IMAGE)
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - /bin/kube-scheduler
           args:

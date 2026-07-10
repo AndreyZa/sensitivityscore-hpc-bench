@@ -21,8 +21,8 @@ spec:
       hostPID: true # needed to read /proc/<pid>/cgroup for non-pod processes (qemu-kvm, config B)
       containers:
         - name: agent
-          image: sensitivityscore-bench/metrics-agent:dev
-          imagePullPolicy: IfNotPresent
+          image: andreyza/metrics-agent:dev
+          imagePullPolicy: Always
           securityContext:
             capabilities:
               add: ["PERFMON", "SYS_PTRACE"] # SYS_PTRACE only needed for cross-namespace /proc reads (config B)

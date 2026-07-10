@@ -12,7 +12,7 @@ spec:
   containers:
     - name: perfcheck
       image: andreyza/perfcheck:dev
-      imagePullPolicy: IfNotPresent
+      imagePullPolicy: Always
       securityContext:
         capabilities:
           add: ["PERFMON"]

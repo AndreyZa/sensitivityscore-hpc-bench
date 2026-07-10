@@ -44,7 +44,7 @@ spec:
   volumes:
     - name: containerdisk
       containerDisk:
-        image: sensitivityscore-bench/geant4-vmdisk:11.2
+        image: andreyza/geant4-vmdisk:11.2
     - name: cloudinitdisk
       cloudInitNoCloud:
         userData: |
