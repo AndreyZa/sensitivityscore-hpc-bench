@@ -7,8 +7,16 @@ config, waits for completion, records makespan + job:metrics:* from Redis into a
 Parquet dataset matching the §5.1 schema (extended with batch_size/batch_index —
 see below):
 
-    config | profile | overcommit | rep | node | makespan_s | llc_miss_rate |
-    numa_remote_ratio | net_bw | io_iops | approximation | batch_size | batch_index
+    config | profile | overcommit | rep | node | makespan_s | makespan_source |
+    submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
+    io_iops | approximation | batch_size | batch_index
+
+makespan_s is the job's pure runtime measured by the cluster itself — pod
+container terminated startedAt->finishedAt for K8s backends, sacct Elapsed for
+Slurm — so K8s and Slurm configs are compared on the same definition (queue
+wait, image pull and pod startup excluded; harness-side wall clock is only a
+tagged fallback, see makespan_source). submit_ts/start_ts/end_ts let analysis
+verify that batch members actually overlapped in time on the node.
 
 IMPORTANT (fixed after a pilot run showed no real interference effect):
 overcommit ratio now actually drives how many jobs run CONCURRENTLY for a
@@ -103,6 +111,10 @@ def run_one(
             "rep": rep,
             "node": "dry-run",
             "makespan_s": 0.0,
+            "makespan_source": "dry-run",
+            "submit_ts": None,
+            "start_ts": None,
+            "end_ts": None,
             "llc_miss_rate": float("nan"),
             "numa_remote_ratio": float("nan"),
             "net_bw": float("nan"),
@@ -188,6 +200,10 @@ def run_batch(
                         "rep": rep,
                         "node": None,
                         "makespan_s": float("nan"),
+                        "makespan_source": None,
+                        "submit_ts": None,
+                        "start_ts": None,
+                        "end_ts": None,
                         "llc_miss_rate": float("nan"),
                         "numa_remote_ratio": float("nan"),
                         "net_bw": float("nan"),
@@ -258,7 +274,11 @@ def main():
 
     results_dir = Path(cfg["output"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
-    results_path = results_dir / cfg["output"]["results_file"]
+    results_file = cfg["output"]["results_file"]
+    if args.dry_run:
+        # Never clobber real results with a plan preview.
+        results_file = f"dry-run-{results_file}"
+    results_path = results_dir / results_file
 
     rows = []
     for config, profile, overcommit, rep in plan:
@@ -276,6 +296,10 @@ def main():
                     "rep": rep,
                     "node": None,
                     "makespan_s": float("nan"),
+                    "makespan_source": None,
+                    "submit_ts": None,
+                    "start_ts": None,
+                    "end_ts": None,
                     "llc_miss_rate": float("nan"),
                     "numa_remote_ratio": float("nan"),
                     "net_bw": float("nan"),

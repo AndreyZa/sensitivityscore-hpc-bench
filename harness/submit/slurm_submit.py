@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -27,6 +28,7 @@ class SlurmJobHandle:
         self.job_id = job_id
         self.slurm_job_id = slurm_job_id
         self.node: str | None = None
+        self.submit_time: float | None = None  # harness wall clock, sbatch returned
 
 
 def submit_job(
@@ -55,7 +57,9 @@ def submit_job(
     if not match:
         raise RuntimeError(f"could not parse sbatch output: {result.stdout!r}")
 
-    return SlurmJobHandle(job_id=job_id, slurm_job_id=match.group(1))
+    handle = SlurmJobHandle(job_id=job_id, slurm_job_id=match.group(1))
+    handle.submit_time = time.time()
+    return handle
 
 
 def wait_for_completion(handle: SlurmJobHandle, cfg: dict) -> None:
@@ -95,6 +99,17 @@ def wait_for_completion(handle: SlurmJobHandle, cfg: dict) -> None:
     handle.node = lines[0].strip() if lines else None
 
 
+def _parse_sacct_time(raw: str) -> float | None:
+    """sacct Start/End timestamp (e.g. 2026-07-10T16:52:35, cluster-local tz)
+    -> unix. sacct prints "Unknown"/"None" for jobs that never started."""
+    if not raw or raw in ("Unknown", "None"):
+        return None
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
 def record_result(
     handle: SlurmJobHandle,
     job_id: str,
@@ -104,12 +119,16 @@ def record_result(
     rep: int,
     cfg: dict,
 ) -> dict:
+    # Elapsed (pure runtime, no queue wait) is the makespan — the same
+    # definition the K8s backend now uses via container terminated times, so
+    # H3/H4 compare like with like. Start/End land in start_ts/end_ts so
+    # analysis can verify batch members actually overlapped on the node.
     result = subprocess.run(
         [
             "sacct",
             "-j",
             handle.slurm_job_id,
-            "--format=Elapsed",
+            "--format=Elapsed,Start,End",
             "--noheader",
             "--parsable2",
         ],
@@ -117,7 +136,15 @@ def record_result(
         text=True,
     )
     lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
-    makespan_s = _parse_elapsed(lines[0]) if lines else float("nan")
+    makespan_s = float("nan")
+    start_ts: float | None = None
+    end_ts: float | None = None
+    if lines:
+        elapsed_raw, _, times = lines[0].partition("|")
+        start_raw, _, end_raw = times.partition("|")
+        makespan_s = _parse_elapsed(elapsed_raw)
+        start_ts = _parse_sacct_time(start_raw)
+        end_ts = _parse_sacct_time(end_raw)
 
     metrics = fetch_job_metrics(cfg["redis"]["addr"], job_id, handle.node or "unknown")
 
@@ -128,6 +155,10 @@ def record_result(
         "rep": rep,
         "node": handle.node,
         "makespan_s": makespan_s,
+        "makespan_source": "sacct",
+        "submit_ts": handle.submit_time,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
         **metrics,
     }
 
