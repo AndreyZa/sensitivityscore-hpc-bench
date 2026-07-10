@@ -73,8 +73,14 @@ def wait_for_completion(handle: SlurmJobHandle, cfg: dict) -> None:
             capture_output=True,
             text=True,
         )
-        state = result.stdout.strip()
-        if state == "":  # no longer in the queue -> finished (completed or failed)
+        # A non-zero exit ("Invalid job id specified" on some Slurm versions
+        # once the job leaves the queue) and an empty listing both mean "no
+        # longer queued/running" — either way the REAL outcome is decided by
+        # sacct's State below, not here. Previously an empty stdout (including
+        # from a failed squeue call, whose returncode was never checked) was
+        # treated as success, so FAILED/OOM/TIMEOUT jobs entered results.parquet
+        # with a perfectly valid-looking makespan.
+        if result.returncode != 0 or result.stdout.strip() == "":
             break
         time.sleep(poll_interval)
     else:
@@ -82,21 +88,35 @@ def wait_for_completion(handle: SlurmJobHandle, cfg: dict) -> None:
             f"Slurm job {handle.slurm_job_id} did not complete within {timeout}s"
         )
 
-    # Resolve the node it ran on, for the Redis job:metrics lookup.
+    # Final state + node in one sacct call: fail loudly unless COMPLETED, and
+    # resolve the node it ran on for the Redis job:metrics lookup.
     result = subprocess.run(
         [
             "sacct",
             "-j",
             handle.slurm_job_id,
-            "--format=NodeList",
+            "--format=State,NodeList",
             "--noheader",
             "--parsable2",
         ],
+        check=True,
         capture_output=True,
         text=True,
     )
     lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
-    handle.node = lines[0].strip() if lines else None
+    if not lines:
+        raise RuntimeError(
+            f"Slurm job {handle.slurm_job_id} left the queue but sacct has no "
+            "record of it — cannot confirm it completed"
+        )
+    state, _, node = lines[0].partition("|")
+    state = state.strip()
+    if state != "COMPLETED":  # e.g. FAILED, OOM, TIMEOUT, "CANCELLED by ..."
+        raise RuntimeError(
+            f"Slurm job {handle.slurm_job_id} finished in state {state!r}, "
+            "not COMPLETED"
+        )
+    handle.node = node.strip() or None
 
 
 def _parse_sacct_time(raw: str) -> float | None:
