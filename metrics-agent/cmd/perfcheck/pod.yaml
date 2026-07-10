@@ -1,0 +1,25 @@
+# Разовый под для проверки, доступны ли PMU-счётчики через perf_event_open()
+# в текущей среде — ПЕРЕД тем, как собирать и деплоить весь metrics-agent
+# DaemonSet. См. metrics-agent/cmd/perfcheck/main.go — почему это важно
+# именно для Docker Desktop (Kubernetes внутри VM, доступ к PMU может быть
+# заблокирован гипервизором).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: perfcheck
+spec:
+  restartPolicy: Never
+  containers:
+    - name: perfcheck
+      image: andreyza/perfcheck:dev
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        capabilities:
+          add: ["PERFMON"]
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "128Mi"
+        limits:
+          cpu: "1"
+          memory: "256Mi"
