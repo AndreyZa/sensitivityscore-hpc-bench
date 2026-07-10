@@ -34,6 +34,18 @@ spec:
                   fieldPath: spec.nodeName
             - name: REDIS_ADDR
               value: "redis.sensitivityscore-system.svc.cluster.local:6379"
+            - name: SAMPLE_INTERVAL_SECONDS
+              # Default (5s) makes very short jobs (harness low-s profile,
+              # makespan ~1-2s) invisible: the first tick after a pod starts
+              # only primes the baseline, so anything shorter-lived than
+              # roughly 2x the interval never gets a single real reading
+              # (confirmed: 180/180 low-s rows came back with no metrics in
+              # the first full-matrix run). 1s is a real trade-off — more
+              # kube-apiserver list calls per node — but is fine at this
+              # cluster's scale; revisit for a partner stand with many nodes
+              # and long-running real HPC jobs, where the default may be more
+              # appropriate.
+              value: "1"
           volumeMounts:
             - name: cgroup
               mountPath: /sys/fs/cgroup

@@ -21,14 +21,15 @@ import (
 )
 
 const (
-	annoJobID      = "scheduling.phd/job-id"
-	sampleInterval = 5 * time.Second
-	redisTTL       = 30 * time.Second
+	annoJobID             = "scheduling.phd/job-id"
+	defaultSampleInterval = 5 * time.Second
+	redisTTL              = 30 * time.Second
 )
 
 func main() {
 	nodeName := mustEnv("NODE_NAME") // injected via fieldRef: spec.nodeName, see deploy/daemonset.yaml
 	redisAddr := envOr("REDIS_ADDR", "redis.sensitivityscore-system.svc.cluster.local:6379")
+	sampleInterval := sampleIntervalFromEnv()
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -262,12 +263,20 @@ func envOr(key, def string) string {
 	return def
 }
 
-func init() {
-	// fail fast on obviously-misconfigured sample intervals if ever made
-	// configurable via env in the future
-	if v := os.Getenv("SAMPLE_INTERVAL_SECONDS"); v != "" {
-		if _, err := strconv.Atoi(v); err != nil {
-			log.Fatalf("invalid SAMPLE_INTERVAL_SECONDS: %v", err)
-		}
+// sampleIntervalFromEnv lets SAMPLE_INTERVAL_SECONDS override
+// defaultSampleInterval — needed because short-lived pods (e.g. the harness's
+// low-s profile, makespan ~1-2s) never get a single real sample at the
+// default 5s cadence: the first tick after a pod appears only primes the
+// baseline (see podSampler.sample), so anything shorter-lived than ~2x the
+// interval is invisible to the agent regardless of how long it actually ran.
+func sampleIntervalFromEnv() time.Duration {
+	v := os.Getenv("SAMPLE_INTERVAL_SECONDS")
+	if v == "" {
+		return defaultSampleInterval
 	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs <= 0 {
+		log.Fatalf("invalid SAMPLE_INTERVAL_SECONDS: %q", v)
+	}
+	return time.Duration(secs) * time.Second
 }
