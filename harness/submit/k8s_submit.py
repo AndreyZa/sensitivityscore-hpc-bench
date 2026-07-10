@@ -106,7 +106,10 @@ def submit_job(
         f.write(manifest)
         manifest_path = f.name
 
-    subprocess.run(["kubectl", "apply", "-f", manifest_path], check=True)
+    try:
+        subprocess.run(["kubectl", "apply", "-f", manifest_path], check=True)
+    finally:
+        Path(manifest_path).unlink(missing_ok=True)
 
     k8s_name = job_id.lower().replace("_", "-").replace(".", "-")
     handle = K8sJobHandle(job_id=job_id, k8s_name=k8s_name, namespace=namespace)
@@ -125,19 +128,45 @@ def _parse_k8s_time(raw: str) -> float | None:
 
 
 def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
+    """Polls the Job's conditions until Complete — or raises as soon as it is
+    Failed. The previous `kubectl wait --for=condition=complete` could only
+    see success: with backoffLimit=0 a failed Job never becomes Complete, so
+    every failure burned the full job_timeout (30 min by default), twice with
+    the old retry policy, before the harness moved on."""
     timeout = cfg["kubernetes"]["job_timeout_seconds"]
-    subprocess.run(
-        [
-            "kubectl",
-            "wait",
-            f"job/{handle.k8s_name}",
-            "-n",
-            handle.namespace,
-            "--for=condition=complete",
-            f"--timeout={timeout}s",
-        ],
-        check=True,
-    )
+    poll_interval = cfg["kubernetes"].get("poll_interval_seconds", 5)
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "job",
+                handle.k8s_name,
+                "-n",
+                handle.namespace,
+                "-o",
+                "jsonpath={range .status.conditions[*]}{.type}={.status} {end}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        conditions = dict(
+            pair.split("=", 1) for pair in result.stdout.split() if "=" in pair
+        )
+        if conditions.get("Complete") == "True":
+            break
+        if conditions.get("Failed") == "True":
+            raise RuntimeError(
+                f"job {handle.k8s_name} failed (conditions: {result.stdout.strip()})"
+            )
+        time.sleep(poll_interval)
+    else:
+        raise TimeoutError(
+            f"job {handle.k8s_name} did not complete within {timeout}s"
+        )
     handle.wait_end_time = time.time()
 
     # Resolve where and WHEN the pod actually ran: node for the Redis

@@ -10,11 +10,9 @@ configs:
   - C # Slurm
   - D # Slinky / slurm-bridge (overcommit=1.0 only — whole-node allocation, see §3.1)
 
-# For config A, both scheduler variants are run as separate "configs" internally
-# (A-default, A-sensitivityscore) so H1 can do a same-config A/B comparison.
-config_a_schedulers:
-  - default-scheduler
-  - sensitivityscore
+# Note: configs A and B are each expanded into <X>-default / <X>-sensitivityscore
+# variants inside run_experiment.py:expand_configs() (same-infra A/B comparison
+# for H1/H2) — this is hardcoded there, not configurable here.
 
 profiles:
   - low-s
@@ -47,6 +45,7 @@ backends:
 kubernetes:
   namespace: sensitivityscore-bench
   job_timeout_seconds: 1800
+  poll_interval_seconds: 5 # Job status poll (completion OR failure — fast fail)
 
 # Slurm connection (used by submit/slurm_submit.py) — assumes sbatch/sacct/squeue
 # are on PATH, typically run from a login node or a node with Slurm client tools.
