@@ -53,6 +53,7 @@ sys.path.insert(
 
 from profiles import make_job_id
 from submit import k8s_submit, slurm_submit
+from submit.redis_metrics import purge_job_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("run_experiment")
@@ -136,6 +137,10 @@ def run_one(
             "io_iops": float("nan"),
             "approximation": "dry-run",
         }
+
+    # Drop any leftover job:metrics keys from a previous run that crashed
+    # before reading them — job_ids repeat across runs and the keys accumulate.
+    purge_job_metrics(cfg["redis"]["addr"], job_id)
 
     try:
         handle = backend.submit_job(job_id, config, profile, overcommit, cfg)

@@ -11,6 +11,37 @@ import os
 import redis
 
 
+def _connect(redis_addr: str) -> redis.Redis:
+    """REDIS_ADDR env overrides config (see fetch_job_metrics docstring)."""
+    redis_addr = os.environ.get("REDIS_ADDR", redis_addr)
+    host, _, port = redis_addr.partition(":")
+    return redis.Redis(
+        host=host,
+        port=int(port or 6379),
+        decode_responses=True,
+        socket_connect_timeout=3,
+        socket_timeout=3,
+    )
+
+
+def purge_job_metrics(redis_addr: str, job_id: str) -> None:
+    """Deletes any leftover job:metrics:<job_id>:* keys before (re)submission.
+
+    Belt to fetch_job_metrics' export-then-delete braces: if a previous run
+    crashed between the agent writing and the harness reading, the stale key
+    would otherwise survive (no TTL) and pollute this run's accumulating sums
+    — job_ids are deterministic across runs. Never raises, same rationale as
+    fetch_job_metrics: a missing metrics pipeline must not fail the run.
+    """
+    try:
+        r = _connect(redis_addr)
+        keys = list(r.scan_iter(match=f"job:metrics:{job_id}:*"))
+        if keys:
+            r.delete(*keys)
+    except redis.exceptions.RedisError:
+        pass
+
+
 def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
     """Returns the job:metrics:<job_id>:<node> hash, or an all-NaN-ish dict with
     approximation="missing" if the agent never wrote anything for this job/node
@@ -31,8 +62,6 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
     plugin use — e.g. `export REDIS_ADDR=localhost:16379` after `kubectl
     port-forward svc/redis -n sensitivityscore-system 16379:6379`.
     """
-    redis_addr = os.environ.get("REDIS_ADDR", redis_addr)
-
     empty = {
         "llc_miss_rate": float("nan"),
         "numa_remote_ratio": float("nan"),
@@ -40,17 +69,16 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
         "io_iops": float("nan"),
     }
 
-    host, _, port = redis_addr.partition(":")
     try:
-        r = redis.Redis(
-            host=host,
-            port=int(port or 6379),
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-        )
+        r = _connect(redis_addr)
         key = f"job:metrics:{job_id}:{node}"
         fields = r.hgetall(key)
+        # Export-then-delete (the contract in metrics-agent's WriteJobMetrics
+        # docstring): job_ids are deterministic and the hash now ACCUMULATES
+        # sums, so a leftover key would silently mix a previous run's samples
+        # into a rerun — or be returned wholesale if the agent is down.
+        if fields:
+            r.delete(key)
     except redis.exceptions.RedisError:
         # Redis unreachable (connection refused, DNS not found, timeout, ...) —
         # distinct from "reachable but no data yet" (below), useful when
