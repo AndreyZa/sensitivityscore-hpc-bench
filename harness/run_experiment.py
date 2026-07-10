@@ -46,7 +46,6 @@ from pathlib import Path
 
 import pandas as pd
 import yaml
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 sys.path.insert(
     0, str(Path(__file__).parent)
@@ -80,7 +79,11 @@ def backend_for(config: str, cfg: dict) -> str:
     return cfg["backends"][base_config]
 
 
-@retry(stop=stop_after_attempt(2), wait=wait_fixed(10))
+# Delay before the single submit-phase retry — short on purpose: a member
+# resubmitted much later would no longer run concurrently with its batch.
+RESUBMIT_DELAY_SECONDS = 5
+
+
 def run_one(
     job_id: str,
     config: str,
@@ -90,6 +93,18 @@ def run_one(
     cfg: dict,
     dry_run: bool,
 ) -> dict:
+    """Submit one job, wait, record, clean up.
+
+    Retry policy (replaces the old blanket tenacity retry around the whole
+    submit/wait/record cycle): only the SUBMIT step is retried, once. A retry
+    after a wait-phase failure would rerun the job after the rest of its batch
+    already finished — measured in isolation but recorded under the batch's
+    overcommit label, a poisoned data point for H1; and re-applying a K8s Job
+    name whose first attempt already completed/failed (backoffLimit=0) doesn't
+    rerun anything, yielding a bogus near-zero makespan. A submit-phase retry
+    is safe: the job hasn't started, so after cleanup of any half-created
+    object it still runs concurrently with its batch.
+    """
     backend_name = backend_for(config, cfg)
     backend = BACKENDS[backend_name]
 
@@ -122,13 +137,26 @@ def run_one(
             "approximation": "dry-run",
         }
 
-    handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
-    backend.wait_for_completion(handle, cfg)
-    result = backend.record_result(
-        handle, job_id, config, profile, overcommit, rep, cfg
-    )
-    backend.cleanup(handle)
-    return result
+    try:
+        handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
+    except Exception as exc:  # noqa: BLE001 — one quick submit retry, see docstring
+        log.warning(
+            "submit failed for %s (%s) — cleaning up and retrying once", job_id, exc
+        )
+        backend.abort_submission(job_id, cfg)
+        time.sleep(RESUBMIT_DELAY_SECONDS)
+        handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
+
+    try:
+        backend.wait_for_completion(handle, cfg)
+        return backend.record_result(
+            handle, job_id, config, profile, overcommit, rep, cfg
+        )
+    finally:
+        # Always clean up, including on wait timeout/failure — a job left
+        # running would keep loading the node and contaminate the next plan
+        # points (the cooldown between points assumes an idle cluster).
+        backend.cleanup(handle)
 
 
 def batch_size_for(overcommit: float, cfg: dict) -> int:

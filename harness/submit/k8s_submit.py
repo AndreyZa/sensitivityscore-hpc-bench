@@ -220,8 +220,10 @@ def record_result(
 
 
 def cleanup(handle: K8sJobHandle) -> None:
-    """Delete the completed Job so repeated runs don't accumulate cluster state.
-    Called by run_experiment.py after record_result()."""
+    """Delete the Job so repeated runs don't accumulate cluster state. Called
+    by run_experiment.py in a finally block — including after a wait timeout
+    or failure, so a stuck/failed Job's pod doesn't keep loading the node
+    while the next plan points run."""
     subprocess.run(
         [
             "kubectl",
@@ -230,6 +232,25 @@ def cleanup(handle: K8sJobHandle) -> None:
             handle.k8s_name,
             "-n",
             handle.namespace,
+            "--ignore-not-found",
+        ],
+        check=False,
+    )
+
+
+def abort_submission(job_id: str, cfg: dict) -> None:
+    """Best-effort removal of whatever a failed submit_job() attempt may have
+    half-created, so run_experiment.py's single submit retry starts clean —
+    re-applying a Job name that already exists would not rerun it."""
+    k8s_name = job_id.lower().replace("_", "-").replace(".", "-")
+    subprocess.run(
+        [
+            "kubectl",
+            "delete",
+            "job",
+            k8s_name,
+            "-n",
+            cfg["kubernetes"]["namespace"],
             "--ignore-not-found",
         ],
         check=False,

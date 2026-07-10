@@ -177,6 +177,20 @@ def _parse_elapsed(elapsed: str) -> float:
 
 
 def cleanup(handle: SlurmJobHandle) -> None:
-    """No-op for Slurm — completed jobs simply age out of squeue/sacct history,
-    nothing to delete like a K8s Job object."""
+    """scancel the job if it's still in the queue. For a normally completed job
+    this is a no-op (scancel on a finished job just returns an error we
+    ignore); the case that matters is cleanup after a wait timeout — a job
+    left running would keep loading the node through the following plan
+    points. Called by run_experiment.py in a finally block."""
+    subprocess.run(
+        ["scancel", handle.slurm_job_id],
+        check=False,
+        capture_output=True,
+    )
+
+
+def abort_submission(job_id: str, cfg: dict) -> None:
+    """Nothing to clean for Slurm: a failed sbatch doesn't enqueue anything we
+    could address by our job_id (the Slurm job id is only known from sbatch's
+    stdout, which we didn't get)."""
     return
