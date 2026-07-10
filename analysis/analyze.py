@@ -25,27 +25,42 @@ from stats import compare_configs, run_all_comparisons
 
 # Config pairs tested for each hypothesis (Программа_экспериментов §6).
 HYPOTHESIS_PAIRS = {
-    "H1": ("A-sensitivityscore", "A-default"),   # SensitivityScore vs default, same infra (A)
-    "H2": ("B-sensitivityscore", "B-default"),   # same comparison, under KubeVirt overhead
-    "H3": ("A-sensitivityscore", "C"),           # SensitivityScore vs Slurm ceiling
-    "H4": ("A-sensitivityscore", "D"),           # SensitivityScore vs Slinky/slurm-bridge
+    "H1": (
+        "A-sensitivityscore",
+        "A-default",
+    ),  # SensitivityScore vs default, same infra (A)
+    "H2": (
+        "B-sensitivityscore",
+        "B-default",
+    ),  # same comparison, under KubeVirt overhead
+    "H3": ("A-sensitivityscore", "C"),  # SensitivityScore vs Slurm ceiling
+    "H4": ("A-sensitivityscore", "D"),  # SensitivityScore vs Slinky/slurm-bridge
 }
 
 
-def summarize_hypothesis(df: pd.DataFrame, name: str, config_a: str, config_b: str) -> str:
+def summarize_hypothesis(
+    df: pd.DataFrame, name: str, config_a: str, config_b: str
+) -> str:
     lines = [f"## {name}: {config_a} vs {config_b}\n"]
     any_data = False
     for profile in sorted(df["profile"].dropna().unique()):
         for overcommit in sorted(df["overcommit"].dropna().unique()):
             subset = df[(df["profile"] == profile) & (df["overcommit"] == overcommit)]
-            if config_a not in subset["config"].values or config_b not in subset["config"].values:
+            if (
+                config_a not in subset["config"].values
+                or config_b not in subset["config"].values
+            ):
                 continue
             any_data = True
             result = compare_configs(df, config_a, config_b, profile, overcommit)
             p = result["mw_p_value"]
             delta = result["cliffs_delta"]
             mag = result["cliffs_magnitude"]
-            sig = "significant (p<0.05)" if pd.notna(p) and p < 0.05 else "not significant"
+            sig = (
+                "significant (p<0.05)"
+                if pd.notna(p) and p < 0.05
+                else "not significant"
+            )
             direction = "faster" if result["mean_a"] < result["mean_b"] else "slower"
             lines.append(
                 f"- profile={profile}, overcommit={overcommit}: "
@@ -55,7 +70,9 @@ def summarize_hypothesis(df: pd.DataFrame, name: str, config_a: str, config_b: s
                 f"Cliff's delta={delta:.3f} ({mag})"
             )
     if not any_data:
-        lines.append("- no data yet for this comparison (run the missing configs first)")
+        lines.append(
+            "- no data yet for this comparison (run the missing configs first)"
+        )
     return "\n".join(lines)
 
 
@@ -77,17 +94,24 @@ def main():
     comparisons.to_csv(outdir / "comparisons.csv", index=False)
 
     # Human-readable H1-H4 summary for the advisor briefing.
-    summary_sections = [summarize_hypothesis(valid, name, a, b) for name, (a, b) in HYPOTHESIS_PAIRS.items()]
+    summary_sections = [
+        summarize_hypothesis(valid, name, a, b)
+        for name, (a, b) in HYPOTHESIS_PAIRS.items()
+    ]
     summary_md = "# Проверка гипотез H1–H4\n\n" + "\n\n".join(summary_sections) + "\n"
     (outdir / "summary.md").write_text(summary_md, encoding="utf-8")
 
     # Visualizations (§5.3) — boxplot at overcommit=2.0 (max expected divergence),
     # scatter of LLC pressure vs makespan across all data.
     if 2.0 in valid["overcommit"].unique():
-        plot_makespan_boxplot(valid, overcommit=2.0, output_path=outdir / "makespan_boxplot.png")
+        plot_makespan_boxplot(
+            valid, overcommit=2.0, output_path=outdir / "makespan_boxplot.png"
+        )
     plot_llc_vs_makespan(valid, output_path=outdir / "llc_vs_makespan.png")
 
-    print(f"done — see {outdir}/summary.md, {outdir}/comparisons.csv, and the .png plots")
+    print(
+        f"done — see {outdir}/summary.md, {outdir}/comparisons.csv, and the .png plots"
+    )
 
 
 if __name__ == "__main__":

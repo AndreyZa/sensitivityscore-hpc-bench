@@ -26,10 +26,20 @@ def mann_whitney(sample_a: np.ndarray, sample_b: np.ndarray) -> dict:
     sample_b = sample_b[~np.isnan(sample_b)]
 
     if len(sample_a) < 2 or len(sample_b) < 2:
-        return {"u_statistic": np.nan, "p_value": np.nan, "n_a": len(sample_a), "n_b": len(sample_b)}
+        return {
+            "u_statistic": np.nan,
+            "p_value": np.nan,
+            "n_a": len(sample_a),
+            "n_b": len(sample_b),
+        }
 
     u_stat, p_value = mannwhitneyu(sample_a, sample_b, alternative="two-sided")
-    return {"u_statistic": u_stat, "p_value": p_value, "n_a": len(sample_a), "n_b": len(sample_b)}
+    return {
+        "u_statistic": u_stat,
+        "p_value": p_value,
+        "n_a": len(sample_a),
+        "n_b": len(sample_b),
+    }
 
 
 def cliffs_delta(sample_a: np.ndarray, sample_b: np.ndarray) -> dict:
@@ -81,9 +91,14 @@ def coefficient_of_variation(sample: np.ndarray) -> float:
     return float(np.std(sample, ddof=1) / np.mean(sample))
 
 
-def compare_configs(df: pd.DataFrame, config_a: str, config_b: str,
-                     profile: str, overcommit: float,
-                     value_col: str = "makespan_s") -> dict:
+def compare_configs(
+    df: pd.DataFrame,
+    config_a: str,
+    config_b: str,
+    profile: str,
+    overcommit: float,
+    value_col: str = "makespan_s",
+) -> dict:
     """Runs the full §5.2 comparison (Mann-Whitney + Cliff's delta + CV for both
     sides) for one (config_a vs config_b, profile, overcommit) plan point."""
     subset = df[(df["profile"] == profile) & (df["overcommit"] == overcommit)]
@@ -101,12 +116,15 @@ def compare_configs(df: pd.DataFrame, config_a: str, config_b: str,
         "cv_b": coefficient_of_variation(sample_b),
     }
     result.update({f"mw_{k}": v for k, v in mann_whitney(sample_a, sample_b).items()})
-    result.update({f"cliffs_{k}": v for k, v in cliffs_delta(sample_a, sample_b).items()})
+    result.update(
+        {f"cliffs_{k}": v for k, v in cliffs_delta(sample_a, sample_b).items()}
+    )
     return result
 
 
-def run_all_comparisons(df: pd.DataFrame, pairs: list[tuple[str, str]],
-                         value_col: str = "makespan_s") -> pd.DataFrame:
+def run_all_comparisons(
+    df: pd.DataFrame, pairs: list[tuple[str, str]], value_col: str = "makespan_s"
+) -> pd.DataFrame:
     """Runs compare_configs for every (config_a, config_b) pair across every
     (profile, overcommit) combination present in df — the standard sweep for
     testing H1-H4."""
@@ -114,5 +132,9 @@ def run_all_comparisons(df: pd.DataFrame, pairs: list[tuple[str, str]],
     for profile in sorted(df["profile"].dropna().unique()):
         for overcommit in sorted(df["overcommit"].dropna().unique()):
             for config_a, config_b in pairs:
-                rows.append(compare_configs(df, config_a, config_b, profile, overcommit, value_col))
+                rows.append(
+                    compare_configs(
+                        df, config_a, config_b, profile, overcommit, value_col
+                    )
+                )
     return pd.DataFrame(rows)

@@ -16,8 +16,9 @@ import pandas as pd
 import seaborn as sns
 
 
-def plot_makespan_boxplot(df: pd.DataFrame, overcommit: float = 2.0,
-                           output_path: str | Path | None = None):
+def plot_makespan_boxplot(
+    df: pd.DataFrame, overcommit: float = 2.0, output_path: str | Path | None = None
+):
     """Boxplot of makespan_s by config, faceted by profile, at a fixed overcommit
     ratio (default 2.0, where interference is expected to be maximal — docs §5.3)."""
     subset = df[df["overcommit"] == overcommit]
@@ -43,7 +44,13 @@ def plot_llc_vs_makespan(df: pd.DataFrame, output_path: str | Path | None = None
     choice of LLC as an S dimension (docs §5.3)."""
     fig, ax = plt.subplots(figsize=(8, 6))
     sns.scatterplot(
-        data=df, x="llc_miss_rate", y="makespan_s", hue="profile", style="config", ax=ax, alpha=0.7
+        data=df,
+        x="llc_miss_rate",
+        y="makespan_s",
+        hue="profile",
+        style="config",
+        ax=ax,
+        alpha=0.7,
     )
     ax.set_title("LLC miss rate vs. makespan")
     ax.set_xlabel("LLC miss rate (normalized)")
@@ -61,8 +68,10 @@ def plot_cv_comparison(cv_summary: pd.DataFrame, output_path: str | Path | None 
     raw stddev, since absolute makespans differ across configs)."""
     fig, ax = plt.subplots(figsize=(10, 6))
     melted = cv_summary.melt(
-        id_vars=["profile", "overcommit"], value_vars=["cv_a", "cv_b"],
-        var_name="side", value_name="cv",
+        id_vars=["profile", "overcommit"],
+        value_vars=["cv_a", "cv_b"],
+        var_name="side",
+        value_name="cv",
     )
     melted["point"] = melted["profile"] + " / oc=" + melted["overcommit"].astype(str)
     sns.barplot(data=melted, x="point", y="cv", hue="side", ax=ax)

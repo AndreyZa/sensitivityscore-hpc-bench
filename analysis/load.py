@@ -8,8 +8,17 @@ from pathlib import Path
 import pandas as pd
 
 EXPECTED_COLUMNS = {
-    "config", "profile", "overcommit", "rep", "node", "makespan_s",
-    "llc_miss_rate", "numa_remote_ratio", "net_bw", "io_iops", "approximation",
+    "config",
+    "profile",
+    "overcommit",
+    "rep",
+    "node",
+    "makespan_s",
+    "llc_miss_rate",
+    "numa_remote_ratio",
+    "net_bw",
+    "io_iops",
+    "approximation",
 }
 
 

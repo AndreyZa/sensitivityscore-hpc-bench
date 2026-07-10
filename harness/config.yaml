@@ -22,6 +22,16 @@ profiles:
 
 overcommit_ratios: [1.0, 1.5, 2.0]
 
+# ВАЖНО: overcommit ratio переводится в РЕАЛЬНОЕ число одновременно
+# запускаемых job через node_capacity_jobs (batch_size = round(node_capacity_jobs * overcommit),
+# см. run_experiment.py:batch_size_for()). Раньше overcommit был только
+# меткой и не влиял на поведение — каждый job гонялся изолированно вне
+# зависимости от overcommit, из-за чего H1 (co-location) фактически не
+# проверялся ни разу. Подбери число под реальную capacity узлов твоего
+# стенда — дефолт (2) выбран так, чтобы 1.0/1.5/2.0 давали разное число
+# job (2/3/4) даже без точных цифр реального железа, для локальной отладки.
+node_capacity_jobs: 2
+
 repetitions: 10
 
 cooldown_seconds: 30 # pause between runs, let the node cool from the previous run
