@@ -62,22 +62,108 @@ func main() {
 
 	log.Printf("metrics-agent starting on node=%s, sampling every %s", nodeName, sampleInterval)
 
+	// Per-pod sampling state, keyed by pod UID, kept across ticks: perf
+	// counters must stay open between ticks so each tick measures the delta
+	// over a real window (sampleInterval) — see pkg/perf.CgroupLLCSampler.
+	samplers := make(map[string]*podSampler)
+
 	for range ticker.C {
-		if err := sampleOnce(ctx, clientset, writer, nodeName, synth); err != nil {
+		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers); err != nil {
 			log.Printf("sample error: %v", err)
 		}
 	}
 }
 
+// podSampler holds one pod's cross-tick sampling state: the open LLC perf
+// counters (nil in synthetic mode) and the previous io.stat reading, so both
+// llc_miss_rate and io_iops are rates over the tick window rather than an
+// instant/cumulative reading. The first tick for a pod only records baselines
+// (sample() returns ok=false).
+type podSampler struct {
+	llc    *perf.CgroupLLCSampler // nil when hardware PMU is unavailable
+	lastIO *cgroup.IOStats        // nil until the first successful io.stat read
+	lastTS time.Time
+	primed bool
+}
+
+func (ps *podSampler) close() {
+	if ps.llc != nil {
+		ps.llc.Close()
+	}
+}
+
+// sample reads this tick's counters and returns the pod's rates over the
+// window since the previous tick. syntheticLLC is only used when ps.llc is
+// nil. An error means the sampler is stale (e.g. cgroup torn down) — the
+// caller drops it and re-creates one next tick.
+func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclient.Sample, bool, error) {
+	now := time.Now()
+
+	llcRate := syntheticLLC
+	llcOK := true
+	if ps.llc != nil {
+		var err error
+		llcRate, llcOK, err = ps.llc.SampleRate()
+		if err != nil {
+			return redisclient.Sample{}, false, err
+		}
+	}
+
+	var iops float64
+	io, ioErr := cgroup.ReadIOStat(cgroupPath)
+	if ioErr != nil {
+		log.Printf("io.stat read failed for %s: %v (io_iops=0 this tick)", cgroupPath, ioErr)
+	} else {
+		if ps.lastIO != nil {
+			elapsed := now.Sub(ps.lastTS).Seconds()
+			if cur, last := io.IOPS(), ps.lastIO.IOPS(); elapsed > 0 && cur >= last {
+				iops = float64(cur-last) / elapsed
+			}
+		}
+		ps.lastIO = &io
+	}
+	ps.lastTS = now
+
+	wasPrimed := ps.primed
+	ps.primed = true
+	if !wasPrimed || !llcOK {
+		return redisclient.Sample{}, false, nil // baseline tick — no window to report yet
+	}
+
+	sample := redisclient.Sample{
+		LLCMissRate:     clamp01(llcRate),
+		NUMARemoteRatio: 0, // see perf.ReadUncoreNUMABandwidth TODO
+		NetBW:           0, // see cgroup.ReadNetStats TODO
+		IOIOPS:          iops,
+	}
+	if ps.llc == nil {
+		sample.Approximation = "synthetic-devbox"
+	}
+	return sample, true, nil
+}
+
 // sampleOnce reads PMU/cgroup counters for every pod on this node and writes both
 // the per-node aggregate (for the scheduler) and per-job history (for analysis).
 // synth is non-nil when real hardware counters are unavailable in this
-// environment (see main's startup probe) — every sample this tick is then
-// derived from it instead of perf_event_open() and tagged accordingly.
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator) error {
+// environment (see main's startup probe) — the LLC value is then derived from
+// it instead of perf_event_open() and tagged accordingly. samplers carries the
+// per-pod cross-tick state; pods that left the node are evicted (and their
+// counters closed) here.
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
+	}
+
+	seen := make(map[string]bool, len(pods))
+	for _, p := range pods {
+		seen[p.uid] = true
+	}
+	for uid, ps := range samplers {
+		if !seen[uid] {
+			ps.close()
+			delete(samplers, uid)
+		}
 	}
 
 	var syntheticLLC float64
@@ -99,25 +185,30 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 			continue
 		}
 
-		var sample redisclient.Sample
-		if synth != nil {
-			ioStats, ioErr := cgroup.ReadIOStat(cgroupPath)
-			if ioErr != nil {
-				log.Printf("io.stat read failed for %s: %v (continuing with io_iops=0)", cgroupPath, ioErr)
+		ps, exists := samplers[p.uid]
+		if !exists {
+			ps = &podSampler{}
+			if synth == nil {
+				ps.llc, err = perf.NewCgroupLLCSampler(cgroupPath)
+				if err != nil {
+					log.Printf("skip pod %s: open LLC counters: %v", p.name, err)
+					continue
+				}
 			}
-			sample = redisclient.Sample{
-				LLCMissRate:     syntheticLLC,
-				NUMARemoteRatio: 0,
-				NetBW:           0,
-				IOIOPS:          float64(ioStats.IOPS()),
-				Approximation:   "synthetic-devbox",
-			}
-		} else {
-			sample, err = sampleCgroup(cgroupPath)
-			if err != nil {
-				log.Printf("skip pod %s: sampling: %v", p.name, err)
-				continue
-			}
+			samplers[p.uid] = ps
+		}
+
+		sample, ok, err := ps.sample(cgroupPath, syntheticLLC)
+		if err != nil {
+			// Stale sampler (pod's cgroup likely torn down mid-read) — drop
+			// it; if the pod is still around, next tick re-creates it.
+			log.Printf("skip pod %s: sampling: %v", p.name, err)
+			ps.close()
+			delete(samplers, p.uid)
+			continue
+		}
+		if !ok {
+			continue // baseline tick for this pod, nothing to report yet
 		}
 
 		sampledPods++
@@ -144,55 +235,6 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 	}
 
 	return writer.WriteNodeMetrics(ctx, nodeName, nodeAgg)
-}
-
-// sampleCgroup reads the LLC PMU counters + io.stat for a single pod cgroup and
-// returns a normalized Sample. NUMA bandwidth and network bytes are left at zero
-// pending the uncore-PMU and eBPF integration points documented in
-// pkg/perf.ReadUncoreNUMABandwidth and pkg/cgroup.ReadNetStats.
-func sampleCgroup(cgroupPath string) (redisclient.Sample, error) {
-	fd, err := perf.OpenPodCgroup(cgroupPath)
-	if err != nil {
-		return redisclient.Sample{}, err
-	}
-	missCounter, err := perf.LLCMissesCounter(fd)
-	if err != nil {
-		return redisclient.Sample{}, err
-	}
-	defer missCounter.Close()
-	refCounter, err := perf.LLCReferencesCounter(fd)
-	if err != nil {
-		return redisclient.Sample{}, err
-	}
-	defer refCounter.Close()
-
-	missCounter.Enable()
-	refCounter.Enable()
-	misses, err := missCounter.Read()
-	if err != nil {
-		return redisclient.Sample{}, err
-	}
-	refs, err := refCounter.Read()
-	if err != nil {
-		return redisclient.Sample{}, err
-	}
-
-	llcMissRate := 0.0
-	if refs > 0 {
-		llcMissRate = float64(misses) / float64(refs)
-	}
-
-	ioStats, err := cgroup.ReadIOStat(cgroupPath)
-	if err != nil {
-		log.Printf("io.stat read failed for %s: %v (continuing with io_iops=0)", cgroupPath, err)
-	}
-
-	return redisclient.Sample{
-		LLCMissRate:     clamp01(llcMissRate),
-		NUMARemoteRatio: 0, // see perf.ReadUncoreNUMABandwidth TODO
-		NetBW:           0, // see cgroup.ReadNetStats TODO
-		IOIOPS:          float64(ioStats.IOPS()),
-	}, nil
 }
 
 func clamp01(v float64) float64 {

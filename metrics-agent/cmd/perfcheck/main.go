@@ -28,14 +28,15 @@ import (
 
 func main() {
 	fmt.Println("[perfcheck] opening self cgroup...")
-	cgroupFD, err := perf.OpenPodCgroup("/sys/fs/cgroup")
+	cgroupFile, err := perf.OpenPodCgroup("/sys/fs/cgroup")
 	if err != nil {
 		fmt.Printf("[perfcheck] FAILED to open cgroup: %v\n", err)
 		os.Exit(1)
 	}
+	defer cgroupFile.Close()
 
 	fmt.Println("[perfcheck] attempting to open PERF_COUNT_HW_CACHE_MISSES...")
-	counter, err := perf.LLCMissesCounter(cgroupFD)
+	counter, err := perf.LLCMissesCounter(int(cgroupFile.Fd()))
 	if err != nil {
 		fmt.Printf("[perfcheck] FAILED to open perf counter: %v\n", err)
 		fmt.Println("[perfcheck] this means perf_event_open() is not usable here —")

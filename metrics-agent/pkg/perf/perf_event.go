@@ -82,16 +82,21 @@ func (c *Counter) Disable() error { return unix.IoctlSetInt(c.fd, unix.PERF_EVEN
 func (c *Counter) Reset() error   { return unix.IoctlSetInt(c.fd, unix.PERF_EVENT_IOC_RESET, 0) }
 func (c *Counter) Close() error   { return unix.Close(c.fd) }
 
-// OpenPodCgroup opens the cgroup directory fd for a given cgroup v2 path, ready to
-// pass into OpenCgroupCounter. Path resolution (pod UID -> cgroup path under
-// /sys/fs/cgroup/kubepods.slice/...) is the caller's responsibility — it differs
-// between cgroup driver configs (systemd vs cgroupfs), see cgroup package.
-func OpenPodCgroup(cgroupPath string) (int, error) {
+// OpenPodCgroup opens the cgroup directory for a given cgroup v2 path; pass
+// int(f.Fd()) into OpenCgroupCounter. Path resolution (pod UID -> cgroup path
+// under /sys/fs/cgroup/kubepods.slice/...) is the caller's responsibility — it
+// differs between cgroup driver configs (systemd vs cgroupfs), see cgroup package.
+//
+// Returns the *os.File rather than a raw fd: the caller must keep the File
+// alive (and Close it) for as long as any counter opened against it exists —
+// returning only the int let the os.File finalizer close the fd under GC
+// while counters still referenced it.
+func OpenPodCgroup(cgroupPath string) (*os.File, error) {
 	f, err := os.Open(cgroupPath)
 	if err != nil {
-		return -1, fmt.Errorf("open cgroup path %s: %w", cgroupPath, err)
+		return nil, fmt.Errorf("open cgroup path %s: %w", cgroupPath, err)
 	}
-	return int(f.Fd()), nil
+	return f, nil
 }
 
 // ProbeHardwareCounters mirrors cmd/perfcheck's check — opening an actual
@@ -106,11 +111,12 @@ func OpenPodCgroup(cgroupPath string) (int, error) {
 // faking syscall success without real PMU passthrough, and a counter that
 // never counts is as useless to the agent as one that fails to open.
 func ProbeHardwareCounters(cgroupPath string) (bool, error) {
-	cgroupFD, err := OpenPodCgroup(cgroupPath)
+	cgroupFile, err := OpenPodCgroup(cgroupPath)
 	if err != nil {
 		return false, fmt.Errorf("open cgroup %s: %w", cgroupPath, err)
 	}
-	counter, err := LLCMissesCounter(cgroupFD)
+	defer cgroupFile.Close()
+	counter, err := LLCMissesCounter(int(cgroupFile.Fd()))
 	if err != nil {
 		return false, err
 	}
