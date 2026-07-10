@@ -77,7 +77,7 @@ python run_experiment.py --dry-run
 ```
 config | profile | overcommit | rep | node | makespan_s | makespan_source |
 submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
-io_iops | approximation | batch_size | batch_index
+io_iops | io_pressure | approximation | batch_size | batch_index
 ```
 
 - `makespan_s` — чистое время исполнения, измеренное самим кластером:
@@ -92,6 +92,13 @@ io_iops | approximation | batch_size | batch_index
 - Метрики (`llc_miss_rate` и т.д.) — средние за жизнь job: агент
   накапливает суммы в Redis, харнесс делит на число сэмплов и удаляет ключ
   после чтения (см. `submit/redis_metrics.py`).
+- IO-измерение раздвоено: `io_pressure` — PSI-доля времени (cgroup v2
+  `io.pressure`, строка `some`), когда задачи пода стояли в ожидании IO,
+  нормирована ядром в [0,1] — именно её планировщик читает как IO-давление;
+  `io_iops` — сырая активность (ops/с), оставлена для анализа, в score не
+  участвует (у неё нет честной шкалы [0,1] без калибровки max-IOPS
+  устройства). На ядрах без PSI `io_pressure` будет 0 (агент предупредит в
+  логе один раз).
 
 Пишется инкрементально после каждого прогона — падение харнесса на середине
 матрицы не теряет уже выполненные измерения. `--dry-run` пишет в отдельный

@@ -76,16 +76,22 @@ func main() {
 }
 
 // podSampler holds one pod's cross-tick sampling state: the open LLC perf
-// counters (nil in synthetic mode) and the previous io.stat reading, so both
-// llc_miss_rate and io_iops are rates over the tick window rather than an
-// instant/cumulative reading. The first tick for a pod only records baselines
-// (sample() returns ok=false).
+// counters (nil in synthetic mode) and the previous io.stat/io.pressure
+// readings, so llc_miss_rate, io_iops and io_pressure are all rates/shares
+// over the tick window rather than an instant/cumulative reading. The first
+// tick for a pod only records baselines (sample() returns ok=false).
 type podSampler struct {
-	llc    *perf.CgroupLLCSampler // nil when hardware PMU is unavailable
-	lastIO *cgroup.IOStats        // nil until the first successful io.stat read
-	lastTS time.Time
-	primed bool
+	llc     *perf.CgroupLLCSampler // nil when hardware PMU is unavailable
+	lastIO  *cgroup.IOStats        // nil until the first successful io.stat read
+	lastPSI *cgroup.IOPressureStat // nil until the first successful io.pressure read
+	lastTS  time.Time
+	primed  bool
 }
+
+// psiUnavailableWarned makes the "PSI disabled in this kernel" warning fire
+// once per process instead of once per pod per tick — like the PMU probe,
+// this is an environment property, not a per-pod condition.
+var psiUnavailableWarned bool
 
 func (ps *podSampler) close() {
 	if ps.llc != nil {
@@ -123,6 +129,31 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 		}
 		ps.lastIO = &io
 	}
+
+	// IO pressure (PSI): share of the window at least one task in the pod's
+	// cgroup was stalled on IO — the [0,1] IO dimension of the PressureVector
+	// (raw io_iops stays as an analysis-side activity metric; it has no
+	// honest [0,1] scale without a per-device max-IOPS calibration).
+	var ioPressure float64
+	psi, psiErr := cgroup.ReadIOPressure(cgroupPath)
+	switch {
+	case os.IsNotExist(psiErr):
+		if !psiUnavailableWarned {
+			log.Printf("WARNING: %s/io.pressure missing — PSI disabled in this kernel; "+
+				"io_pressure will stay 0 (IO dimension effectively off)", cgroupPath)
+			psiUnavailableWarned = true
+		}
+	case psiErr != nil:
+		log.Printf("io.pressure read failed for %s: %v (io_pressure=0 this tick)", cgroupPath, psiErr)
+	default:
+		if ps.lastPSI != nil {
+			elapsedUS := float64(now.Sub(ps.lastTS).Microseconds())
+			if cur, last := psi.SomeTotalUS, ps.lastPSI.SomeTotalUS; elapsedUS > 0 && cur >= last {
+				ioPressure = float64(cur-last) / elapsedUS
+			}
+		}
+		ps.lastPSI = &psi
+	}
 	ps.lastTS = now
 
 	wasPrimed := ps.primed
@@ -136,6 +167,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 		NUMARemoteRatio: 0, // see perf.ReadUncoreNUMABandwidth TODO
 		NetBW:           0, // see cgroup.ReadNetStats TODO
 		IOIOPS:          iops,
+		IOPressure:      clamp01(ioPressure),
 	}
 	if ps.llc == nil {
 		sample.Approximation = "synthetic-devbox"
@@ -217,6 +249,7 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		nodeAgg.NUMARemoteRatio += sample.NUMARemoteRatio
 		nodeAgg.NetBW += sample.NetBW
 		nodeAgg.IOIOPS += sample.IOIOPS
+		nodeAgg.IOPressure += sample.IOPressure
 
 		if jobID, ok := p.annotations[annoJobID]; ok {
 			if err := writer.WriteJobMetrics(ctx, jobID, nodeName, sample); err != nil {
@@ -230,6 +263,7 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		nodeAgg.NUMARemoteRatio /= float64(sampledPods)
 		nodeAgg.NetBW /= float64(sampledPods)
 		nodeAgg.IOIOPS /= float64(sampledPods)
+		nodeAgg.IOPressure /= float64(sampledPods)
 	}
 	if synth != nil {
 		nodeAgg.Approximation = "synthetic-devbox"

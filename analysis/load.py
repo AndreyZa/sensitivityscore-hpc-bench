@@ -22,6 +22,7 @@ EXPECTED_COLUMNS = {
     "numa_remote_ratio",
     "net_bw",
     "io_iops",
+    "io_pressure",
     "approximation",
 }
 

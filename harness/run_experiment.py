@@ -9,7 +9,7 @@ see below):
 
     config | profile | overcommit | rep | node | makespan_s | makespan_source |
     submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
-    io_iops | approximation | batch_size | batch_index
+    io_iops | io_pressure | approximation | batch_size | batch_index
 
 makespan_s is the job's pure runtime measured by the cluster itself — pod
 container terminated startedAt->finishedAt for K8s backends, sacct Elapsed for
@@ -135,6 +135,7 @@ def run_one(
             "numa_remote_ratio": float("nan"),
             "net_bw": float("nan"),
             "io_iops": float("nan"),
+            "io_pressure": float("nan"),
             "approximation": "dry-run",
         }
 
@@ -241,6 +242,7 @@ def run_batch(
                         "numa_remote_ratio": float("nan"),
                         "net_bw": float("nan"),
                         "io_iops": float("nan"),
+                        "io_pressure": float("nan"),
                         "approximation": f"error:{exc}",
                         "batch_size": size,
                         "batch_index": batch_index,
@@ -337,6 +339,7 @@ def main():
                     "numa_remote_ratio": float("nan"),
                     "net_bw": float("nan"),
                     "io_iops": float("nan"),
+                    "io_pressure": float("nan"),
                     "approximation": f"error:{exc}",
                     "batch_size": None,
                     "batch_index": None,

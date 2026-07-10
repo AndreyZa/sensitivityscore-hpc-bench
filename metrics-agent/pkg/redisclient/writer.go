@@ -15,8 +15,9 @@ type Sample struct {
 	LLCMissRate     float64
 	NUMARemoteRatio float64
 	NetBW           float64
-	IOIOPS          float64
-	Approximation   string // "" | "host-side", see docs §3.3
+	IOIOPS          float64 // raw ops/s over the tick window — analysis-side activity metric
+	IOPressure      float64 // PSI io.pressure "some" share of the window, [0,1] — the scheduler's IO dimension
+	Approximation   string  // "" | "host-side", see docs §3.3
 }
 
 type Writer struct {
@@ -67,6 +68,7 @@ func (w *Writer) WriteJobMetrics(ctx context.Context, jobID, nodeName string, s 
 	pipe.HIncrByFloat(ctx, key, "numa_remote_ratio_sum", s.NUMARemoteRatio)
 	pipe.HIncrByFloat(ctx, key, "net_bw_sum", s.NetBW)
 	pipe.HIncrByFloat(ctx, key, "io_iops_sum", s.IOIOPS)
+	pipe.HIncrByFloat(ctx, key, "io_pressure_sum", s.IOPressure)
 	pipe.HIncrBy(ctx, key, "samples", 1)
 	pipe.HSet(ctx, key, "ts", time.Now().Unix())
 	if s.Approximation != "" {
@@ -84,6 +86,7 @@ func sampleToFields(s Sample) map[string]any {
 		"numa_remote_ratio": s.NUMARemoteRatio,
 		"net_bw":            s.NetBW,
 		"io_iops":           s.IOIOPS,
+		"io_pressure":       s.IOPressure,
 		"ts":                time.Now().Unix(),
 	}
 	if s.Approximation != "" {
