@@ -1,8 +1,8 @@
 # Не Helm-чарт, а прямой манифест для быстрой локальной отладки — де-шаблонизированная
 # версия manifests/install/charts/as-a-second-scheduler/templates/deployment.yaml
-# из репозитория kubernetes-sigs/scheduler-plugins, плюс добавленный
-# volumeMount для /etc/sensitivity/ (node-metrics.json + weights.json, см.
-# sensitivity-configmap.yaml).
+# из репозитория kubernetes-sigs/scheduler-plugins, плюс volumeMount для
+# /etc/sensitivity/ (weights.json, см. sensitivity-configmap.yaml — метрики
+# нод плагин читает из Redis через REDIS_ADDR, не из ConfigMap).
 #
 # Образ плагина СОБИРАЕТСЯ В ДРУГОМ РЕПОЗИТОРИИ (форк scheduler-plugins,
 # `make -f sensitivityscore.mk ss-image`) — здесь только деплой готового
@@ -39,6 +39,9 @@ spec:
             - /bin/kube-scheduler
           args:
             - --config=/etc/kubernetes/scheduler-config.yaml
+          env:
+            - name: REDIS_ADDR
+              value: "redis.sensitivityscore-system.svc.cluster.local:6379"
           livenessProbe:
             httpGet:
               path: /healthz
