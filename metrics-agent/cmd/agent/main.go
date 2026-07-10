@@ -46,10 +46,24 @@ func main() {
 	ticker := time.NewTicker(sampleInterval)
 	defer ticker.Stop()
 
+	// Local-dev fallback (see pkg/perf/synthetic.go): WSL2/Docker Desktop don't
+	// expose a vPMU, so perf_event_open() fails with EINVAL regardless of
+	// capabilities/paranoid sysctl. Probe once at startup rather than failing
+	// per-pod every tick, and tag every sample so this is never mistaken for
+	// real config-A measurements.
+	hwPMUAvailable, probeErr := perf.ProbeHardwareCounters("/sys/fs/cgroup")
+	var synth *perf.SyntheticEstimator
+	if !hwPMUAvailable {
+		log.Printf("WARNING: hardware PMU counters unavailable (%v) — falling back to synthetic "+
+			"LLC values (docs §3.3-style approximation, tag=synthetic-devbox) for local Redis-pipeline "+
+			"development only; NOT valid for dissertation measurements", probeErr)
+		synth = &perf.SyntheticEstimator{}
+	}
+
 	log.Printf("metrics-agent starting on node=%s, sampling every %s", nodeName, sampleInterval)
 
 	for range ticker.C {
-		if err := sampleOnce(ctx, clientset, writer, nodeName); err != nil {
+		if err := sampleOnce(ctx, clientset, writer, nodeName, synth); err != nil {
 			log.Printf("sample error: %v", err)
 		}
 	}
@@ -57,10 +71,22 @@ func main() {
 
 // sampleOnce reads PMU/cgroup counters for every pod on this node and writes both
 // the per-node aggregate (for the scheduler) and per-job history (for analysis).
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string) error {
+// synth is non-nil when real hardware counters are unavailable in this
+// environment (see main's startup probe) — every sample this tick is then
+// derived from it instead of perf_event_open() and tagged accordingly.
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
+	}
+
+	var syntheticLLC float64
+	if synth != nil {
+		syntheticLLC, err = synth.NextRatio()
+		if err != nil {
+			log.Printf("synthetic estimator: %v (using 0)", err)
+			syntheticLLC = 0
+		}
 	}
 
 	var nodeAgg redisclient.Sample
@@ -73,10 +99,25 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 			continue
 		}
 
-		sample, err := sampleCgroup(cgroupPath)
-		if err != nil {
-			log.Printf("skip pod %s: sampling: %v", p.name, err)
-			continue
+		var sample redisclient.Sample
+		if synth != nil {
+			ioStats, ioErr := cgroup.ReadIOStat(cgroupPath)
+			if ioErr != nil {
+				log.Printf("io.stat read failed for %s: %v (continuing with io_iops=0)", cgroupPath, ioErr)
+			}
+			sample = redisclient.Sample{
+				LLCMissRate:     syntheticLLC,
+				NUMARemoteRatio: 0,
+				NetBW:           0,
+				IOIOPS:          float64(ioStats.IOPS()),
+				Approximation:   "synthetic-devbox",
+			}
+		} else {
+			sample, err = sampleCgroup(cgroupPath)
+			if err != nil {
+				log.Printf("skip pod %s: sampling: %v", p.name, err)
+				continue
+			}
 		}
 
 		sampledPods++
@@ -97,6 +138,9 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		nodeAgg.NUMARemoteRatio /= float64(sampledPods)
 		nodeAgg.NetBW /= float64(sampledPods)
 		nodeAgg.IOIOPS /= float64(sampledPods)
+	}
+	if synth != nil {
+		nodeAgg.Approximation = "synthetic-devbox"
 	}
 
 	return writer.WriteNodeMetrics(ctx, nodeName, nodeAgg)

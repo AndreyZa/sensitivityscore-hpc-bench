@@ -9,6 +9,7 @@ package perf
 import (
 	"fmt"
 	"os"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -91,6 +92,50 @@ func OpenPodCgroup(cgroupPath string) (int, error) {
 		return -1, fmt.Errorf("open cgroup path %s: %w", cgroupPath, err)
 	}
 	return int(f.Fd()), nil
+}
+
+// ProbeHardwareCounters mirrors cmd/perfcheck's check — opening an actual
+// PERF_FLAG_PID_CGROUP-scoped LLC-misses counter against cgroupPath — rather
+// than a plain per-process open. A plain, non-cgroup-scoped open silently
+// succeeds on WSL2/Docker Desktop even though the cgroup-scoped mode
+// sampleCgroup actually depends on fails there with EINVAL, so testing
+// anything less than the real code path gives a false positive.
+//
+// It also treats "opened fine but read exactly zero after real memory
+// activity" as unavailable: cmd/perfcheck documents this as the hypervisor
+// faking syscall success without real PMU passthrough, and a counter that
+// never counts is as useless to the agent as one that fails to open.
+func ProbeHardwareCounters(cgroupPath string) (bool, error) {
+	cgroupFD, err := OpenPodCgroup(cgroupPath)
+	if err != nil {
+		return false, fmt.Errorf("open cgroup %s: %w", cgroupPath, err)
+	}
+	counter, err := LLCMissesCounter(cgroupFD)
+	if err != nil {
+		return false, err
+	}
+	defer counter.Close()
+
+	if err := counter.Enable(); err != nil {
+		return false, fmt.Errorf("enable probe counter: %w", err)
+	}
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	buf := make([]byte, 64*1024*1024) // forces real cache traffic, see cmd/perfcheck/main.go
+	for time.Now().Before(deadline) {
+		for i := range buf {
+			buf[i]++
+		}
+	}
+
+	misses, err := counter.Read()
+	if err != nil {
+		return false, fmt.Errorf("read probe counter: %w", err)
+	}
+	if misses == 0 {
+		return false, fmt.Errorf("counter opened but read exactly zero after real memory activity (likely a hypervisor faking the syscall — see cmd/perfcheck)")
+	}
+	return true, nil
 }
 
 // ReadUncoreNUMABandwidth is the integration point for NUMA-bandwidth metrics via

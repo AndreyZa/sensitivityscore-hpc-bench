@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
 )
+
+// cgroupFSRoot is the base of the cgroup v2 mount as seen inside the agent
+// container (see daemonset.yaml's hostPath mount of /sys/fs/cgroup).
+const cgroupFSRoot = "/sys/fs/cgroup"
 
 // localPod is the trimmed-down view of a v1.Pod this agent actually needs.
 type localPod struct {
@@ -44,29 +49,63 @@ func listLocalPods(ctx context.Context, clientset *kubernetes.Clientset, nodeNam
 	return out, nil
 }
 
+// kubepodsUnitNames returns the systemd unit names (not full paths) for a
+// pod's qos-level slice ("" for Guaranteed, which has no qos segment) and its
+// own pod-level slice, e.g. "kubepods-burstable.slice" /
+// "kubepods-burstable-pod<uid>.slice". Guaranteed pods nest directly under
+// kubepods.slice with no qos segment; Burstable/BestEffort pods embed the qos
+// class in both the parent slice name and their own slice name.
+func kubepodsUnitNames(qos v1.PodQOSClass, uid string) (qosSlice, podSlice string) {
+	u := dashUID(uid)
+	switch qos {
+	case v1.PodQOSBurstable:
+		return "kubepods-burstable.slice", fmt.Sprintf("kubepods-burstable-pod%s.slice", u)
+	case v1.PodQOSGuaranteed:
+		return "", fmt.Sprintf("kubepods-pod%s.slice", u)
+	default: // BestEffort
+		return "kubepods-besteffort.slice", fmt.Sprintf("kubepods-besteffort-pod%s.slice", u)
+	}
+}
+
 // resolvePodCgroupPath maps a pod UID to its cgroup v2 directory. The path shape
 // depends on the cgroup driver (systemd vs cgroupfs) and QoS class — this
 // implements the systemd-driver layout, which is the default for kubelet since
-// 1.22+. Cross-check against the actual stand's kubelet config
-// (--cgroup-driver) before relying on this in config A/B (docs §3.1, §3.3).
+// 1.22+.
+//
+// It tries two layouts because this varies per stand/cluster (docs §3.1,
+// §3.3 — cross-check against the actual kubelet --cgroup-driver config):
+//   - classic: kubelet runs directly under system.slice, so kubepods.slice is
+//     a top-level unit (/sys/fs/cgroup/kubepods.slice/...).
+//   - nested: kubelet itself runs inside its own kubelet.slice (seen on this
+//     Docker Desktop/kind-based local cluster) — systemd then nests the whole
+//     kubepods hierarchy one level deeper and renames every descendant unit
+//     with a "kubelet-" prefix (/sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/...).
 func resolvePodCgroupPath(p localPod) (string, error) {
 	if p.uid == "" {
 		return "", fmt.Errorf("pod %s has no UID", p.name)
 	}
 
-	var qosSegment string
-	switch p.qosClass {
-	case v1.PodQOSGuaranteed:
-		qosSegment = ""
-	case v1.PodQOSBurstable:
-		qosSegment = "kubepods-burstable.slice/"
-	default: // BestEffort
-		qosSegment = "kubepods-besteffort.slice/"
+	qosSlice, podSlice := kubepodsUnitNames(p.qosClass, p.uid)
+
+	classic := cgroupFSRoot + "/kubepods.slice"
+	if qosSlice != "" {
+		classic += "/" + qosSlice
+	}
+	classic += "/" + podSlice
+	if _, err := os.Stat(classic); err == nil {
+		return classic, nil
 	}
 
-	podSlice := fmt.Sprintf("kubepods-pod%s.slice", dashUID(p.uid))
-	path := fmt.Sprintf("/sys/fs/cgroup/kubepods.slice/%s%s", qosSegment, podSlice)
-	return path, nil
+	nested := cgroupFSRoot + "/kubelet.slice/kubelet-kubepods.slice"
+	if qosSlice != "" {
+		nested += "/kubelet-" + qosSlice
+	}
+	nested += "/kubelet-" + podSlice
+	if _, err := os.Stat(nested); err == nil {
+		return nested, nil
+	}
+
+	return "", fmt.Errorf("cgroup not found for pod %s (tried %s and %s)", p.name, classic, nested)
 }
 
 // dashUID converts a UUID's dashes to underscores as systemd's unit-name escaping
