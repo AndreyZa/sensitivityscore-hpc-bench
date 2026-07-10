@@ -50,9 +50,12 @@ def submit_job(
         f.write(script)
         script_path = f.name
 
-    result = subprocess.run(
-        ["sbatch", script_path], check=True, capture_output=True, text=True
-    )
+    try:
+        result = subprocess.run(
+            ["sbatch", script_path], check=True, capture_output=True, text=True
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
     match = _SBATCH_ID_RE.search(result.stdout)
     if not match:
         raise RuntimeError(f"could not parse sbatch output: {result.stdout!r}")

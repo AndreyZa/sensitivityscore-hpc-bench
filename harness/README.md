@@ -72,14 +72,31 @@ python run_experiment.py --dry-run
 
 ## Результат
 
-`results/results.parquet` со схемой из §5.1:
+`results/results.parquet` со схемой из §5.1 (расширенной):
 
 ```
-config | profile | overcommit | rep | node | makespan_s | llc_miss_rate | numa_remote_ratio | net_bw | io_iops | approximation
+config | profile | overcommit | rep | node | makespan_s | makespan_source |
+submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
+io_iops | approximation | batch_size | batch_index
 ```
+
+- `makespan_s` — чистое время исполнения, измеренное самим кластером:
+  для K8s-бэкендов это окно `startedAt→finishedAt` терминированного
+  контейнера, для Slurm — `sacct Elapsed`. Оба исключают очередь/пулл
+  образа/старт пода, поэтому K8s- и Slurm-конфигурации сравнимы напрямую
+  (H3/H4). `makespan_source` = `container` | `sacct` | `wallclock`
+  (fallback на часы харнесса, если кластер не отдал времена — такие строки
+  стоит проверять отдельно).
+- `submit_ts`/`start_ts`/`end_ts` — для проверки, что члены батча
+  действительно перекрывались по времени на узле (реальный co-location).
+- Метрики (`llc_miss_rate` и т.д.) — средние за жизнь job: агент
+  накапливает суммы в Redis, харнесс делит на число сэмплов и удаляет ключ
+  после чтения (см. `submit/redis_metrics.py`).
 
 Пишется инкрементально после каждого прогона — падение харнесса на середине
-матрицы не теряет уже выполненные измерения. Дальше — `../analysis/`.
+матрицы не теряет уже выполненные измерения. `--dry-run` пишет в отдельный
+файл `results/dry-run-<results_file>` и не трогает боевые результаты.
+Дальше — `../analysis/`.
 
 ## Особенности реализации относительно плана
 

@@ -38,8 +38,8 @@ PROFILES: dict[str, ProfileSpec] = {
     ),
     "high-s": ProfileSpec(
         env={
-            "G4_THREADS": "8",  # = physical cores per NUMA domain on the target node;
-            # override per-stand via OVERRIDE_G4_THREADS env before running the harness
+            "G4_THREADS": "8",  # = physical cores per NUMA domain on the target
+            # node — adjust here per stand (there is no env override)
             "PHYSICS_LIST": "FTFP_BERT_HP",
             "N_PRIMARIES": "1000000",
             "OUTPUT_MODE": "ntuple",

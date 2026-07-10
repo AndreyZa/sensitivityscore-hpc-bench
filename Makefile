@@ -167,8 +167,11 @@ perfcheck-logs: ## Посмотреть результат (после того,
 perfcheck-clean: ## Убрать под perfcheck
 	$(KUBECTL) delete pod perfcheck --ignore-not-found	
 
+# Образы НЕ собираются здесь: рабочий цикл — build + push в Docker Hub
+# ($(REGISTRY)), кластер пуллит их сам (imagePullPolicy: Always). См.
+# image-workload-push / scheduler-plugin-image / image-metrics-agent.
 .PHONY: setup-cluster
-setup-cluster: bootstrap images kind-load scheduler-deploy deploy-metrics-agent ## Полная подготовка кластера с нуля (kind должен быть уже поднят)
+setup-cluster: bootstrap scheduler-deploy deploy-metrics-agent ## Подготовка кластера: namespace+Redis, планировщик, агент (образы уже в Docker Hub)
 
 # ---------------------------------------------------------------------------
 # Отладка планировщика: логи, статус, правка метрик/весов "на лету"
