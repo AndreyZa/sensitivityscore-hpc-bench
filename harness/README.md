@@ -20,6 +20,24 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Redis при локальном запуске (вне кластера)
+
+`config.yaml`'s `redis.addr` — это in-cluster DNS-имя
+(`redis.sensitivityscore-system.svc.cluster.local`), которое видно из подов, но
+НЕ резолвится с хоста, откуда обычно запускается сам харнесс. Первый реальный
+пилотный прогон именно так и упал: во всех строках результата
+`approximation=no-agent`, хотя metrics-agent исправно писал каждый
+`job:metrics:*` ключ — просто харнесс не мог достучаться до Redis. Перед
+запуском:
+
+```bash
+kubectl -n sensitivityscore-system port-forward svc/redis 16379:6379 &
+export REDIS_ADDR=localhost:16379
+```
+
+`REDIS_ADDR` перекрывает `config.yaml` (см. `submit/redis_metrics.py`) — тот же
+env var, что уже использует metrics-agent и scheduler-плагин.
+
 ## Пилотный прогон (шаг 9 чек-листа плана)
 
 Перед полной матрицей — 1 точка плана (`high-s`, `overcommit=2.0`), 3 повтора,

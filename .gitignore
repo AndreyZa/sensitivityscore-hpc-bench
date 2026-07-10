@@ -17,6 +17,7 @@ venv/
 # --- Experiment outputs (results are data, not code — keep the repo light) ---
 harness/results/*.parquet
 harness/results/*.out
+harness/*.log
 analysis/report/
 
 # --- OS / editor ---
