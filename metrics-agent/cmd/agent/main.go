@@ -76,14 +76,16 @@ func main() {
 }
 
 // podSampler holds one pod's cross-tick sampling state: the open LLC perf
-// counters (nil in synthetic mode) and the previous io.stat/io.pressure
-// readings, so llc_miss_rate, io_iops and io_pressure are all rates/shares
-// over the tick window rather than an instant/cumulative reading. The first
-// tick for a pod only records baselines (sample() returns ok=false).
+// counters (nil in synthetic mode) and the previous io.stat/io.pressure/net.dev
+// readings, so llc_miss_rate, io_iops, io_pressure and net_bw are all
+// rates/shares over the tick window rather than an instant/cumulative
+// reading. The first tick for a pod only records baselines (sample() returns
+// ok=false).
 type podSampler struct {
 	llc     *perf.CgroupLLCSampler // nil when hardware PMU is unavailable
 	lastIO  *cgroup.IOStats        // nil until the first successful io.stat read
 	lastPSI *cgroup.IOPressureStat // nil until the first successful io.pressure read
+	lastNet *cgroup.NetStats       // nil until the first successful net.dev read
 	lastTS  time.Time
 	primed  bool
 }
@@ -154,6 +156,25 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 		}
 		ps.lastPSI = &psi
 	}
+	// Network bytes/sec — no eBPF needed after all (see cgroup.ReadNetStats
+	// doc comment): all containers in a pod share one network namespace, so
+	// /proc/<pid>/net/dev for any live process in it already gives pod-wide
+	// totals. Analysis-only, like io_iops: raw bytes/sec has no honest [0,1]
+	// scale without a per-NIC bandwidth calibration, so it doesn't feed the
+	// scheduler's Net dimension (see scheduler-plugins/redis_source.go).
+	var netBW float64
+	net, netErr := cgroup.ReadNetStats(cgroupPath)
+	if netErr != nil {
+		log.Printf("net.dev read failed for %s: %v (net_bw=0 this tick)", cgroupPath, netErr)
+	} else {
+		if ps.lastNet != nil {
+			elapsed := now.Sub(ps.lastTS).Seconds()
+			if cur, last := net.TotalBytes(), ps.lastNet.TotalBytes(); elapsed > 0 && cur >= last {
+				netBW = float64(cur-last) / elapsed
+			}
+		}
+		ps.lastNet = &net
+	}
 	ps.lastTS = now
 
 	wasPrimed := ps.primed
@@ -165,7 +186,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	sample := redisclient.Sample{
 		LLCMissRate:     clamp01(llcRate),
 		NUMARemoteRatio: 0, // see perf.ReadUncoreNUMABandwidth TODO
-		NetBW:           0, // see cgroup.ReadNetStats TODO
+		NetBW:           netBW,
 		IOIOPS:          iops,
 		IOPressure:      clamp01(ioPressure),
 	}
