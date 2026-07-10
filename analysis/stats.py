@@ -91,6 +91,45 @@ def coefficient_of_variation(sample: np.ndarray) -> float:
     return float(np.std(sample, ddof=1) / np.mean(sample))
 
 
+def rep_level_sample(
+    df: pd.DataFrame, config: str, value_col: str = "makespan_s"
+) -> np.ndarray:
+    """Collapses concurrent batch members to one value (their mean) per rep.
+
+    Members of one batch run co-located ON PURPOSE — they interfere with each
+    other, so they are not independent observations. Treating each member as a
+    separate sample inflates n by the batch size (2-4x at overcommit >= 1.0)
+    and makes Mann-Whitney's p-values overconfident. One repetition = one
+    independent observation; its value is the mean makespan across the batch.
+    """
+    rows = df[df["config"] == config]
+    if rows.empty:
+        return np.array([])
+    return rows.groupby("rep")[value_col].mean().to_numpy()
+
+
+def holm_bonferroni(p_values) -> np.ndarray:
+    """Holm-Bonferroni step-down adjustment across a family of comparisons.
+
+    The H1-H4 sweep runs one Mann-Whitney test per (pair, profile, overcommit)
+    — up to ~20 tests; at alpha=0.05 uncorrected, one spurious "significant"
+    point is expected by chance alone. NaN p-values (empty comparisons) are
+    passed through and don't count toward the family size m.
+    """
+    p = np.asarray(p_values, dtype=float)
+    adjusted = np.full(p.shape, np.nan)
+    mask = ~np.isnan(p)
+    m = int(mask.sum())
+    if m == 0:
+        return adjusted
+    order = np.argsort(np.where(mask, p, np.inf))
+    running_max = 0.0
+    for rank, i in enumerate(order[:m]):
+        running_max = max(running_max, (m - rank) * p[i])
+        adjusted[i] = min(1.0, running_max)
+    return adjusted
+
+
 def compare_configs(
     df: pd.DataFrame,
     config_a: str,
@@ -100,10 +139,12 @@ def compare_configs(
     value_col: str = "makespan_s",
 ) -> dict:
     """Runs the full §5.2 comparison (Mann-Whitney + Cliff's delta + CV for both
-    sides) for one (config_a vs config_b, profile, overcommit) plan point."""
+    sides) for one (config_a vs config_b, profile, overcommit) plan point.
+    Samples are rep-level (see rep_level_sample): n = number of repetitions,
+    not repetitions x batch members."""
     subset = df[(df["profile"] == profile) & (df["overcommit"] == overcommit)]
-    sample_a = subset[subset["config"] == config_a][value_col].to_numpy()
-    sample_b = subset[subset["config"] == config_b][value_col].to_numpy()
+    sample_a = rep_level_sample(subset, config_a, value_col)
+    sample_b = rep_level_sample(subset, config_b, value_col)
 
     result = {
         "config_a": config_a,
@@ -127,7 +168,9 @@ def run_all_comparisons(
 ) -> pd.DataFrame:
     """Runs compare_configs for every (config_a, config_b) pair across every
     (profile, overcommit) combination present in df — the standard sweep for
-    testing H1-H4."""
+    testing H1-H4. Adds mw_p_holm: Mann-Whitney p-values Holm-Bonferroni
+    adjusted across the whole sweep (one family), which is what H1-H4 verdicts
+    should be read from."""
     rows = []
     for profile in sorted(df["profile"].dropna().unique()):
         for overcommit in sorted(df["overcommit"].dropna().unique()):
@@ -137,4 +180,7 @@ def run_all_comparisons(
                         df, config_a, config_b, profile, overcommit, value_col
                     )
                 )
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["mw_p_holm"] = holm_bonferroni(out["mw_p_value"])
+    return out

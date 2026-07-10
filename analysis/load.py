@@ -44,10 +44,31 @@ def load_results(path: str | Path) -> pd.DataFrame:
     return df
 
 
-def filter_valid(df: pd.DataFrame) -> pd.DataFrame:
+def filter_valid(df: pd.DataFrame, allow_synthetic: bool = False) -> pd.DataFrame:
     """Drops rows with submission errors or missing makespan — keeps rows with
     approximation="host-side" (config B), since that's a documented, expected
-    approximation rather than a failure (docs §3.3)."""
+    approximation rather than a failure (docs §3.3).
+
+    approximation="synthetic-devbox" rows (fake LLC values from the local-dev
+    PMU fallback, see metrics-agent pkg/perf/synthetic.go) are dropped unless
+    allow_synthetic=True: they must never blend into dissertation results.
+    The flag exists only for exercising the analysis pipeline end-to-end on a
+    dev box where ALL data is synthetic anyway."""
     valid = df[~df["approximation"].astype(str).str.startswith("error:")]
     valid = valid[valid["makespan_s"].notna()]
+
+    synthetic = valid["approximation"] == "synthetic-devbox"
+    n_synthetic = int(synthetic.sum())
+    if n_synthetic and not allow_synthetic:
+        print(
+            f"[filter_valid] dropping {n_synthetic} synthetic-devbox rows "
+            "(local-dev PMU fallback, not real measurements); pass "
+            "--allow-synthetic to analyze.py to keep them for pipeline testing."
+        )
+        valid = valid[~synthetic]
+    elif n_synthetic:
+        print(
+            f"[filter_valid] WARNING: keeping {n_synthetic} synthetic-devbox rows "
+            "— pipeline-testing mode, NOT dissertation data."
+        )
     return valid

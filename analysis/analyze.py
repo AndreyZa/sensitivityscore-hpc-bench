@@ -21,7 +21,7 @@ import pandas as pd
 
 from load import filter_valid, load_results
 from plots import plot_llc_vs_makespan, plot_makespan_boxplot
-from stats import compare_configs, run_all_comparisons
+from stats import run_all_comparisons
 
 # Config pairs tested for each hypothesis (Программа_экспериментов §6).
 HYPOTHESIS_PAIRS = {
@@ -39,39 +39,45 @@ HYPOTHESIS_PAIRS = {
 
 
 def summarize_hypothesis(
-    df: pd.DataFrame, name: str, config_a: str, config_b: str
+    comparisons: pd.DataFrame, name: str, config_a: str, config_b: str
 ) -> str:
+    """Renders one hypothesis section from the already-computed comparison
+    sweep. Significance verdicts use mw_p_holm (Holm-Bonferroni adjusted over
+    the whole sweep) — with ~20 tests at alpha=0.05, an uncorrected verdict
+    would produce about one spurious "significant" point by chance alone; the
+    raw p is still shown for reference."""
     lines = [f"## {name}: {config_a} vs {config_b}\n"]
-    any_data = False
-    for profile in sorted(df["profile"].dropna().unique()):
-        for overcommit in sorted(df["overcommit"].dropna().unique()):
-            subset = df[(df["profile"] == profile) & (df["overcommit"] == overcommit)]
-            if (
-                config_a not in subset["config"].values
-                or config_b not in subset["config"].values
-            ):
-                continue
-            any_data = True
-            result = compare_configs(df, config_a, config_b, profile, overcommit)
-            p = result["mw_p_value"]
-            delta = result["cliffs_delta"]
-            mag = result["cliffs_magnitude"]
-            sig = (
-                "significant (p<0.05)"
-                if pd.notna(p) and p < 0.05
-                else "not significant"
-            )
-            direction = "faster" if result["mean_a"] < result["mean_b"] else "slower"
-            lines.append(
-                f"- profile={profile}, overcommit={overcommit}: "
-                f"{config_a} mean={result['mean_a']:.1f}s (CV={result['cv_a']:.3f}), "
-                f"{config_b} mean={result['mean_b']:.1f}s (CV={result['cv_b']:.3f}) — "
-                f"{config_a} {direction}, Mann-Whitney p={p:.4f} ({sig}), "
-                f"Cliff's delta={delta:.3f} ({mag})"
-            )
-    if not any_data:
+    rows = comparisons[
+        (comparisons["config_a"] == config_a)
+        & (comparisons["config_b"] == config_b)
+        & (comparisons["mw_n_a"] > 0)
+        & (comparisons["mw_n_b"] > 0)
+    ]
+    if rows.empty:
         lines.append(
             "- no data yet for this comparison (run the missing configs first)"
+        )
+        return "\n".join(lines)
+
+    for result in rows.to_dict("records"):
+        p = result["mw_p_value"]
+        p_holm = result["mw_p_holm"]
+        delta = result["cliffs_delta"]
+        mag = result["cliffs_magnitude"]
+        sig = (
+            "significant (Holm-adjusted p<0.05)"
+            if pd.notna(p_holm) and p_holm < 0.05
+            else "not significant after Holm correction"
+        )
+        direction = "faster" if result["mean_a"] < result["mean_b"] else "slower"
+        lines.append(
+            f"- profile={result['profile']}, overcommit={result['overcommit']}: "
+            f"{config_a} mean={result['mean_a']:.1f}s (CV={result['cv_a']:.3f}), "
+            f"{config_b} mean={result['mean_b']:.1f}s (CV={result['cv_b']:.3f}) — "
+            f"{config_a} {direction}, Mann-Whitney p={p:.4f}, "
+            f"Holm-adjusted p={p_holm:.4f} ({sig}), "
+            f"Cliff's delta={delta:.3f} ({mag}), "
+            f"n={result['mw_n_a']}/{result['mw_n_b']} reps"
         )
     return "\n".join(lines)
 
@@ -80,22 +86,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", default="../harness/results/results.parquet")
     parser.add_argument("--outdir", default="report")
+    parser.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help="Keep synthetic-devbox rows (local pipeline testing ONLY, "
+        "never for real results — see load.filter_valid)",
+    )
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     df = load_results(args.results)
-    valid = filter_valid(df)
+    valid = filter_valid(df, allow_synthetic=args.allow_synthetic)
 
     # Full comparison sweep (§5.2) across every config pair used by H1-H4.
     pairs = list(HYPOTHESIS_PAIRS.values())
     comparisons = run_all_comparisons(valid, pairs)
     comparisons.to_csv(outdir / "comparisons.csv", index=False)
 
-    # Human-readable H1-H4 summary for the advisor briefing.
+    # Human-readable H1-H4 summary for the advisor briefing, read from the
+    # same sweep (single Holm family — see stats.run_all_comparisons).
     summary_sections = [
-        summarize_hypothesis(valid, name, a, b)
+        summarize_hypothesis(comparisons, name, a, b)
         for name, (a, b) in HYPOTHESIS_PAIRS.items()
     ]
     summary_md = "# Проверка гипотез H1–H4\n\n" + "\n\n".join(summary_sections) + "\n"
