@@ -47,17 +47,33 @@ func (w *Writer) WriteNodeMetrics(ctx context.Context, nodeName string, s Sample
 	return nil
 }
 
-// WriteJobMetrics writes job:metrics:<jobID>:<nodeName> — written across the
-// job's whole lifecycle (not just at scoring time), and deliberately has NO TTL:
-// the harness (harness/run_experiment.py) reads this back after job completion to
-// build the makespan/variance Parquet dataset (docs §3.2, §5.1), so it must
-// survive at least until record_result() has run. The harness is responsible for
-// deleting/archiving these keys after export.
+// WriteJobMetrics accumulates job:metrics:<jobID>:<nodeName> — one HINCRBYFLOAT
+// per dimension plus a "samples" counter, so the hash holds running sums over
+// the job's whole lifetime and the harness computes lifetime means as
+// <dim>_sum / samples. A plain HSET here (the original implementation) meant
+// last-write-wins: the harness would read only the final ~5s window before
+// completion — usually the teardown phase, not representative of the job.
+//
+// Deliberately has NO TTL: the harness (harness/run_experiment.py) reads this
+// back after job completion to build the Parquet dataset (docs §3.2, §5.1), so
+// it must survive at least until record_result() has run. The harness is
+// responsible for deleting these keys after export — doubly important now that
+// they accumulate: a leftover key from a previous run would silently mix into
+// the sums of a rerun with the same job_id.
 func (w *Writer) WriteJobMetrics(ctx context.Context, jobID, nodeName string, s Sample) error {
 	key := fmt.Sprintf("job:metrics:%s:%s", jobID, nodeName)
-	fields := sampleToFields(s)
-	if err := w.rdb.HSet(ctx, key, fields).Err(); err != nil {
-		return fmt.Errorf("HSET %s: %w", key, err)
+	pipe := w.rdb.Pipeline()
+	pipe.HIncrByFloat(ctx, key, "llc_miss_rate_sum", s.LLCMissRate)
+	pipe.HIncrByFloat(ctx, key, "numa_remote_ratio_sum", s.NUMARemoteRatio)
+	pipe.HIncrByFloat(ctx, key, "net_bw_sum", s.NetBW)
+	pipe.HIncrByFloat(ctx, key, "io_iops_sum", s.IOIOPS)
+	pipe.HIncrBy(ctx, key, "samples", 1)
+	pipe.HSet(ctx, key, "ts", time.Now().Unix())
+	if s.Approximation != "" {
+		pipe.HSet(ctx, key, "approximation", s.Approximation)
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("accumulate %s: %w", key, err)
 	}
 	return nil
 }

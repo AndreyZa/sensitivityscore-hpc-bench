@@ -61,10 +61,25 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
     if not fields:
         return {**empty, "approximation": "missing"}
 
+    # The agent accumulates running sums + a sample counter (one HINCRBYFLOAT
+    # per ~5s tick, see metrics-agent/pkg/redisclient.WriteJobMetrics); the
+    # job-lifetime mean is <dim>_sum / samples. Previously the hash held only
+    # the LAST sample before completion — usually the teardown phase, not
+    # representative of the job.
+    try:
+        samples = int(fields.get("samples", "0"))
+    except ValueError:
+        samples = 0
+    if samples <= 0:
+        return {**empty, "approximation": "missing"}
+
+    def lifetime_mean(field: str) -> float:
+        return float(fields.get(field, "nan")) / samples
+
     return {
-        "llc_miss_rate": float(fields.get("llc_miss_rate", "nan")),
-        "numa_remote_ratio": float(fields.get("numa_remote_ratio", "nan")),
-        "net_bw": float(fields.get("net_bw", "nan")),
-        "io_iops": float(fields.get("io_iops", "nan")),
+        "llc_miss_rate": lifetime_mean("llc_miss_rate_sum"),
+        "numa_remote_ratio": lifetime_mean("numa_remote_ratio_sum"),
+        "net_bw": lifetime_mean("net_bw_sum"),
+        "io_iops": lifetime_mean("io_iops_sum"),
         "approximation": fields.get("approximation", ""),
     }
