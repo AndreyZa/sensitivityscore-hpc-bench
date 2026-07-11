@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import logging
+import random
 import sys
 import time
 from pathlib import Path
@@ -52,7 +53,7 @@ sys.path.insert(
 )  # allow `from submit import ...` / `from profiles import ...`
 
 from profiles import make_job_id
-from submit import k8s_submit, slurm_submit
+from submit import aggressors, k8s_submit, slurm_submit
 from submit.redis_metrics import purge_job_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -83,6 +84,37 @@ def backend_for(config: str, cfg: dict) -> str:
 # Delay before the single submit-phase retry — short on purpose: a member
 # resubmitted much later would no longer run concurrently with its batch.
 RESUBMIT_DELAY_SECONDS = 5
+
+
+def error_row(
+    config: str, profile: str, overcommit: float, rep: int, exc: Exception, **extra
+) -> dict:
+    """One results row for a failed attempt — keeps the parquet schema stable
+    so a partial matrix still loads in analysis (rows are dropped there by
+    the error: prefix in `approximation`)."""
+    row = {
+        "config": config,
+        "profile": profile,
+        "overcommit": overcommit,
+        "rep": rep,
+        "node": None,
+        "makespan_s": float("nan"),
+        "makespan_source": None,
+        "submit_ts": None,
+        "start_ts": None,
+        "end_ts": None,
+        "llc_miss_rate": float("nan"),
+        "numa_remote_ratio": float("nan"),
+        "net_bw": float("nan"),
+        "io_iops": float("nan"),
+        "io_pressure": float("nan"),
+        "approximation": f"error:{exc}",
+        "scenario": None,
+        "batch_size": None,
+        "batch_index": None,
+    }
+    row.update(extra)
+    return row
 
 
 def run_one(
@@ -137,6 +169,7 @@ def run_one(
             "io_iops": float("nan"),
             "io_pressure": float("nan"),
             "approximation": "dry-run",
+            "scenario": None,  # caller (run_batch / pressure arm) fills this in
         }
 
     # Drop any leftover job:metrics keys from a previous run that crashed
@@ -195,6 +228,7 @@ def run_batch(
     def _run_member(batch_index: int) -> dict:
         job_id = base_job_id if size == 1 else f"{base_job_id}-b{batch_index}"
         row = run_one(job_id, config, profile, overcommit, rep, cfg, dry_run)
+        row["scenario"] = "batch"
         row["batch_size"] = size
         row["batch_index"] = batch_index
         return row
@@ -227,28 +261,165 @@ def run_batch(
                     exc,
                 )
                 rows.append(
-                    {
-                        "config": config,
-                        "profile": profile,
-                        "overcommit": overcommit,
-                        "rep": rep,
-                        "node": None,
-                        "makespan_s": float("nan"),
-                        "makespan_source": None,
-                        "submit_ts": None,
-                        "start_ts": None,
-                        "end_ts": None,
-                        "llc_miss_rate": float("nan"),
-                        "numa_remote_ratio": float("nan"),
-                        "net_bw": float("nan"),
-                        "io_iops": float("nan"),
-                        "io_pressure": float("nan"),
-                        "approximation": f"error:{exc}",
-                        "batch_size": size,
-                        "batch_index": batch_index,
-                    }
+                    error_row(
+                        config,
+                        profile,
+                        overcommit,
+                        rep,
+                        exc,
+                        scenario="batch",
+                        batch_size=size,
+                        batch_index=batch_index,
+                    )
                 )
     return rows
+
+
+def victim_offsets(count: int, arrival: dict, rng: random.Random) -> list[float]:
+    """Моменты сабмита жертв относительно конца стабилизации давления.
+
+    fixed  — равные интервалы interval_seconds;
+    poisson — экспоненциальные межприбытия со средним interval_seconds
+    (пуассоновский поток — реалистичная модель поступления job).
+
+    Интервал должен быть больше лага метрик-пайплайна (~тик агента 5с +
+    refresh плагина до 10с): иначе планировщик принимает решения по давлению,
+    в котором ещё не видно предыдущих жертв, и сценарий вырождается в
+    одновременный батч.
+    """
+    interval = float(arrival.get("interval_seconds", 30))
+    if arrival.get("mode", "fixed") == "poisson":
+        offsets, t = [], 0.0
+        for _ in range(count):
+            t += rng.expovariate(1.0 / interval)
+            offsets.append(t)
+        return offsets
+    return [i * interval for i in range(count)]
+
+
+def run_pressure_arm(
+    scenario: dict,
+    scenario_col: str,
+    config: str,
+    profile: str,
+    intensity: int,
+    rep: int,
+    offsets: list[float],
+    nodes: list[str] | None,
+    cfg: dict,
+    dry_run: bool,
+) -> list[dict]:
+    """Одно плечо pressure-точки: развернуть агрессоров -> дать давлению
+    стабилизироваться -> подать поток жертв через планировщик этого плеча ->
+    снести агрессоров. В колонку overcommit пишется intensity (агрессоров на
+    pressured-ноду) — это ось dose-response, по ней analysis сравнивает плечи."""
+    base_job_id = make_job_id(config, profile, float(intensity), rep)
+    victim_count = len(offsets)
+
+    log.info(
+        "pressure arm: %s — %d victims, arrival offsets %s",
+        base_job_id,
+        victim_count,
+        [round(o, 1) for o in offsets],
+    )
+
+    def _run_victim(index: int) -> dict:
+        if not dry_run:
+            time.sleep(offsets[index])
+        row = run_one(
+            f"{base_job_id}-v{index}", config, profile, float(intensity), rep, cfg, dry_run
+        )
+        row["scenario"] = scenario_col
+        row["batch_size"] = victim_count
+        row["batch_index"] = index
+        return row
+
+    rows: list[dict] = []
+    try:
+        if not dry_run:
+            aggressors.deploy(nodes or [], intensity, scenario["name"], cfg)
+            time.sleep(scenario.get("stabilize_seconds", 30))
+            # Давление должно быть живым к моменту подачи жертв — молча
+            # вышедший агрессор превращает плечо в измерение на чистой ноде.
+            aggressors.assert_running(len(nodes or []) * intensity, cfg)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=victim_count) as pool:
+            futures = {pool.submit(_run_victim, i): i for i in range(victim_count)}
+            for future in concurrent.futures.as_completed(futures):
+                index = futures[future]
+                try:
+                    rows.append(future.result())
+                except Exception as exc:  # noqa: BLE001 — не терять остальных жертв
+                    log.error(
+                        "victim %s-v%d failed: %s", base_job_id, index, exc
+                    )
+                    rows.append(
+                        error_row(
+                            config,
+                            profile,
+                            float(intensity),
+                            rep,
+                            exc,
+                            scenario=scenario_col,
+                            batch_size=victim_count,
+                            batch_index=index,
+                        )
+                    )
+    finally:
+        # Агрессоры сносятся даже при сбое плеча: следующее плечо обязано
+        # стартовать с чистого ландшафта давления.
+        if not dry_run:
+            aggressors.teardown(cfg)
+    return rows
+
+
+def run_pressure_scenario(scenario: dict, cfg: dict, dry_run: bool):
+    """Генератор списков строк (по одному на плечо) pressure-сценария:
+
+    для каждой intensity из aggressors_per_node, для каждого повтора — оба
+    плеча (A-default, A-sensitivityscore) подряд, с ИДЕНТИЧНЫМ паттерном
+    прибытия жертв (seed не зависит от плеча) и идентичным набором
+    pressured-нод (nodeName-пин, мимо планировщиков). Единственное различие
+    между плечами — планировщик, принимающий решения о размещении жертв.
+    """
+    name = scenario["name"]
+    scenario_col = f"pressure:{name}"
+    profile = scenario.get("victim_profile", "high-s")
+    victim_count = scenario.get("victim_count", 6)
+    arrival = scenario.get("victim_arrival", {})
+    reps = scenario.get("repetitions", cfg["repetitions"])
+
+    base_configs = scenario.get("configs", ["A"])
+    configs = [
+        c
+        for c in expand_configs({**cfg, "configs": base_configs})
+        if backend_for(c, cfg) == "k8s"
+    ]
+
+    nodes: list[str] | None = None
+    if not dry_run:
+        nodes = aggressors.resolve_pressured_nodes(scenario, cfg)
+        log.info("pressure scenario %s: pressured nodes = %s", name, ",".join(nodes))
+
+    for intensity in scenario.get("aggressors_per_node", [1]):
+        for rep in range(reps):
+            # Один seed на (сценарий, intensity, rep) — оба плеча получают
+            # одинаковые моменты прибытия жертв.
+            seed = f"{name}/{intensity}/{rep}"
+            for config in configs:
+                offsets = victim_offsets(victim_count, arrival, random.Random(seed))
+                yield run_pressure_arm(
+                    scenario,
+                    scenario_col,
+                    config,
+                    profile,
+                    intensity,
+                    rep,
+                    offsets,
+                    nodes,
+                    cfg,
+                    dry_run,
+                )
 
 
 def build_plan(cfg: dict, pilot: bool, only_configs: list[str] | None) -> list[tuple]:
@@ -278,6 +449,37 @@ def build_plan(cfg: dict, pilot: bool, only_configs: list[str] | None) -> list[t
     return plan
 
 
+def run_pressure_mode(cfg: dict, args) -> None:
+    """--pressure: гоняет pressure-сценарии вместо матрицы плана. Результаты
+    пишутся в тот же results-файл (колонка scenario отличает их от батчевых
+    строк; overcommit в pressure-строках = агрессоров на pressured-ноду)."""
+    scenarios = cfg.get("pressure_scenarios", [])
+    if args.scenarios:
+        scenarios = [s for s in scenarios if s["name"] in args.scenarios]
+    if not scenarios:
+        log.error("no pressure scenarios selected (config: pressure_scenarios)")
+        sys.exit(1)
+
+    results_dir = Path(cfg["output"]["results_dir"])
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_file = cfg["output"]["results_file"]
+    if args.dry_run:
+        results_file = f"dry-run-{results_file}"
+    results_path = results_dir / results_file
+
+    rows: list[dict] = []
+    for scenario in scenarios:
+        log.info("pressure scenario: %s", scenario["name"])
+        for arm_rows in run_pressure_scenario(scenario, cfg, args.dry_run):
+            rows.extend(arm_rows)
+            # Persist incrementally so a crash mid-scenario doesn't lose arms.
+            pd.DataFrame(rows).to_parquet(results_path, index=False)
+            if not args.dry_run:
+                time.sleep(cfg["cooldown_seconds"])
+
+    log.info("done: %d pressure results written to %s", len(rows), results_path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -294,10 +496,25 @@ def main():
         action="store_true",
         help="Build the plan and log it without submitting anything",
     )
+    parser.add_argument(
+        "--pressure",
+        action="store_true",
+        help="Run the pressure scenarios (config.yaml: pressure_scenarios) "
+        "instead of the plan matrix",
+    )
+    parser.add_argument(
+        "--scenarios",
+        nargs="*",
+        help="With --pressure: restrict to these scenario names",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    if args.pressure:
+        run_pressure_mode(cfg, args)
+        return
 
     plan = build_plan(cfg, pilot=args.pilot, only_configs=args.configs)
     total_jobs = sum(batch_size_for(overcommit, cfg) for _, _, overcommit, _ in plan)
@@ -323,28 +540,7 @@ def main():
             rows.extend(batch_rows)
         except Exception as exc:  # noqa: BLE001 — log and continue the matrix
             log.error("job %s failed after retries: %s", job_id, exc)
-            rows.append(
-                {
-                    "config": config,
-                    "profile": profile,
-                    "overcommit": overcommit,
-                    "rep": rep,
-                    "node": None,
-                    "makespan_s": float("nan"),
-                    "makespan_source": None,
-                    "submit_ts": None,
-                    "start_ts": None,
-                    "end_ts": None,
-                    "llc_miss_rate": float("nan"),
-                    "numa_remote_ratio": float("nan"),
-                    "net_bw": float("nan"),
-                    "io_iops": float("nan"),
-                    "io_pressure": float("nan"),
-                    "approximation": f"error:{exc}",
-                    "batch_size": None,
-                    "batch_index": None,
-                }
-            )
+            rows.append(error_row(config, profile, overcommit, rep, exc, scenario="batch"))
 
         # Persist incrementally so a crash mid-matrix doesn't lose completed runs.
         pd.DataFrame(rows).to_parquet(results_path, index=False)

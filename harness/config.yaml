@@ -61,6 +61,39 @@ slurm:
 # и никогда не переопределялось — здесь фактическое значение.
 images:
   workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev" # stress-ng, см. aggressor/Dockerfile
+
+# --- Pressure-сценарий («money experiment», run_experiment.py --pressure) ---
+# Фаза 1: на pressured_node_count worker-нод (или явные aggressor_nodes)
+# сажаются агрессоры stress-ng --stream, aggressors_per_node штук на ноду —
+# это ось интенсивности (dose-response), она же пишется в колонку overcommit.
+# Фаза 2: после stabilize_seconds через планировщик плеча подаётся поток из
+# victim_count жертв (victim_arrival: fixed | poisson); паттерн прибытия
+# одинаков для обоих плеч A-default/A-sensitivityscore (seed от плеча не
+# зависит), pressured-ноды тоже (nodeName-пин мимо планировщиков) —
+# единственное различие плеч = планировщик жертв.
+#
+# Научный тезис сценария: агрессор с маленьким cpu-request невидим для
+# ресурсной модели default-планировщика (нода выглядит свободной), но давит
+# LLC/полосу памяти — ровно тот случай, где requests недопредставляют
+# контенцию, и interference-awareness должна дать измеримый выигрыш.
+pressure_scenarios:
+  - name: llc
+    victim_profile: high-s
+    victim_count: 6
+    victim_arrival:
+      mode: poisson # fixed | poisson
+      interval_seconds: 30 # средний интервал; держать БОЛЬШЕ лага метрик (~15с)
+    aggressors_per_node: [1, 2]
+    pressured_node_count: 1 # сколько worker-нод давим (минимум одна должна остаться чистой)
+    aggressor_nodes: [] # явный список нод важнее pressured_node_count
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  stream_workers: 2
+  cpu_request: "500m" # намеренно мало — невидим для ресурсной модели default-планировщика
+  cpu_limit: "2"
 
 output:
   results_dir: "results"

@@ -24,9 +24,11 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # create/delete на pods — для агрессоров pressure-сценария
+  # (submit/aggressors.py: одиночные поды с nodeName-пином, label app=ss-aggressor)
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -61,6 +63,11 @@ rules:
     resources: ["namespaces"]
     resourceNames: ["sensitivityscore-bench"]
     verbs: ["get", "patch"]
+  # list nodes (read-only) — pressure-сценарий выбирает pressured worker-ноды
+  # в submit/aggressors.py:resolve_pressured_nodes.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -1,0 +1,42 @@
+{# aggressor-pod.yaml.j2 — фоновый LLC/membw-агрессор pressure-сценария,
+   рендерится harness/submit/aggressors.py по одному поду на (нода, слот).
+
+   nodeName — ПРЯМАЯ привязка к ноде, мимо любого планировщика: ландшафт
+   давления должен быть идентичным для обоих плеч сравнения (A-default и
+   A-sensitivityscore), иначе сравнение плеч нечестное.
+
+   cpu request НАМЕРЕННО маленький при заметно большем limit: ресурсная
+   модель default-планировщика видит почти свободную ноду, а реальное
+   давление на LLC/полосу памяти при этом большое — ровно тот случай, где
+   requests недопредставляют контенцию по разделяемым ресурсам (научный
+   тезис pressure-эксперимента). #}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app: ss-aggressor
+    sensitivityscore.phd/scenario: "{{ scenario }}"
+  annotations:
+    scheduling.phd/sensitivity-llc: "low"
+    scheduling.phd/sensitivity-numa: "low"
+    scheduling.phd/sensitivity-net: "low"
+    scheduling.phd/sensitivity-io: "low"
+spec:
+  nodeName: {{ node_name }}
+  restartPolicy: Never
+  containers:
+    - name: stress
+      image: {{ image }}
+      imagePullPolicy: Always # конвенция репо: dev-теги мутабельны, нода не должна жить с закэшированным старым образом
+      {# Без --timeout: "--timeout 0" у stress-ng = "0 секунд" (мгновенный
+         выход), бесконечный прогон — дефолт без флага. #}
+      args: ["--stream", "{{ stream_workers }}"]
+      resources:
+        requests:
+          cpu: "{{ cpu_request }}"
+          memory: "512Mi"
+        limits:
+          cpu: "{{ cpu_limit }}"
+          memory: "2Gi"

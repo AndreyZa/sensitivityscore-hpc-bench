@@ -100,27 +100,50 @@ def main():
     df = load_results(args.results)
     valid = filter_valid(df, allow_synthetic=args.allow_synthetic)
 
-    # Full comparison sweep (§5.2) across every config pair used by H1-H4.
+    # Full comparison sweep (§5.2) across every config pair used by H1-H4 —
+    # separately per scenario: "batch" (symmetric co-location matrix) and
+    # each "pressure:<name>" (aggressors + victim stream) are different
+    # experiments whose (profile, overcommit) axes mean different things
+    # (overcommit = ratio vs = aggressors per pressured node), so they must
+    # not be pooled into one comparison group. Each scenario is its own
+    # Holm family.
     pairs = list(HYPOTHESIS_PAIRS.values())
-    comparisons = run_all_comparisons(valid, pairs)
+    scenario_frames = []
+    summary_sections = []
+    for scenario in sorted(valid["scenario"].dropna().unique()):
+        subset = valid[valid["scenario"] == scenario]
+        comparisons = run_all_comparisons(subset, pairs)
+        if comparisons.empty:
+            continue
+        comparisons.insert(0, "scenario", scenario)
+        scenario_frames.append(comparisons)
+
+        summary_sections.append(f"# Сценарий: {scenario}\n")
+        summary_sections.extend(
+            summarize_hypothesis(comparisons, name, a, b)
+            for name, (a, b) in HYPOTHESIS_PAIRS.items()
+        )
+
+    comparisons = (
+        pd.concat(scenario_frames, ignore_index=True)
+        if scenario_frames
+        else pd.DataFrame()
+    )
     comparisons.to_csv(outdir / "comparisons.csv", index=False)
 
-    # Human-readable H1-H4 summary for the advisor briefing, read from the
-    # same sweep (single Holm family — see stats.run_all_comparisons).
-    summary_sections = [
-        summarize_hypothesis(comparisons, name, a, b)
-        for name, (a, b) in HYPOTHESIS_PAIRS.items()
-    ]
-    summary_md = "# Проверка гипотез H1–H4\n\n" + "\n\n".join(summary_sections) + "\n"
+    summary_md = (
+        "# Проверка гипотез H1–H4\n\n" + "\n\n".join(summary_sections) + "\n"
+    )
     (outdir / "summary.md").write_text(summary_md, encoding="utf-8")
 
-    # Visualizations (§5.3) — boxplot at overcommit=2.0 (max expected divergence),
-    # one pressure-vs-makespan scatter per measured S dimension (the §5.3
-    # correlation argument is needed for every scored axis, not just LLC),
-    # and the H1 stability (CV) comparison.
-    if 2.0 in valid["overcommit"].unique():
+    # Visualizations (§5.3) — per scenario, чтобы batch-строки (overcommit =
+    # коэффициент) не смешивались с pressure-строками (overcommit =
+    # агрессоров на ноду): boxplot at overcommit=2.0 для batch, scatter по
+    # каждой измеряемой оси S, H1 stability (CV) comparison.
+    batch = valid[valid["scenario"] == "batch"]
+    if not batch.empty and 2.0 in batch["overcommit"].unique():
         plot_makespan_boxplot(
-            valid, overcommit=2.0, output_path=outdir / "makespan_boxplot.png"
+            batch, overcommit=2.0, output_path=outdir / "makespan_boxplot.png"
         )
     for metric, label, fname in [
         ("llc_miss_rate", "LLC miss rate (normalized)", "llc_vs_makespan.png"),
@@ -131,14 +154,20 @@ def main():
             plot_metric_vs_makespan(valid, metric, label, output_path=outdir / fname)
 
     h1_a, h1_b = HYPOTHESIS_PAIRS["H1"]
-    h1_rows = comparisons[
-        (comparisons["config_a"] == h1_a)
-        & (comparisons["config_b"] == h1_b)
-        & (comparisons["mw_n_a"] > 0)
-        & (comparisons["mw_n_b"] > 0)
-    ]
-    if not h1_rows.empty:
-        plot_cv_comparison(h1_rows, output_path=outdir / "cv_comparison.png")
+    if not comparisons.empty:
+        for scenario in comparisons["scenario"].unique():
+            h1_rows = comparisons[
+                (comparisons["scenario"] == scenario)
+                & (comparisons["config_a"] == h1_a)
+                & (comparisons["config_b"] == h1_b)
+                & (comparisons["mw_n_a"] > 0)
+                & (comparisons["mw_n_b"] > 0)
+            ]
+            if not h1_rows.empty:
+                suffix = scenario.replace(":", "-")
+                plot_cv_comparison(
+                    h1_rows, output_path=outdir / f"cv_comparison-{suffix}.png"
+                )
 
     print(
         f"done — see {outdir}/summary.md, {outdir}/comparisons.csv, and the .png plots"

@@ -23,6 +23,7 @@ SCHEDULER_RELEASE_VER   ?= v20260711-b2797acc
 WORKLOAD_IMAGE          ?= $(REGISTRY)/geant4:11.2
 SCHEDULER_IMAGE         ?= $(REGISTRY)/sensitivityscore:$(SCHEDULER_RELEASE_VER)
 METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
+AGGRESSOR_IMAGE         ?= $(REGISTRY)/aggressor:dev
 HARNESS_IMAGE           ?= $(REGISTRY)/harness:dev
 
 # --- Kubernetes ---
@@ -106,6 +107,10 @@ image-workload-push:
 .PHONY: image-metrics-agent
 image-metrics-agent: build-go ## Собрать образ metrics-agent
 	docker build -t $(METRICS_AGENT_IMAGE) ./metrics-agent
+
+.PHONY: image-aggressor
+image-aggressor: ## Собрать образ LLC/membw-агрессора (stress-ng) для pressure-сценариев
+	docker build -t $(AGGRESSOR_IMAGE) ./aggressor
 
 # ---------------------------------------------------------------------------
 # Кластер: bootstrap (namespace + Redis), деплой планировщика, деплой агента
@@ -323,6 +328,11 @@ harness-run-pilot-incluster: harness-rbac ## Пилот (§9 чек-листа) 
 harness-run-config-a-incluster: harness-rbac ## Полная матрица (config A) как Job внутри кластера
 	$(KUBECTL) delete job harness-config-a -n $(HARNESS_NAMESPACE) --ignore-not-found
 	$(KUBECTL) apply -f harness/deploy/job-config-a.yaml
+
+.PHONY: harness-run-pressure-incluster
+harness-run-pressure-incluster: harness-rbac ## Pressure-сценарии (агрессоры + поток жертв) как Job внутри кластера
+	$(KUBECTL) delete job harness-pressure -n $(HARNESS_NAMESPACE) --ignore-not-found
+	$(KUBECTL) apply -f harness/deploy/job-pressure.yaml
 
 .PHONY: harness-logs-incluster
 harness-logs-incluster: ## Логи текущего in-cluster harness Job (укажи JOB=harness-pilot|harness-config-a)

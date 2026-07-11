@@ -1,6 +1,8 @@
 # Working agreements
 
-- Still only `git commit` when explicitly asked — that rule is unchanged.
+- `git commit` no longer needs my approval: commit on your own once a
+  logical unit of work is done and verified (build/tests/dry-run pass).
+  Keep commits scoped and messages explanatory, as before.
 - After any commit (yours or mine), `git push` the current branch to `origin`
   (`git@github.com:AndreyZa/sensitivityscore-hpc-bench.git`) automatically,
   without asking first. Unconditional — applies to every commit, regardless
@@ -17,6 +19,8 @@
     (harness/deploy/job-*.yaml) pulls this image; without the rebuild it
     silently runs stale code. (A host-side `python run_experiment.py` run
     doesn't need the image.)
+  - `aggressor/**` changed → `make image-aggressor` then
+    `docker push andreyza/aggressor:dev` (pressure-scenario stress pods).
   - The scheduler plugin image is built from the **separate**
     `scheduler-plugins` repo (`pkg/sensitivityscore/**`, not anything under
     `k8s/` here) — see that repo's own `CLAUDE.md`. A commit here touching

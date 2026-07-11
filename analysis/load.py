@@ -24,6 +24,7 @@ EXPECTED_COLUMNS = {
     "io_iops",
     "io_pressure",
     "approximation",
+    "scenario",
 }
 
 

@@ -1,0 +1,34 @@
+# Pressure-сценарии (run_experiment.py --pressure): фоновые агрессоры на
+# части нод -> поток жертв через оба планировщика. Выполняется ИЗНУТРИ
+# кластера, как и остальные harness-Job'ы. Apply harness/deploy/rbac.yaml и
+# pvc.yaml сначала. См. harness/README.md, секцию «Pressure-сценарий».
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harness-pressure
+  namespace: sensitivityscore-bench
+spec:
+  backoffLimit: 0 # one attempt — rerun manually rather than letting k8s silently resubmit the whole series
+  template:
+    spec:
+      serviceAccountName: harness-runner
+      restartPolicy: Never
+      containers:
+        - name: harness
+          image: andreyza/harness:dev
+          imagePullPolicy: Always
+          args: ["--pressure"]
+          volumeMounts:
+            - name: results
+              mountPath: /app/results
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: harness-results
