@@ -35,23 +35,21 @@ spec:
             - name: REDIS_ADDR
               value: "redis.sensitivityscore-system.svc.cluster.local:6379"
             - name: SAMPLE_INTERVAL_SECONDS
-              # Default (5s) makes very short jobs (harness low-s profile,
-              # makespan ~1-2s) invisible: the first tick after a pod starts
-              # only primes the baseline, so anything shorter-lived than
-              # roughly 2x the interval never gets a single real reading
-              # (confirmed: 180/180 low-s rows came back with no metrics in
-              # the first full-matrix run). 1s is a real trade-off — more
-              # kube-apiserver list calls per node — but is fine at this
-              # cluster's scale; revisit for a partner stand with many nodes
-              # and long-running real HPC jobs, where the default may be more
-              # appropriate.
-              value: "1"
+              # 5s is fine now that the low-s profile runs ~30-60s (see
+              # harness/profiles.py N_PRIMARIES) — every job gets several
+              # real samples per lifetime. The earlier "1" here was a
+              # workaround for 1-2s low-s jobs being invisible to the
+              # sampler (first tick only primes the baseline); fixing the
+              # job duration was the real fix, and 5s keeps per-node
+              # kube-apiserver LIST traffic 5x lower for the partner stand.
+              value: "5"
           volumeMounts:
+            # NOTE: no /host/proc mount — hostPID: true already makes the
+            # container's own /proc show every host process (net.go reads
+            # /proc/<pid>/net/dev directly). Re-add a proc hostPath only if
+            # the config-B QemuProcessResolver ever needs a non-PID view.
             - name: cgroup
               mountPath: /sys/fs/cgroup
-              readOnly: true
-            - name: proc
-              mountPath: /host/proc
               readOnly: true
           resources:
             requests:
@@ -64,9 +62,6 @@ spec:
         - name: cgroup
           hostPath:
             path: /sys/fs/cgroup
-        - name: proc
-          hostPath:
-            path: /proc
       tolerations:
         - operator: Exists # run on every node, including tainted control-plane/HPC nodes
 ---

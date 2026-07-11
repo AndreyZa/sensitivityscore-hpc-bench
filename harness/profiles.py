@@ -29,7 +29,14 @@ PROFILES: dict[str, ProfileSpec] = {
         env={
             "G4_THREADS": "1",
             "PHYSICS_LIST": "QGSP_BERT",
-            "N_PRIMARIES": "10000",
+            # 300k, not 10k: at 10k the job finished in ~1-2s — below the
+            # stand's measurement resolution (makespan dominated by container
+            # startup + Geant4 physics-table init, and the metrics agent got
+            # 0-1 real samples per job even at a 1s tick; the first full
+            # matrix run returned 180/180 low-s rows without metrics). Low
+            # SENSITIVITY must not mean short DURATION — this targets a
+            # ~30-60s runtime so interference on low-s jobs is measurable.
+            "N_PRIMARIES": "300000",
             "OUTPUT_MODE": "none",
             "RNG_SEED": "42",
         },
