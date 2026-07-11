@@ -98,35 +98,43 @@ func NewNUMARemoteRatioSampler(cgroupPath string) (*RatioSampler, error) {
 	})
 }
 
-// SampleRate returns num/den over the window since the previous call.
-// ok=false on the first (baseline-only) call. On error the sampler should be
-// Close()d and re-created by the caller — the counters may be in an undefined
-// state (e.g. the pod's cgroup was torn down mid-read).
-func (s *RatioSampler) SampleRate() (rate float64, ok bool, err error) {
+// SampleDeltas returns the raw numerator/denominator deltas over the window
+// since the previous call — the caller derives the ratio via Ratio(), and the
+// node-level aggregation sums deltas across pods so its ratio is weighted by
+// each pod's actual traffic (averaging per-pod ratios would let one idle pod
+// dilute a hot one). ok=false on the first (baseline-only) call. On error the
+// sampler should be Close()d and re-created by the caller — the counters may
+// be in an undefined state (e.g. the pod's cgroup was torn down mid-read).
+func (s *RatioSampler) SampleDeltas() (deltaNum, deltaDen uint64, ok bool, err error) {
 	curNum, err := s.num.Read()
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
 	curDen, err := s.den.Read()
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
 
-	deltaNum := curNum - s.lastNum
-	deltaDen := curDen - s.lastDen
+	deltaNum = curNum - s.lastNum
+	deltaDen = curDen - s.lastDen
 	wasPrimed := s.primed
 	s.lastNum, s.lastDen = curNum, curDen
 	s.primed = true
 
 	if !wasPrimed {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
+	return deltaNum, deltaDen, true, nil
+}
+
+// Ratio is the num/den convenience for one sampler's deltas. deltaDen == 0
+// (no denominator events this window — fully idle pod) is a true 0/0 and
+// reports zero pressure rather than NaN.
+func Ratio(deltaNum, deltaDen uint64) float64 {
 	if deltaDen == 0 {
-		// No denominator events at all this window (idle pod) — a true 0/0;
-		// report zero pressure rather than NaN.
-		return 0, true, nil
+		return 0
 	}
-	return float64(deltaNum) / float64(deltaDen), true, nil
+	return float64(deltaNum) / float64(deltaDen)
 }
 
 // Close releases both counters and the cgroup fd. Safe to call on a

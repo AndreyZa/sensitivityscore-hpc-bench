@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"strconv"
@@ -65,14 +67,55 @@ func main() {
 
 	// Per-pod sampling state, keyed by pod UID, kept across ticks: perf
 	// counters must stay open between ticks so each tick measures the delta
-	// over a real window (sampleInterval) — see pkg/perf.CgroupLLCSampler.
+	// over a real window (sampleInterval) — see pkg/perf.RatioSampler.
 	samplers := make(map[string]*podSampler)
+	nodePSI := &nodePSISampler{}
 
 	for range ticker.C {
-		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers); err != nil {
+		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI); err != nil {
 			log.Printf("sample error: %v", err)
 		}
 	}
+}
+
+// nodePSISampler tracks the NODE-root cgroup's io.pressure across ticks. The
+// node-level IO dimension is the share of wall time the node spent with at
+// least one task stalled on IO — actual device contention, including
+// system/non-pod IO — rather than an average of per-pod stall shares, which
+// N idle pods would dilute (per-pod stalls still go to job metrics).
+type nodePSISampler struct {
+	last   *cgroup.IOPressureStat
+	lastTS time.Time
+}
+
+// pressure returns the node's IO stall share over the window since the
+// previous call; 0 on the first (baseline) call and when PSI is unavailable.
+func (n *nodePSISampler) pressure() float64 {
+	now := time.Now()
+	psi, err := cgroup.ReadIOPressure(cgroupFSRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if !psiUnavailableWarned {
+				log.Printf("WARNING: %s/io.pressure missing — PSI disabled in this kernel; "+
+					"io_pressure will stay 0 (IO dimension effectively off)", cgroupFSRoot)
+				psiUnavailableWarned = true
+			}
+		} else {
+			log.Printf("node io.pressure read failed: %v (io_pressure=0 this tick)", err)
+		}
+		return 0
+	}
+
+	var p float64
+	if n.last != nil {
+		elapsedUS := float64(now.Sub(n.lastTS).Microseconds())
+		if cur, last := psi.SomeTotalUS, n.last.SomeTotalUS; elapsedUS > 0 && cur >= last {
+			p = float64(cur-last) / elapsedUS
+		}
+	}
+	n.last = &psi
+	n.lastTS = now
+	return p
 }
 
 // podSampler holds one pod's cross-tick sampling state: the open LLC/NUMA
@@ -109,21 +152,34 @@ func (ps *podSampler) close() {
 	}
 }
 
+// podDeltas carries the raw counter deltas behind one pod's ratio metrics for
+// this tick, so sampleOnce can build the node aggregate as
+// sum(numerators)/sum(denominators) — weighted by each pod's actual traffic —
+// instead of averaging per-pod ratios, where one hot pod among N idle ones
+// would report node pressure diluted ~N times.
+type podDeltas struct {
+	llcNum, llcDen   uint64
+	numaNum, numaDen uint64
+}
+
 // sample reads this tick's counters and returns the pod's rates over the
-// window since the previous tick. syntheticLLC is only used when ps.llc is
-// nil. An error means the sampler is stale (e.g. cgroup torn down) — the
-// caller drops it and re-creates one next tick.
-func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclient.Sample, bool, error) {
+// window since the previous tick, plus the raw deltas for node aggregation.
+// syntheticLLC is only used when ps.llc is nil. An error means the sampler is
+// stale (e.g. cgroup torn down) — the caller drops it and re-creates one next
+// tick.
+func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclient.Sample, podDeltas, bool, error) {
 	now := time.Now()
+	var deltas podDeltas
 
 	llcRate := syntheticLLC
 	llcOK := true
 	if ps.llc != nil {
 		var err error
-		llcRate, llcOK, err = ps.llc.SampleRate()
+		deltas.llcNum, deltas.llcDen, llcOK, err = ps.llc.SampleDeltas()
 		if err != nil {
-			return redisclient.Sample{}, false, err
+			return redisclient.Sample{}, podDeltas{}, false, err
 		}
+		llcRate = perf.Ratio(deltas.llcNum, deltas.llcDen)
 	}
 
 	// NUMA remote ratio: node-load-misses / node-loads over the window —
@@ -132,19 +188,25 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	// the dimension then stays 0, same policy as PSI-less kernels for IO.
 	var numaRatio float64
 	if ps.numa != nil {
-		rate, ok, err := ps.numa.SampleRate()
+		var ok bool
+		var err error
+		deltas.numaNum, deltas.numaDen, ok, err = ps.numa.SampleDeltas()
 		if err != nil {
-			return redisclient.Sample{}, false, err
+			return redisclient.Sample{}, podDeltas{}, false, err
 		}
 		if ok {
-			numaRatio = rate
+			numaRatio = perf.Ratio(deltas.numaNum, deltas.numaDen)
 		}
 	}
 
 	var iops float64
 	io, ioErr := cgroup.ReadIOStat(cgroupPath)
 	if ioErr != nil {
-		log.Printf("io.stat read failed for %s: %v (io_iops=0 this tick)", cgroupPath, ioErr)
+		// ENOENT here is a pod-teardown race (cgroup dir just vanished) —
+		// normal churn, not worth a log line; same below for psi/net.
+		if !errors.Is(ioErr, fs.ErrNotExist) {
+			log.Printf("io.stat read failed for %s: %v (io_iops=0 this tick)", cgroupPath, ioErr)
+		}
 	} else {
 		if ps.lastIO != nil {
 			elapsed := now.Sub(ps.lastTS).Seconds()
@@ -162,12 +224,9 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	var ioPressure float64
 	psi, psiErr := cgroup.ReadIOPressure(cgroupPath)
 	switch {
-	case os.IsNotExist(psiErr):
-		if !psiUnavailableWarned {
-			log.Printf("WARNING: %s/io.pressure missing — PSI disabled in this kernel; "+
-				"io_pressure will stay 0 (IO dimension effectively off)", cgroupPath)
-			psiUnavailableWarned = true
-		}
+	case errors.Is(psiErr, fs.ErrNotExist):
+		// Either PSI is disabled kernel-wide (nodePSISampler warns once) or
+		// this is a pod-teardown race — both keep io_pressure at 0 quietly.
 	case psiErr != nil:
 		log.Printf("io.pressure read failed for %s: %v (io_pressure=0 this tick)", cgroupPath, psiErr)
 	default:
@@ -188,7 +247,9 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	var netBW float64
 	net, netErr := cgroup.ReadNetStats(cgroupPath)
 	if netErr != nil {
-		log.Printf("net.dev read failed for %s: %v (net_bw=0 this tick)", cgroupPath, netErr)
+		if !errors.Is(netErr, fs.ErrNotExist) {
+			log.Printf("net.dev read failed for %s: %v (net_bw=0 this tick)", cgroupPath, netErr)
+		}
 	} else {
 		if ps.lastNet != nil {
 			elapsed := now.Sub(ps.lastTS).Seconds()
@@ -203,7 +264,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	wasPrimed := ps.primed
 	ps.primed = true
 	if !wasPrimed || !llcOK {
-		return redisclient.Sample{}, false, nil // baseline tick — no window to report yet
+		return redisclient.Sample{}, podDeltas{}, false, nil // baseline tick — no window to report yet
 	}
 
 	sample := redisclient.Sample{
@@ -216,7 +277,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 	if ps.llc == nil {
 		sample.Approximation = "synthetic-devbox"
 	}
-	return sample, true, nil
+	return sample, deltas, true, nil
 }
 
 // sampleOnce reads PMU/cgroup counters for every pod on this node and writes both
@@ -226,7 +287,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 // it instead of perf_event_open() and tagged accordingly. samplers carries the
 // per-pod cross-tick state; pods that left the node are evicted (and their
 // counters closed) here.
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler) error {
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
@@ -252,8 +313,23 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 	}
 
-	var nodeAgg redisclient.Sample
-	var sampledPods int
+	// Node aggregate semantics (the scheduler's PressureVector source):
+	//   - LLC / NUMA: traffic-weighted — sum the raw counter deltas across
+	//     pods and divide once. A plain mean of per-pod ratios let N idle
+	//     system pods (redis, this agent, kube-system, ...) dilute one hot
+	//     job's pressure ~N-fold, muting exactly the signal Score() needs.
+	//   - net_bw / io_iops: summed — bandwidth and IOPS are additive.
+	//   - io_pressure: taken from the node-root cgroup's PSI (see
+	//     nodePSI.pressure()), i.e. actual device contention including
+	//     non-pod IO, not an average of per-pod stall shares.
+	// Per-JOB metrics (WriteJobMetrics) are unchanged: still the pod's own
+	// ratios/rates.
+	var (
+		nodeAgg      redisclient.Sample
+		nodeDeltas   podDeltas
+		syntheticSum float64
+		sampledPods  int
+	)
 
 	for _, p := range pods {
 		cgroupPath, err := resolvePodCgroupPath(p)
@@ -288,11 +364,15 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 			samplers[p.uid] = ps
 		}
 
-		sample, ok, err := ps.sample(cgroupPath, syntheticLLC)
+		sample, deltas, ok, err := ps.sample(cgroupPath, syntheticLLC)
 		if err != nil {
 			// Stale sampler (pod's cgroup likely torn down mid-read) — drop
-			// it; if the pod is still around, next tick re-creates it.
-			log.Printf("skip pod %s: sampling: %v", p.name, err)
+			// it; if the pod is still around, next tick re-creates it. A
+			// plain teardown race (ENOENT) is normal pod churn, not worth a
+			// log line every tick.
+			if !errors.Is(err, fs.ErrNotExist) {
+				log.Printf("skip pod %s: sampling: %v", p.name, err)
+			}
 			ps.close()
 			delete(samplers, p.uid)
 			continue
@@ -302,11 +382,13 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 
 		sampledPods++
-		nodeAgg.LLCMissRate += sample.LLCMissRate
-		nodeAgg.NUMARemoteRatio += sample.NUMARemoteRatio
+		nodeDeltas.llcNum += deltas.llcNum
+		nodeDeltas.llcDen += deltas.llcDen
+		nodeDeltas.numaNum += deltas.numaNum
+		nodeDeltas.numaDen += deltas.numaDen
+		syntheticSum += sample.LLCMissRate // only meaningful in synthetic mode
 		nodeAgg.NetBW += sample.NetBW
 		nodeAgg.IOIOPS += sample.IOIOPS
-		nodeAgg.IOPressure += sample.IOPressure
 
 		if jobID, ok := p.annotations[annoJobID]; ok {
 			if err := writer.WriteJobMetrics(ctx, jobID, nodeName, sample); err != nil {
@@ -315,16 +397,18 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 	}
 
-	if sampledPods > 0 {
-		nodeAgg.LLCMissRate /= float64(sampledPods)
-		nodeAgg.NUMARemoteRatio /= float64(sampledPods)
-		nodeAgg.NetBW /= float64(sampledPods)
-		nodeAgg.IOIOPS /= float64(sampledPods)
-		nodeAgg.IOPressure /= float64(sampledPods)
-	}
 	if synth != nil {
+		// Synthetic LLC values have no underlying counter deltas to weight
+		// by — keep the old per-pod mean for the dev-box pipeline.
+		if sampledPods > 0 {
+			nodeAgg.LLCMissRate = syntheticSum / float64(sampledPods)
+		}
 		nodeAgg.Approximation = "synthetic-devbox"
+	} else {
+		nodeAgg.LLCMissRate = clamp01(perf.Ratio(nodeDeltas.llcNum, nodeDeltas.llcDen))
+		nodeAgg.NUMARemoteRatio = clamp01(perf.Ratio(nodeDeltas.numaNum, nodeDeltas.numaDen))
 	}
+	nodeAgg.IOPressure = clamp01(nodePSI.pressure())
 
 	return writer.WriteNodeMetrics(ctx, nodeName, nodeAgg)
 }
