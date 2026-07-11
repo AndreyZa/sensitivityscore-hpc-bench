@@ -49,10 +49,28 @@ PROFILES: dict[str, ProfileSpec] = {
             # node — adjust here per stand (there is no env override)
             "PHYSICS_LIST": "FTFP_BERT_HP",
             "N_PRIMARIES": "1000000",
-            "OUTPUT_MODE": "ntuple",
+            "OUTPUT_MODE": "none",
             "RNG_SEED": "42",
         },
         sensitivity=Sensitivity(llc="high", numa="high", net="low", io="low"),
+        resources={"cpu": "8", "memory_request": "4Gi", "memory_limit": "6Gi"},
+    ),
+    # high-s + реальный дисковый вывод (burst-писатель entrypoint.sh) — жертва
+    # для IO pressure-сценария: декларирует io=high И действительно страдает
+    # от дисковой контенции (fsync-записи стоят в очереди к придавленному
+    # устройству). Без реального IO у жертвы сценарий с диск-агрессором
+    # мерил бы честный, но бесполезный ноль.
+    "high-s-io": ProfileSpec(
+        env={
+            "G4_THREADS": "8",
+            "PHYSICS_LIST": "FTFP_BERT_HP",
+            "N_PRIMARIES": "1000000",
+            "OUTPUT_MODE": "burst",
+            "IO_BURST_MB": "64",
+            "IO_INTERVAL_SECONDS": "5",
+            "RNG_SEED": "42",
+        },
+        sensitivity=Sensitivity(llc="high", numa="high", net="low", io="high"),
         resources={"cpu": "8", "memory_request": "4Gi", "memory_limit": "6Gi"},
     ),
 }

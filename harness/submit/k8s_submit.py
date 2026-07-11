@@ -45,10 +45,13 @@ SCHEDULER_NAME_BY_CONFIG = {
 _namespaces_ensured: set[str] = set()
 
 
-def _ensure_namespace(namespace: str) -> None:
+def ensure_namespace(namespace: str) -> None:
     """Auto-creates the namespace if it doesn't exist yet (idempotent).
     Fixes: 'Error from server (NotFound): namespaces "..." not found' on the
-    very first job submission against a fresh cluster."""
+    very first job submission against a fresh cluster. Public: aggressors.py
+    needs the same guarantee — aggressor pods deploy BEFORE the first job
+    submission would have created the namespace (a make harness-clean-full
+    between runs deletes it, found the hard way)."""
     if namespace in _namespaces_ensured:
         return
     result = subprocess.run(
@@ -87,7 +90,7 @@ def submit_job(
     namespace = cfg["kubernetes"]["namespace"]
     scheduler_name = SCHEDULER_NAME_BY_CONFIG.get(config, "default-scheduler")
 
-    _ensure_namespace(namespace)
+    ensure_namespace(namespace)
 
     template = _env.get_template("job-template.yaml.j2")
     manifest = template.render(

@@ -1,0 +1,37 @@
+# Minimal single-node slurm.conf for the local smoke-test cluster (see
+# README.md). Placeholders (__HOSTNAME__/__CPUS__) are substituted by
+# entrypoint.sh at container start.
+ClusterName=localtest
+SlurmctldHost=__HOSTNAME__
+
+AuthType=auth/munge
+CredType=cred/munge
+
+SlurmUser=slurm
+SlurmctldPort=6817
+SlurmdPort=6818
+SlurmdSpoolDir=/var/spool/slurmd
+StateSaveLocation=/var/spool/slurmctld
+SlurmctldPidFile=/run/slurmctld.pid
+SlurmdPidFile=/run/slurmd.pid
+
+ProctrackType=proctrack/linuxproc
+TaskPlugin=task/none
+SchedulerType=sched/backfill
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core
+
+ReturnToService=2
+
+SlurmctldLogFile=/var/log/slurm/slurmctld.log
+SlurmdLogFile=/var/log/slurm/slurmd.log
+SlurmctldDebug=info
+SlurmdDebug=info
+
+AccountingStorageType=accounting_storage/slurmdbd
+AccountingStorageHost=__HOSTNAME__
+AccountingStoragePort=6819
+JobAcctGatherType=jobacct_gather/linux
+
+__NODELINE__
+PartitionName=debug Nodes=__HOSTNAME__ Default=YES MaxTime=INFINITE State=UP OverSubscribe=YES

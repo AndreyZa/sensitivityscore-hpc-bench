@@ -30,9 +30,15 @@ spec:
     - name: stress
       image: {{ image }}
       imagePullPolicy: Always # конвенция репо: dev-теги мутабельны, нода не должна жить с закэшированным старым образом
-      {# Без --timeout: "--timeout 0" у stress-ng = "0 секунд" (мгновенный
+      {# args приходят из сценария (aggressor_args: --stream для LLC/membw,
+         --hdd для диска) поверх фиксированного --temp-path: временные файлы
+         IO-стрессоров пишутся в /scratch (emptyDir -> реальный диск ноды).
+         Без --timeout: "--timeout 0" у stress-ng = "0 секунд" (мгновенный
          выход), бесконечный прогон — дефолт без флага. #}
-      args: ["--stream", "{{ stream_workers }}"]
+      args: {{ args_json }}
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
       resources:
         requests:
           cpu: "{{ cpu_request }}"
@@ -40,3 +46,7 @@ spec:
         limits:
           cpu: "{{ cpu_limit }}"
           memory: "2Gi"
+  volumes:
+    - name: scratch
+      emptyDir:
+        sizeLimit: 8Gi # --hdd пишет реальные файлы; ограничить, чтобы не довести ноду до eviction

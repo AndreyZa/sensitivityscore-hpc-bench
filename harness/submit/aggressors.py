@@ -9,8 +9,10 @@ cpu-request при большом реальном давлении — наме
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -56,12 +58,33 @@ def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
 
 
 def deploy(
-    nodes: list[str], per_node: int, scenario_name: str, cfg: dict
+    nodes: list[str],
+    per_node: int,
+    scenario: dict,
+    cfg: dict,
 ) -> None:
-    """Разворачивает per_node агрессоров на каждой из nodes и ждёт их Ready."""
+    """Разворачивает per_node агрессоров на каждой из nodes и ждёт их Ready.
+
+    Тип давления задаётся scenario["aggressor_args"] (stress-ng-аргументы:
+    --stream N для LLC/полосы памяти, --hdd N [--hdd-bytes ...] для диска —
+    IO-давление тогда видно и в PSI io.pressure); дефолт —
+    cfg["aggressor"]["default_args"]. --temp-path /scratch добавляется всегда
+    (emptyDir в шаблоне): файловые стрессоры пишут на реальный диск ноды, а
+    не в overlay-слой контейнера.
+    """
+    from submit.k8s_submit import ensure_namespace  # локальный импорт: избегаем цикла на уровне модулей
+
     namespace = cfg["kubernetes"]["namespace"]
+    # Агрессоры деплоятся ДО первого сабмита job (который сам создаёт
+    # namespace) — после make harness-clean-full namespace не существует.
+    ensure_namespace(namespace)
+
     template = _env.get_template("aggressor-pod.yaml.j2")
     agg_cfg = cfg.get("aggressor", {})
+
+    args = ["--temp-path", "/scratch"] + list(
+        scenario.get("aggressor_args") or agg_cfg.get("default_args", ["--stream", "2"])
+    )
 
     manifests = []
     for node in nodes:
@@ -70,22 +93,26 @@ def deploy(
                 template.render(
                     name=f"ss-aggressor-{node}-{slot}".lower(),
                     namespace=namespace,
-                    scenario=scenario_name,
+                    scenario=scenario["name"],
                     node_name=node,
                     image=cfg["images"]["aggressor"],
-                    stream_workers=agg_cfg.get("stream_workers", 2),
+                    args_json=json.dumps(args),
                     cpu_request=agg_cfg.get("cpu_request", "500m"),
                     cpu_limit=agg_cfg.get("cpu_limit", "2"),
                 )
             )
 
-    subprocess.run(
+    result = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input="\n---\n".join(manifests),
-        check=True,
+        check=False,
         text=True,
         capture_output=True,
     )
+    if result.returncode != 0:
+        # stderr обязателен в сообщении: CalledProcessError без него прячет
+        # причину ('namespaces not found' искали дольше, чем чинили).
+        raise RuntimeError(f"aggressor apply failed: {result.stderr.strip()}")
     log.info(
         "aggressors: %d pods on nodes %s (x%d per node), waiting for Ready",
         len(manifests),
@@ -145,21 +172,38 @@ def assert_running(expected: int, cfg: dict) -> None:
 
 def teardown(cfg: dict) -> None:
     """Сносит всех агрессоров (по лейблу) и дожидается фактического удаления —
-    следующее плечо/точка интенсивности должны стартовать с чистого давления."""
+    следующее плечо/точка интенсивности должны стартовать с чистого давления.
+
+    Неудача НЕ глотается молча: если delete не прошёл (например, IO-шторм
+    самого сценария на dev-стенде с общим диском довёл apiserver/etcd до
+    сброса соединений — реальный случай), агрессоры продолжают давить ноду
+    и после конца плеча. Одна повторная попытка после паузы, затем громкая
+    ошибка в лог."""
     namespace = cfg["kubernetes"]["namespace"]
-    subprocess.run(
-        [
-            "kubectl",
-            "delete",
-            "pods",
-            "-l",
-            AGGRESSOR_LABEL,
-            "-n",
-            namespace,
-            "--ignore-not-found",
-            "--wait=true",
-            "--timeout=120s",
-        ],
-        check=False,
-        capture_output=True,
+    cmd = [
+        "kubectl",
+        "delete",
+        "pods",
+        "-l",
+        AGGRESSOR_LABEL,
+        "-n",
+        namespace,
+        "--ignore-not-found",
+        "--wait=true",
+        "--timeout=120s",
+    ]
+    for attempt in (1, 2):
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        log.warning(
+            "aggressor teardown attempt %d failed: %s", attempt, result.stderr.strip()
+        )
+        time.sleep(10)
+    log.error(
+        "aggressor teardown FAILED twice — pods with label %s may still be "
+        "loading the node; clean up manually (kubectl delete pods -l %s -n %s)",
+        AGGRESSOR_LABEL,
+        AGGRESSOR_LABEL,
+        namespace,
     )

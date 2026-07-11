@@ -89,9 +89,34 @@ pressure_scenarios:
     aggressor_nodes: [] # явный список нод важнее pressured_node_count
     stabilize_seconds: 30
     repetitions: 10
+    aggressor_args: ["--stream", "2"] # LLC/полоса памяти
+
+  # IO-ось: диск-агрессор (--hdd пишет/читает реальные файлы в /scratch ->
+  # PSI io.pressure на ноде растёт) + жертва high-s-io, которая КРОМЕ
+  # compute реально пишет на диск (OUTPUT_MODE=burst, см. profiles.py и
+  # workload/entrypoint.sh) — без реального IO у жертвы дисковая контенция
+  # не влияла бы на её makespan, и сценарий мерил бы честный ноль.
+  # ОСТОРОЖНО с интенсивностью на средах с ОБЩИМ диском (dev/WSL2, один
+  # virtual disk на все "ноды" И на etcd): IO-шторм сценария может довести
+  # apiserver до сброса соединений (подтверждено первым smoke: 4 hdd-воркера
+  # с fsync -> node io_pressure 0.79 -> etcd starvation). На стенде с
+  # отдельными дисками на узел это не проблема, но начинать стоит с
+  # aggressors_per_node: [1] и наращивать по dose-response.
+  - name: io
+    victim_profile: high-s-io
+    victim_count: 6
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 30
+    aggressors_per_node: [1, 2]
+    pressured_node_count: 1
+    aggressor_nodes: []
+    stabilize_seconds: 30
+    repetitions: 10
+    aggressor_args: ["--hdd", "1", "--hdd-bytes", "1g"]
 
 aggressor:
-  stream_workers: 2
+  default_args: ["--stream", "2"] # если сценарий не задал aggressor_args
   cpu_request: "500m" # намеренно мало — невидим для ресурсной модели default-планировщика
   cpu_limit: "2"
 

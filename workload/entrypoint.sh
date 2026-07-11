@@ -45,15 +45,38 @@ sed \
   -e "s|__RNG_SEED__|${RNG_SEED}|g" \
   "${MACRO}" > "${RENDERED_MACRO}"
 
-# OUTPUT_MODE (Disk I/O sensitivity dimension) is not yet wired into the
-# macro — the ntuple/analysis UI commands needed for per-event output
-# depend on TestEm5's own AnalysisManager setup, which needs verification
-# against the actual example source before scripting it here. Tracked as a
-# follow-up; low-S/high-S both currently run with default (aggregate-only)
-# output regardless of OUTPUT_MODE. See docs §1.2 for the intended behavior.
-if [ "${OUTPUT_MODE}" != "none" ]; then
-  echo "[entrypoint] warning: OUTPUT_MODE=${OUTPUT_MODE} requested but not yet implemented — running with default output" >&2
-fi
+# OUTPUT_MODE — Disk-I/O измерение профиля S (docs §1.2):
+#   none  — без вывода (по умолчанию);
+#   burst — эмуляция периодической записи выходных данных (checkpoint/
+#           ntuple-style): каждые IO_INTERVAL_SECONDS секунд пишется
+#           IO_BURST_MB МБ с fsync (fsync принципиален: без него запись
+#           оседает в page cache и реального дискового I/O — и PSI-стоек
+#           у job под IO-контенцией — не возникает).
+# burst-писатель выбран вместо настоящего per-event ntuple через
+# AnalysisManager TestEm5: даёт ровно то, что нужно измерению — управляемую
+# дозируемую IO-нагрузку, привязанную к живому compute-job, — без
+# зависимости от деталей analysis-кода конкретного примера Geant4.
+# Настоящий ntuple-вывод остаётся возможным уточнением методики.
+IO_BURST_MB="${IO_BURST_MB:-64}"
+IO_INTERVAL_SECONDS="${IO_INTERVAL_SECONDS:-5}"
+case "${OUTPUT_MODE}" in
+  none) ;;
+  burst)
+    echo "[entrypoint] burst writer: ${IO_BURST_MB}MB fsync every ${IO_INTERVAL_SECONDS}s" >&2
+    (
+      while true; do
+        dd if=/dev/zero of=/tmp/output-burst.dat bs=1M \
+          count="${IO_BURST_MB}" conv=fsync 2>/dev/null
+        sleep "${IO_INTERVAL_SECONDS}"
+      done
+    ) &
+    # Писатель — фоновый процесс контейнера: умирает вместе с ним, когда
+    # geant4-app (PID 1 после exec ниже) завершается.
+    ;;
+  *)
+    echo "[entrypoint] warning: unknown OUTPUT_MODE=${OUTPUT_MODE} — running without output" >&2
+    ;;
+esac
 
 export PHYSLIST="${PHYSICS_LIST}"
 

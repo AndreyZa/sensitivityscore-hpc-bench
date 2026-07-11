@@ -38,16 +38,13 @@ spec:
           image: {{ image | default("sensitivityscore-bench/geant4:11.2") }}
           imagePullPolicy: IfNotPresent
           env:
-            - name: G4_THREADS
-              value: "{{ env.G4_THREADS }}"
-            - name: PHYSICS_LIST
-              value: "{{ env.PHYSICS_LIST }}"
-            - name: N_PRIMARIES
-              value: "{{ env.N_PRIMARIES }}"
-            - name: OUTPUT_MODE
-              value: "{{ env.OUTPUT_MODE }}"
-            - name: RNG_SEED
-              value: "{{ env.RNG_SEED }}"
+            {# Весь env профиля (profiles.py) как есть — профили различаются
+               набором переменных (например, IO_BURST_MB только у high-s-io),
+               хардкод списка имён здесь молча терял бы новые. #}
+            {% for key, value in env.items() -%}
+            - name: {{ key }}
+              value: "{{ value }}"
+            {% endfor %}
           resources:
             requests:
               cpu: "{{ resources.cpu }}"

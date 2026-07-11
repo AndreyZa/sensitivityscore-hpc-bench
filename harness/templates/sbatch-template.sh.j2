@@ -14,15 +14,14 @@
 # (config=C profile={{ profile }} overcommit={{ overcommit }}).
 set -euo pipefail
 
-export G4_THREADS="{{ env.G4_THREADS }}"
-export PHYSICS_LIST="{{ env.PHYSICS_LIST }}"
-export N_PRIMARIES="{{ env.N_PRIMARIES }}"
-export OUTPUT_MODE="{{ env.OUTPUT_MODE }}"
-export RNG_SEED="{{ env.RNG_SEED }}"
-
+{# Весь env профиля (profiles.py) как есть — профили различаются набором
+   переменных (например, IO_BURST_MB только у high-s-io). #}
+{% for key, value in env.items() -%}
+export {{ key }}="{{ value }}"
+{% endfor %}
 echo "[sbatch] job_id={{ job_id }} threads=${G4_THREADS} physics_list=${PHYSICS_LIST} \
 n_primaries=${N_PRIMARIES} output_mode=${OUTPUT_MODE} seed=${RNG_SEED} slurm_job_id=${SLURM_JOB_ID}"
 
 srun --container-image={{ image | default("sensitivityscore-bench/geant4:11.2") }} \
-  --container-env=G4_THREADS,PHYSICS_LIST,N_PRIMARIES,OUTPUT_MODE,RNG_SEED \
+  --container-env={{ env.keys() | join(",") }} \
   /entrypoint.sh

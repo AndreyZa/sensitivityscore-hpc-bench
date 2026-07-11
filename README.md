@@ -157,8 +157,10 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
   `ReadUncoreNUMABandwidth`.
 - Wiring `QemuProcessResolver` к реальному KubeVirt API кластера
   (конфигурация B: харнесс пока сабмитит Job, а не VMI).
-- `OUTPUT_MODE` в workload не вшит в Geant4-макрос — IO-профиль нагрузки
-  пока не генерирует реальный disk-IO (см. `workload/entrypoint.sh`).
+- `OUTPUT_MODE=burst` эмулирует периодическую запись выходных данных
+  (fsync-burst в `workload/entrypoint.sh`, профиль `high-s-io`) — настоящий
+  per-event ntuple через AnalysisManager TestEm5 остаётся возможным
+  уточнением методики.
 
 ---
 

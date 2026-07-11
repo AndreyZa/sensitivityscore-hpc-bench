@@ -337,7 +337,7 @@ def run_pressure_arm(
     rows: list[dict] = []
     try:
         if not dry_run:
-            aggressors.deploy(nodes or [], intensity, scenario["name"], cfg)
+            aggressors.deploy(nodes or [], intensity, scenario, cfg)
             time.sleep(scenario.get("stabilize_seconds", 30))
             # Давление должно быть живым к моменту подачи жертв — молча
             # вышедший агрессор превращает плечо в измерение на чистой ноде.
@@ -408,18 +408,41 @@ def run_pressure_scenario(scenario: dict, cfg: dict, dry_run: bool):
             seed = f"{name}/{intensity}/{rep}"
             for config in configs:
                 offsets = victim_offsets(victim_count, arrival, random.Random(seed))
-                yield run_pressure_arm(
-                    scenario,
-                    scenario_col,
-                    config,
-                    profile,
-                    intensity,
-                    rep,
-                    offsets,
-                    nodes,
-                    cfg,
-                    dry_run,
-                )
+                try:
+                    yield run_pressure_arm(
+                        scenario,
+                        scenario_col,
+                        config,
+                        profile,
+                        intensity,
+                        rep,
+                        offsets,
+                        nodes,
+                        cfg,
+                        dry_run,
+                    )
+                except Exception as exc:  # noqa: BLE001 — одно упавшее плечо
+                    # (например, деплой агрессоров не прошёл из-за моргнувшего
+                    # apiserver) не должно ронять весь сценарий: фиксируем
+                    # error-строку и идём к следующему плечу/повтору.
+                    log.error(
+                        "pressure arm %s/%s oc=%s rep=%d failed: %s",
+                        name,
+                        config,
+                        intensity,
+                        rep,
+                        exc,
+                    )
+                    yield [
+                        error_row(
+                            config,
+                            profile,
+                            float(intensity),
+                            rep,
+                            exc,
+                            scenario=scenario_col,
+                        )
+                    ]
 
 
 def build_plan(cfg: dict, pilot: bool, only_configs: list[str] | None) -> list[tuple]:

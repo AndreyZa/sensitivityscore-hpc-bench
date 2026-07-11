@@ -1,0 +1,16 @@
+# Minimal slurmdbd.conf for the local smoke-test cluster. __STORAGEPASS__
+# substituted by entrypoint.sh. Must end up owned by SlurmUser, mode 600, or
+# slurmdbd refuses to start (perms check).
+AuthType=auth/munge
+DbdHost=localhost
+DbdPort=6819
+SlurmUser=slurm
+StorageType=accounting_storage/mysql
+StorageHost=localhost
+StoragePort=3306
+StorageUser=slurm
+StoragePass=__STORAGEPASS__
+StorageLoc=slurm_acct_db
+LogFile=/var/log/slurm/slurmdbd.log
+PidFile=/run/slurmdbd.pid
+DebugLevel=info
