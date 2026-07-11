@@ -75,14 +75,15 @@ func main() {
 	}
 }
 
-// podSampler holds one pod's cross-tick sampling state: the open LLC perf
-// counters (nil in synthetic mode) and the previous io.stat/io.pressure/net.dev
-// readings, so llc_miss_rate, io_iops, io_pressure and net_bw are all
-// rates/shares over the tick window rather than an instant/cumulative
-// reading. The first tick for a pod only records baselines (sample() returns
-// ok=false).
+// podSampler holds one pod's cross-tick sampling state: the open LLC/NUMA
+// perf counters (nil in synthetic mode) and the previous
+// io.stat/io.pressure/net.dev readings, so llc_miss_rate, numa_remote_ratio,
+// io_iops, io_pressure and net_bw are all rates/shares over the tick window
+// rather than an instant/cumulative reading. The first tick for a pod only
+// records baselines (sample() returns ok=false).
 type podSampler struct {
-	llc     *perf.CgroupLLCSampler // nil when hardware PMU is unavailable
+	llc     *perf.RatioSampler     // nil when hardware PMU is unavailable
+	numa    *perf.RatioSampler     // nil when PMU or node-level cache events are unavailable
 	lastIO  *cgroup.IOStats        // nil until the first successful io.stat read
 	lastPSI *cgroup.IOPressureStat // nil until the first successful io.pressure read
 	lastNet *cgroup.NetStats       // nil until the first successful net.dev read
@@ -90,14 +91,21 @@ type podSampler struct {
 	primed  bool
 }
 
-// psiUnavailableWarned makes the "PSI disabled in this kernel" warning fire
-// once per process instead of once per pod per tick — like the PMU probe,
-// this is an environment property, not a per-pod condition.
-var psiUnavailableWarned bool
+// psiUnavailableWarned / numaEventsUnavailableWarned make the corresponding
+// "dimension off on this host" warnings fire once per process instead of once
+// per pod per tick — like the PMU probe, these are environment properties,
+// not per-pod conditions.
+var (
+	psiUnavailableWarned        bool
+	numaEventsUnavailableWarned bool
+)
 
 func (ps *podSampler) close() {
 	if ps.llc != nil {
 		ps.llc.Close()
+	}
+	if ps.numa != nil {
+		ps.numa.Close()
 	}
 }
 
@@ -115,6 +123,21 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 		llcRate, llcOK, err = ps.llc.SampleRate()
 		if err != nil {
 			return redisclient.Sample{}, false, err
+		}
+	}
+
+	// NUMA remote ratio: node-load-misses / node-loads over the window —
+	// share of DRAM reads served by a remote NUMA node. ps.numa is nil when
+	// the host has no node-event mapping (warned once at sampler creation);
+	// the dimension then stays 0, same policy as PSI-less kernels for IO.
+	var numaRatio float64
+	if ps.numa != nil {
+		rate, ok, err := ps.numa.SampleRate()
+		if err != nil {
+			return redisclient.Sample{}, false, err
+		}
+		if ok {
+			numaRatio = rate
 		}
 	}
 
@@ -185,7 +208,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 
 	sample := redisclient.Sample{
 		LLCMissRate:     clamp01(llcRate),
-		NUMARemoteRatio: 0, // see perf.ReadUncoreNUMABandwidth TODO
+		NUMARemoteRatio: clamp01(numaRatio),
 		NetBW:           netBW,
 		IOIOPS:          iops,
 		IOPressure:      clamp01(ioPressure),
@@ -243,10 +266,23 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		if !exists {
 			ps = &podSampler{}
 			if synth == nil {
-				ps.llc, err = perf.NewCgroupLLCSampler(cgroupPath)
+				ps.llc, err = perf.NewLLCMissRatioSampler(cgroupPath)
 				if err != nil {
 					log.Printf("skip pod %s: open LLC counters: %v", p.name, err)
 					continue
+				}
+				// NUMA is best-effort on top of a working PMU: generic
+				// node-level cache events have no kernel mapping on some CPU
+				// models — then the dimension stays 0 (warned once), while
+				// LLC keeps working.
+				ps.numa, err = perf.NewNUMARemoteRatioSampler(cgroupPath)
+				if err != nil {
+					if !numaEventsUnavailableWarned {
+						log.Printf("WARNING: node-level cache events unavailable (%v) — "+
+							"numa_remote_ratio will stay 0 (NUMA dimension effectively off)", err)
+						numaEventsUnavailableWarned = true
+					}
+					ps.numa = nil
 				}
 			}
 			samplers[p.uid] = ps

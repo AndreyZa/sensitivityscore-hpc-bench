@@ -60,6 +60,39 @@ func LLCReferencesCounter(cgroupFD int) (*Counter, error) {
 		unix.PERF_TYPE_HARDWARE, unix.PERF_COUNT_HW_CACHE_REFERENCES)
 }
 
+// hwCacheConfig builds a PERF_TYPE_HW_CACHE event config per
+// perf_event_open(2): cache id | (op << 8) | (result << 16).
+func hwCacheConfig(cache, op, result uint64) uint64 {
+	return cache | op<<8 | result<<16
+}
+
+// NodeLoadsCounter opens the generic node-level cache event ("node-loads" in
+// perf-list terms): DRAM reads attributed to a NUMA node, access = local +
+// remote. Denominator for numa_remote_ratio.
+func NodeLoadsCounter(cgroupFD int) (*Counter, error) {
+	return OpenCgroupCounter(cgroupFD, "node_loads",
+		unix.PERF_TYPE_HW_CACHE,
+		hwCacheConfig(unix.PERF_COUNT_HW_CACHE_NODE,
+			unix.PERF_COUNT_HW_CACHE_OP_READ,
+			unix.PERF_COUNT_HW_CACHE_RESULT_ACCESS))
+}
+
+// NodeLoadMissesCounter opens "node-load-misses": DRAM reads that missed the
+// local NUMA node, i.e. were served by remote memory. Numerator for
+// numa_remote_ratio = node-load-misses / node-loads.
+//
+// Unlike the uncore-IMC approach sketched in ReadUncoreNUMABandwidth, these
+// generic events need no CPU-model-specific event codes — the kernel maps
+// them per model, and models without a mapping fail the open with an explicit
+// error instead of silently returning zeros.
+func NodeLoadMissesCounter(cgroupFD int) (*Counter, error) {
+	return OpenCgroupCounter(cgroupFD, "node_load_misses",
+		unix.PERF_TYPE_HW_CACHE,
+		hwCacheConfig(unix.PERF_COUNT_HW_CACHE_NODE,
+			unix.PERF_COUNT_HW_CACHE_OP_READ,
+			unix.PERF_COUNT_HW_CACHE_RESULT_MISS))
+}
+
 // Read returns the current cumulative counter value.
 func (c *Counter) Read() (uint64, error) {
 	buf := make([]byte, 8)
@@ -151,6 +184,13 @@ func ProbeHardwareCounters(cgroupPath string) (bool, error) {
 // code — it is NOT a generic perf_event_open() call like the LLC counters above,
 // so it's intentionally left as an explicit TODO with the architecture documented
 // rather than a guessed/untested raw-event encoding.
+//
+// NOTE: the WORKING numa_remote_ratio implementation is NodeLoadsCounter /
+// NodeLoadMissesCounter above (generic node-level cache events via
+// NewNUMARemoteRatioSampler) — per-cgroup, portable, no model-specific codes.
+// This uncore path remains only as a potential refinement: it measures true
+// per-socket memory *bandwidth* (all traffic, not just read misses), but is
+// node-wide rather than per-cgroup and needs per-model event discovery.
 //
 // Reference approach: read the per-socket "CAS_COUNT.RD"/"CAS_COUNT.WR" uncore
 // events for the NUMA node the cgroup's CPUs are pinned to (cross-reference
