@@ -38,22 +38,29 @@ def plot_makespan_boxplot(
     return fig
 
 
-def plot_llc_vs_makespan(df: pd.DataFrame, output_path: str | Path | None = None):
-    """Scatter of llc_miss_rate vs makespan_s, split by profile (low-s / high-s) —
-    validates whether LLC pressure correlates with degradation, justifying the
-    choice of LLC as an S dimension (docs §5.3)."""
+def plot_metric_vs_makespan(
+    df: pd.DataFrame,
+    metric: str,
+    metric_label: str,
+    output_path: str | Path | None = None,
+):
+    """Scatter of one pressure metric vs makespan_s, split by profile — the
+    §5.3 validation that a measured S dimension actually correlates with
+    degradation, justifying its place in the sensitivity vector. Used for
+    llc_miss_rate, io_pressure and numa_remote_ratio (docs §5.3 named only
+    LLC; the same argument is required for every scored dimension)."""
     fig, ax = plt.subplots(figsize=(8, 6))
     sns.scatterplot(
         data=df,
-        x="llc_miss_rate",
+        x=metric,
         y="makespan_s",
         hue="profile",
         style="config",
         ax=ax,
         alpha=0.7,
     )
-    ax.set_title("LLC miss rate vs. makespan")
-    ax.set_xlabel("LLC miss rate (normalized)")
+    ax.set_title(f"{metric_label} vs. makespan")
+    ax.set_xlabel(metric_label)
     ax.set_ylabel("Makespan (s)")
     fig.tight_layout()
 

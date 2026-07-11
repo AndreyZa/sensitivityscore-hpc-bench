@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 from load import filter_valid, load_results
-from plots import plot_llc_vs_makespan, plot_makespan_boxplot
+from plots import plot_cv_comparison, plot_makespan_boxplot, plot_metric_vs_makespan
 from stats import run_all_comparisons
 
 # Config pairs tested for each hypothesis (Программа_экспериментов §6).
@@ -115,12 +115,30 @@ def main():
     (outdir / "summary.md").write_text(summary_md, encoding="utf-8")
 
     # Visualizations (§5.3) — boxplot at overcommit=2.0 (max expected divergence),
-    # scatter of LLC pressure vs makespan across all data.
+    # one pressure-vs-makespan scatter per measured S dimension (the §5.3
+    # correlation argument is needed for every scored axis, not just LLC),
+    # and the H1 stability (CV) comparison.
     if 2.0 in valid["overcommit"].unique():
         plot_makespan_boxplot(
             valid, overcommit=2.0, output_path=outdir / "makespan_boxplot.png"
         )
-    plot_llc_vs_makespan(valid, output_path=outdir / "llc_vs_makespan.png")
+    for metric, label, fname in [
+        ("llc_miss_rate", "LLC miss rate (normalized)", "llc_vs_makespan.png"),
+        ("io_pressure", "IO pressure (PSI stall share)", "io_pressure_vs_makespan.png"),
+        ("numa_remote_ratio", "NUMA remote read ratio", "numa_vs_makespan.png"),
+    ]:
+        if valid[metric].notna().any():
+            plot_metric_vs_makespan(valid, metric, label, output_path=outdir / fname)
+
+    h1_a, h1_b = HYPOTHESIS_PAIRS["H1"]
+    h1_rows = comparisons[
+        (comparisons["config_a"] == h1_a)
+        & (comparisons["config_b"] == h1_b)
+        & (comparisons["mw_n_a"] > 0)
+        & (comparisons["mw_n_b"] > 0)
+    ]
+    if not h1_rows.empty:
+        plot_cv_comparison(h1_rows, output_path=outdir / "cv_comparison.png")
 
     print(
         f"done — see {outdir}/summary.md, {outdir}/comparisons.csv, and the .png plots"
