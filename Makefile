@@ -19,7 +19,7 @@ SCHEDULER_PLUGINS_DIR ?= ../scheduler-plugins
 
 # --- Docker-образы ---
 REGISTRY                ?= andreyza
-SCHEDULER_RELEASE_VER   ?= v20260711-f8e7d822
+SCHEDULER_RELEASE_VER   ?= v20260711-b2797acc
 WORKLOAD_IMAGE          ?= $(REGISTRY)/geant4:11.2
 SCHEDULER_IMAGE         ?= $(REGISTRY)/sensitivityscore:$(SCHEDULER_RELEASE_VER)
 METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
