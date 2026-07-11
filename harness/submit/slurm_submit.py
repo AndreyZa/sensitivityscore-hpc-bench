@@ -21,6 +21,18 @@ TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
 _SBATCH_ID_RE = re.compile(r"Submitted batch job (\d+)")
+_K8S_MEM_SUFFIX_RE = re.compile(r"^(\d+)([KMGT])i$")
+
+
+def _slurm_mem(value: str) -> str:
+    """profiles.py's resources dict is shared with the K8s manifest template
+    (which understands Kubernetes' Ki/Mi/Gi/Ti quantities) — but sbatch
+    rejects the trailing "i" outright ("Invalid --mem specification"),
+    confirmed against a real slurmd (see slurm/local-test/). Same magnitude
+    either way (both are binary multiples), just strip the "i" for Slurm's
+    own K/M/G/T suffix instead of changing the shared profile data."""
+    match = _K8S_MEM_SUFFIX_RE.match(value)
+    return f"{match.group(1)}{match.group(2)}" if match else value
 
 
 class SlurmJobHandle:
@@ -43,7 +55,10 @@ def submit_job(
         overcommit=overcommit,
         image=cfg["images"]["workload"],
         env=spec.env,
-        resources=spec.resources,
+        resources={
+            **spec.resources,
+            "memory_request": _slurm_mem(spec.resources["memory_request"]),
+        },
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".sbatch", delete=False) as f:
