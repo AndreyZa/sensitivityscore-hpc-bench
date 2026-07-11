@@ -297,7 +297,7 @@ harness-clean-jobs: ## Удалить все Job харнесса (namespace HAR
 	$(KUBECTL) delete jobs -l app=geant4-bench -n $(HARNESS_NAMESPACE) --ignore-not-found
 
 .PHONY: harness-clean-full
-harness-clean-full: harness-clean-jobs ## Снести весь namespace харнесса целиком (пересоздастся сам при следующем make pilot/run-all — см. _ensure_namespace)
+harness-clean-full: harness-clean-jobs ## Снести весь namespace харнесса целиком — ВКЛЮЧАЯ запущенный in-cluster harness Job и PVC с results.parquet! (пересоздастся при следующем прогоне, см. _ensure_namespace/harness-rbac)
 	$(KUBECTL) delete namespace $(HARNESS_NAMESPACE) --ignore-not-found
 
 # ---------------------------------------------------------------------------
@@ -371,5 +371,5 @@ clean: ## Убрать venv-ы, __pycache__, Go build-кэш, отчёты ан�
 	cd metrics-agent && go clean ./... 2>/dev/null || true
 
 .PHONY: nuke
-nuke: clean-jobs scheduler-undeploy clean harness-clean-full ## clean + убрать Job и Deployment планировщика из кластера
+nuke: clean-jobs scheduler-undeploy clean harness-clean-full ## clean + убрать Job и Deployment планировщика из кластера (внимание: сносит и in-cluster harness Job/PVC — см. harness-clean-full)
 	$(KUBECTL) delete namespace $(NAMESPACE) --ignore-not-found

@@ -5,6 +5,15 @@
 # schedulerName: sensitivityscore — второй профиль планировщика, чтобы
 # default-scheduler продолжал работать как раньше и можно было переключать
 # schedulerName в манифесте Job для A/B-сравнения (H1).
+#
+# weight: 5 — НЕ дефолтная единица. plugins.score.enabled ДОБАВЛЯЕТ плагин к
+# дефолтным score-плагинам (NodeResourcesFit, NodeResourcesBalancedAllocation,
+# ImageLocality, ...), каждый из которых голосует со своим весом; с weight=1
+# сигнал SensitivityScore регулярно перекрывается их суммой, и оба
+# планировщика принимают почти одинаковые решения — H1 нечем показать.
+# 5 делает interference-сигнал решающим при прочих равных, не отключая
+# дефолтную балансировку по ресурсам. Это же — ручка абляции (Глава 3):
+# weight=0 эквивалентен default-scheduler.
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 leaderElection:
@@ -15,3 +24,4 @@ profiles:
       score:
         enabled:
           - name: SensitivityScore
+            weight: 5
