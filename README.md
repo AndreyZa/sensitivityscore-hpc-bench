@@ -28,36 +28,103 @@ k8s/
   config-d-slinky/       — Job-манифест для Slinky/slurm-bridge
   scheduler-config/      — KubeSchedulerConfiguration + веса score-функции
 slurm/config-c/          — sbatch-скрипты для классического Slurm
-scheduler-plugin/        — Go: сам плагин SensitivityScore (Score extension point)
 metrics-agent/           — Go: DaemonSet-агент, perf_event_open() → Redis
-harness/                 — Python: оркестрация серии экспериментов (run_experiment.py)
+harness/                 — Python: оркестрация серии экспериментов (run_experiment.py),
+                           запускается как Job внутри кластера (harness/deploy/)
 analysis/                — Python: статистика (Mann-Whitney, Cliff's delta) + графики
 scripts/                 — bootstrap-скрипты для кластера
 ```
 
-## Быстрый старт
+Сам плагин SensitivityScore (Score extension point) живёт в отдельном форке
+`kubernetes-sigs/scheduler-plugins` (`../scheduler-plugins` рядом с этим
+репозиторием) — здесь только манифесты деплоя (`k8s/scheduler-config/`) и
+Makefile-обёртка над его сборкой.
+
+## Прогон на боевом стенде
+
+`make help` — полный список команд. Порядок ниже — то, что реально нужно
+выполнить на новом стенде партнёров, от нуля до H1–H4.
+
+### 0. PMU health-check (до разворачивания DaemonSet)
+
+`perf_event_open()` в cgroup-scoped режиме — не то же самое, что просто
+CAP_PERFMON на под (см. `docs/Программа экспериментов (Geant4).md` §8) —
+проверить это стоит ДО того, как разворачивать весь `metrics-agent`:
 
 ```bash
-# 1. Инфраструктура: namespace + Redis + веса score-функции
-./scripts/bootstrap-cluster.sh
+make perfcheck-image                       # локальная сборка образа
+docker push andreyza/perfcheck:dev         # ноды стенда — отдельные машины, тянут образ из registry
+make perfcheck-run
+make perfcheck-logs                        # STATUS должен быть Completed, не Error
+make perfcheck-clean
+```
 
-# 2. Собрать образы
-docker build -t sensitivityscore-bench/geant4:11.2 ./workload
-docker build -t sensitivityscore-bench/scheduler:dev ./scheduler-plugin
-docker build -t sensitivityscore-bench/metrics-agent:dev ./metrics-agent
+### 1. Собрать и запушить образы
 
-# 3. Развернуть плагин-планировщик и агент метрик (см. README в scheduler-plugin/, metrics-agent/)
-kubectl apply -f metrics-agent/deploy/daemonset.yaml
+Каждый `make image-*` только собирает образ ЛОКАЛЬНО — на реальном
+многоузловом стенде worker-ноды не разделяют Docker-демон с машиной сборки,
+поэтому после каждой сборки нужен `docker push` (кластер сам подтянет по
+`imagePullPolicy: Always`):
 
-# 4. Пилотный прогон (1 точка плана, 3 повтора, конфигурация A — sanity-check)
-cd harness && pip install -r requirements.txt && python run_experiment.py --pilot
+```bash
+make image-workload      && docker push andreyza/geant4:11.2
+make image-metrics-agent && docker push andreyza/metrics-agent:dev
+make image-harness       && docker push andreyza/harness:dev
 
-# 5. Полная матрица (см. harness/config.yaml для факторов плана)
-python run_experiment.py
+# Плагин планировщика собирается в форке; тег — переменная SCHEDULER_RELEASE_VER в этом Makefile
+make scheduler-plugin-image
+make -C ../scheduler-plugins -f sensitivityscore.mk ss-push
+```
 
-# 6. Анализ и проверка H1–H4
-cd ../analysis && pip install -r requirements.txt
-python analyze.py --results ../harness/results/results.parquet --outdir report/
+### 2. Развернуть кластер
+
+```bash
+make setup-cluster   # namespace+Redis (bootstrap) + scheduler-deploy + deploy-metrics-agent
+make scheduler-status                 # под планировщика, ConfigMap-ы, последние scheduling events
+make scheduler-logs                   # логи SensitivityScore.Score (Ctrl+C для выхода)
+```
+
+Быстрый smoke-test без Geant4 (сравнить score high-S vs low-S пода на живых нодах):
+
+```bash
+make test-pod-highs
+make test-pod-lows
+make test-pod-clean
+```
+
+### 3. Harness — запуск ВНУТРИ кластера (без port-forward)
+
+```bash
+make harness-rbac                                  # namespace/ServiceAccount/RBAC/PVC — один раз
+
+make harness-run-pilot-incluster                    # пилот: 1 точка плана, 3 повтора, config A
+make harness-logs-incluster JOB=harness-pilot       # следить за прогоном
+make harness-fetch-results JOB=harness-pilot        # забрать results.parquet на хост
+
+# если пилот чистый — полная матрица (пока только config A: B/C/D нужна
+# инфраструктура партнёров, см. docs §0)
+make harness-run-config-a-incluster
+make harness-logs-incluster JOB=harness-config-a
+make harness-fetch-results JOB=harness-config-a
+
+make harness-clean-reader                           # убрать read-only под, поднятый для выгрузки
+```
+
+### 4. Анализ и проверка H1–H4
+
+Читает локальный `harness/results/results.parquet` (после `harness-fetch-results` выше):
+
+```bash
+make analyze   # report/summary.md, comparisons.csv, makespan_boxplot.png, llc_vs_makespan.png
+make report    # analyze + сразу открыть summary.md
+```
+
+### Уборка
+
+```bash
+make harness-clean-jobs     # Job'ы харнесса (после ручных прогонов)
+make harness-clean-full     # + весь namespace sensitivityscore-bench (включая PVC с результатами!)
+make nuke                   # всё вышеперечисленное + Deployment планировщика + venv-ы
 ```
 
 ## Гипотезы
@@ -103,8 +170,10 @@ sensitivity vector) against default kube-scheduler, classical Slurm, and
 Slurm-on-K8s (Slinky) on a Geant4 HPC benchmark. See `docs/` for the full
 experiment plan and hypotheses H1–H4. Components: `workload/` (parameterized
 Geant4 Docker image), `k8s/` + `slurm/` (per-configuration manifests),
-`scheduler-plugin/` + `metrics-agent/` (Go: the plugin and its
-`perf_event_open()` → Redis metrics pipeline), `harness/` (Python: experiment
-orchestration), `analysis/` (Python: Mann-Whitney U / Cliff's delta / CV
-statistics + plots). Quick start above works the same regardless of reading
+`metrics-agent/` (Go: the `perf_event_open()` → Redis metrics pipeline; the
+scheduler plugin itself lives in the separate `scheduler-plugins` fork),
+`harness/` (Python: experiment orchestration, runs as an in-cluster Job —
+see `harness/deploy/`), `analysis/` (Python: Mann-Whitney U / Cliff's delta /
+CV statistics + plots). "Прогон на боевом стенде" above is the actual
+step-by-step command sequence (Makefile targets) regardless of reading
 language — commands are English-agnostic.
