@@ -52,15 +52,18 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
     metrics pipeline should not fail the whole job attempt in run_experiment.py
     (makespan_s is still valid and worth recording even without PMU data).
 
-    redis_addr (from config.yaml) is the in-cluster DNS name — correct once the
-    harness itself runs inside the cluster/stand network, but unreachable from
-    a laptop running the harness against a local dev cluster (confirmed: the
-    first real pilot run got "no-agent" on every single row even though
-    metrics-agent had written every job:metrics:* key correctly — the harness
-    process just couldn't resolve *.svc.cluster.local from the host). REDIS_ADDR
-    env var overrides it, matching the same var metrics-agent/the scheduler
-    plugin use — e.g. `export REDIS_ADDR=localhost:16379` after `kubectl
-    port-forward svc/redis -n sensitivityscore-system 16379:6379`.
+    redis_addr (from config.yaml) is the in-cluster DNS name — resolves fine
+    when the harness itself runs inside the cluster (the recommended path,
+    see harness/deploy/ + README.md's "Запуск харнесса в кластере"), but not
+    from a laptop running the harness against the cluster from outside it
+    (confirmed: the first real pilot run got "no-agent" on every single row
+    even though metrics-agent had written every job:metrics:* key correctly —
+    the harness process just couldn't resolve *.svc.cluster.local from the
+    host). For that host-side case, REDIS_ADDR overrides it, matching the
+    same var metrics-agent/the scheduler plugin use — e.g. `export
+    REDIS_ADDR=localhost:16379` after `kubectl port-forward svc/redis -n
+    sensitivityscore-system 16379:6379` (see README's "Альтернатива: запуск с
+    хоста").
     """
     empty = {
         "llc_miss_rate": float("nan"),

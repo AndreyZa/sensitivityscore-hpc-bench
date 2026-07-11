@@ -1,0 +1,76 @@
+# RBAC for running the harness itself as an in-cluster Job (see harness/README.md
+# "Запуск харнесса в кластере"), so it reaches Redis via the normal in-cluster
+# DNS name instead of a host-side kubectl port-forward.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sensitivityscore-bench
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harness-runner
+  namespace: sensitivityscore-bench
+---
+# Namespace-scoped: everything k8s_submit.py's kubectl calls actually need
+# (apply/wait/get-node/delete on Jobs it submits, list pods to resolve which
+# node a job landed on, read logs for debugging).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harness-runner
+  namespace: sensitivityscore-bench
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harness-runner
+  namespace: sensitivityscore-bench
+subjects:
+  - kind: ServiceAccount
+    name: harness-runner
+    namespace: sensitivityscore-bench
+roleRef:
+  kind: Role
+  name: harness-runner
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespace is cluster-scoped (can't be granted via a namespaced Role), but
+# this Namespace object is already created above with the deployer's own
+# (broader) credentials — by the time the harness pod runs, it only ever
+# needs to confirm it exists (_ensure_namespace's idempotent kubectl apply
+# does a get+patch, never a real create in practice), so scope tightly to
+# get/patch on this one named object rather than granting namespace
+# create/write cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harness-runner-namespace
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["sensitivityscore-bench"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harness-runner-namespace
+subjects:
+  - kind: ServiceAccount
+    name: harness-runner
+    namespace: sensitivityscore-bench
+roleRef:
+  kind: ClusterRole
+  name: harness-runner-namespace
+  apiGroup: rbac.authorization.k8s.io

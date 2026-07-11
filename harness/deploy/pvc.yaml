@@ -1,0 +1,14 @@
+# Backs harness/results/ so results.parquet survives after the harness Job's
+# pod terminates (kubectl cp needs a live container — see results-reader.yaml)
+# and, as a bonus, survives a harness pod crash mid-matrix (run_experiment.py
+# writes incrementally).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harness-results
+  namespace: sensitivityscore-bench
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,34 @@
+# One-shot pilot run (checklist item 9: 1 plan point, 3 reps, config A only),
+# executed FROM INSIDE the cluster — no port-forward, Redis reached via
+# config.yaml's default in-cluster DNS name. Apply harness/deploy/rbac.yaml
+# and pvc.yaml first. See harness/README.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harness-pilot
+  namespace: sensitivityscore-bench
+spec:
+  backoffLimit: 0 # one attempt — rerun manually (kubectl delete -f, then apply again) rather than letting k8s silently resubmit the whole plan
+  template:
+    spec:
+      serviceAccountName: harness-runner
+      restartPolicy: Never
+      containers:
+        - name: harness
+          image: andreyza/harness:dev
+          imagePullPolicy: Always
+          args: ["--pilot", "--configs", "A"]
+          volumeMounts:
+            - name: results
+              mountPath: /app/results
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: harness-results

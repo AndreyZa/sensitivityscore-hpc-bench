@@ -20,44 +20,69 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Redis при локальном запуске (вне кластера)
+## Запуск харнесса в кластере (рекомендуется, без port-forward)
 
 `config.yaml`'s `redis.addr` — это in-cluster DNS-имя
 (`redis.sensitivityscore-system.svc.cluster.local`), которое видно из подов, но
-НЕ резолвится с хоста, откуда обычно запускается сам харнесс. Первый реальный
-пилотный прогон именно так и упал: во всех строках результата
-`approximation=no-agent`, хотя metrics-agent исправно писал каждый
-`job:metrics:*` ключ — просто харнесс не мог достучаться до Redis. Перед
-запуском:
+НЕ резолвится с хоста, откуда раньше запускался сам харнесс. Первый реальный
+пилотный прогон именно так и упал (`approximation=no-agent` на всех строках,
+хотя агент исправно писал `job:metrics:*`), и временным решением был
+`kubectl port-forward` — рабочий, но хрупкий (процесс периодически отваливался
+посреди долгого прогона).
+
+Правильное решение — гонять сам харнесс **как Job внутри кластера**
+(`harness/Dockerfile` + `harness/deploy/`), тогда Redis резолвится штатно, без
+всякого форвардинга:
+
+```bash
+make image-harness              # собрать python+kubectl образ харнесса
+make harness-run-pilot-incluster        # пилот (§9 чек-листа) как Job
+make harness-run-config-a-incluster     # полная матрица, только config A
+
+make harness-logs-incluster JOB=harness-pilot   # следить за логами
+make harness-fetch-results JOB=harness-pilot    # забрать results.parquet на хост (после completion)
+make harness-clean-reader                       # убрать read-only под, поднятый для выгрузки
+```
+
+`harness-fetch-results` работает через общий PVC (`harness/deploy/pvc.yaml`,
+`results/` монтируется в Job) — `kubectl cp` не может достучаться до уже
+завершившегося пода, поэтому поднимается маленький `harness-results-reader`
+под (busybox, монтирует тот же PVC read-only) исключительно для выгрузки.
+
+RBAC (`harness/deploy/rbac.yaml`) даёт `harness-runner` ServiceAccount только
+то, что реально нужно кода `k8s_submit.py`: управление `Job`/чтение `Pod` в
+namespace `sensitivityscore-bench`, плюс узкий `ClusterRole`
+(`get`/`patch`, только на этот один namespace) под идемпотентный
+`_ensure_namespace`.
+
+### Альтернатива: запуск с хоста (порт-форвард вручную)
+
+Если по какой-то причине нужно запускать харнесс с хоста напрямую (например,
+на партнёрском стенде запуск идёт с bastion-машины без прямого доступа в
+кластерную сеть) — `REDIS_ADDR` по-прежнему перекрывает `config.yaml` (см.
+`submit/redis_metrics.py`), тот же env var, что уже использует metrics-agent и
+scheduler-плагин:
 
 ```bash
 kubectl -n sensitivityscore-system port-forward svc/redis 16379:6379 &
 export REDIS_ADDR=localhost:16379
+python run_experiment.py --pilot
 ```
-
-`REDIS_ADDR` перекрывает `config.yaml` (см. `submit/redis_metrics.py`) — тот же
-env var, что уже использует metrics-agent и scheduler-плагин.
 
 ## Пилотный прогон (шаг 9 чек-листа плана)
 
 Перед полной матрицей — 1 точка плана (`high-s`, `overcommit=2.0`), 3 повтора,
-только конфигурация A:
-
-```bash
-python run_experiment.py --pilot
-```
+только конфигурация A. Внутри кластера: `make harness-run-pilot-incluster`
+(см. выше). С хоста: `python run_experiment.py --pilot`.
 
 ## Полная матрица
 
-```bash
-python run_experiment.py --config config.yaml
-```
-
-Только одна конфигурация (например, при поэтапном разворачивании B/C/D по
-дорожной карте):
+Внутри кластера: `make harness-run-config-a-incluster` (только config A —
+B/C/D нужна инфраструктура партнёрского стенда). С хоста:
 
 ```bash
-python run_experiment.py --configs A
+python run_experiment.py --config config.yaml   # все конфигурации из config.yaml
+python run_experiment.py --configs A            # только одна конфигурация
 ```
 
 ## Проверка без реального запуска
