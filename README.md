@@ -75,12 +75,23 @@ python analyze.py --results ../harness/results/results.parquet --outdir report/
 
 Репозиторий — рабочий каркас всех компонентов плана (не production-ready): код
 компилируется/проходит синтаксическую проверку, статистический пайплайн
-протестирован end-to-end на синтетических данных. Осознанно оставлены как
-явные TODO (см. соответствующие README):
+протестирован end-to-end на синтетических данных.
 
-- NUMA-bandwidth счётчики (`uncore_imc_*` PMU) — специфичны для модели CPU стенда.
-- Network-byte counters — требуют eBPF `cgroup_skb` hook, отдельная единица работы.
-- Wiring `QemuProcessResolver` к реальному KubeVirt API кластера.
+Все четыре измерения S теперь измеряются агентом: LLC (miss ratio, PMU),
+NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
+(PSI `io.pressure` — в score; сырые IOPS — только для анализа), Net
+(`/proc/<pid>/net/dev`, байты/с — только для анализа: у сырой полосы нет
+честной шкалы [0,1] без калибровки под NIC, в score Net не участвует).
+
+Осознанно оставлены как явные TODO:
+
+- `uncore_imc_*` PMU как уточнение NUMA-метрики (истинный bandwidth
+  per-socket, но node-wide и специфичен для модели CPU) — см.
+  `ReadUncoreNUMABandwidth`.
+- Wiring `QemuProcessResolver` к реальному KubeVirt API кластера
+  (конфигурация B: харнесс пока сабмитит Job, а не VMI).
+- `OUTPUT_MODE` в workload не вшит в Geant4-макрос — IO-профиль нагрузки
+  пока не генерирует реальный disk-IO (см. `workload/entrypoint.sh`).
 
 ---
 
