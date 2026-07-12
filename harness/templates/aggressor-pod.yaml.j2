@@ -39,13 +39,17 @@ spec:
       volumeMounts:
         - name: scratch
           mountPath: /scratch
+      {# И cpu, И memory request маленькие — иначе агрессор виден ресурсной
+         модели default по ЛЮБОЙ из осей и та уводит от него поды не из-за
+         интерференции (на STAGE 512Mi-request агрессора не давал жертве 1Gi
+         влезть на 1.9Gi-ноду — оба планировщика избегали её по памяти). #}
       resources:
         requests:
           cpu: "{{ cpu_request }}"
-          memory: "512Mi"
+          memory: "{{ mem_request | default('512Mi') }}"
         limits:
           cpu: "{{ cpu_limit }}"
-          memory: "2Gi"
+          memory: "{{ mem_limit | default('2Gi') }}"
   volumes:
     - name: scratch
       emptyDir:

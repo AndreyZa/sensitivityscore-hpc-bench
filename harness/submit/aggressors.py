@@ -99,6 +99,8 @@ def deploy(
                     args_json=json.dumps(args),
                     cpu_request=agg_cfg.get("cpu_request", "500m"),
                     cpu_limit=agg_cfg.get("cpu_limit", "2"),
+                    mem_request=agg_cfg.get("mem_request", "512Mi"),
+                    mem_limit=agg_cfg.get("mem_limit", "2Gi"),
                 )
             )
 

@@ -30,11 +30,10 @@ scheduler_variants:
   # - trimaran   # опционально: нужен metrics-server (make trimaran-deps)
 
 # Ноды, на которые НЕ ставить поды (nodeAffinity NotIn, без cordon/taint).
-# worker-192.168.0.7 не имеет egress к Docker Hub (TLS timeout к
-# registry-1.docker.io) — тянет образы только из внутреннего cr-internal
-# Timeweb, куда наши образы не запушены. Исключаем её из эксперимента.
-exclude_nodes:
-  - worker-192.168.0.7
+# worker-192.168.0.7 изначально была без egress к Docker Hub, но её
+# пересоздали — теперь тянет образы, поэтому список пуст (все 3 ноды в игре).
+# Оставлено как ручка на случай повторения проблемы.
+exclude_nodes: []
 
 profiles:
   - low-s      # io=low  — контраст для fingerprint
@@ -75,23 +74,33 @@ images:
 pressure_scenarios:
   - name: io
     victim_profile: high-s-io
-    victim_count: 3
+    victim_count: 6
     victim_arrival:
       mode: poisson
       interval_seconds: 25
-    aggressors_per_node: [2] # одна интенсивность для первого реального прогона
+    aggressors_per_node: [2]
     pressured_node_count: 1
-    # Давим worker-5 (есть egress, тянет агрессора), оставляем worker-6 чистой;
-    # worker-7 исключена (exclude_nodes). Явный список важнее count.
-    aggressor_nodes: ["worker-192.168.0.5"]
+    # Давим worker-7 — ноду с НАИМЕНЬШИМ числом чужих подов (самую «пустую»),
+    # т.е. ту, которую LeastAllocated default-планировщика предпочитает больше
+    # всех. Агрессор невидим по ресурсам (cpu 10m / mem 32Mi), так что default
+    # продолжает считать worker-7 лучшей и заводит туда жертв — прямо в шторм.
+    # sensitivityscore видит высокий io_pressure worker-7 и уводит жертв на
+    # 2 чистые ноды (worker-5/worker-6) — их ёмкости хватает без переполнения.
+    aggressor_nodes: ["worker-192.168.0.7"]
     stabilize_seconds: 30
     repetitions: 3
     aggressor_args: ["--hdd", "2", "--hdd-bytes", "1g"]
 
 aggressor:
   default_args: ["--hdd", "2", "--hdd-bytes", "1g"]
-  cpu_request: "200m" # мало — невидим для ресурсной модели default-планировщика
-  cpu_limit: "1"
+  # И cpu, И память крошечные — агрессор обязан быть невидим для ресурсной
+  # модели default по ОБЕИМ осям. На 1.9Gi-нодах 512Mi-request агрессора (×2)
+  # не давал жертве 1Gi влезть -> оба планировщика избегали ноду по ПАМЯТИ, а
+  # не по IO. С 32Mi жертва влезает, и слепой default её туда ставит.
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
 
 baseline:
   repetitions: 3
