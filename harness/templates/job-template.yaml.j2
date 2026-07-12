@@ -33,6 +33,22 @@ spec:
     spec:
       schedulerName: {{ scheduler_name }}
       restartPolicy: Never
+      {% if exclude_nodes %}
+      {# Держим поды подальше от указанных нод — на STAGE так исключается
+         worker без egress к registry (не тянет образы). Это affinity на уровне
+         пода, без операций над самими нодами (cordon/taint). #}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      {% for n in exclude_nodes %}
+                      - "{{ n }}"
+                      {% endfor %}
+      {% endif %}
       containers:
         - name: geant4
           image: {{ image | default("sensitivityscore-bench/geant4:11.2") }}

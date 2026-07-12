@@ -147,13 +147,24 @@ def main():
         help="Keep synthetic-devbox rows (local pipeline testing ONLY, "
         "never for real results — see load.filter_valid)",
     )
+    parser.add_argument(
+        "--pmu-less-stand",
+        action="store_true",
+        help="Real stand without a usable PMU (e.g. STAGE cloud VMs): keep the "
+        "rows but null LLC/NUMA (synthetic); io_pressure/makespan/regret are "
+        "real. Use with io-only weights.",
+    )
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     df = load_results(args.results)
-    valid = filter_valid(df, allow_synthetic=args.allow_synthetic)
+    valid = filter_valid(
+        df,
+        allow_synthetic=args.allow_synthetic,
+        pmu_less_stand=args.pmu_less_stand,
+    )
 
     # Бейзлайны опциональны: без них пайплайн работает как раньше (makespan +
     # regret), с ними добавляются slowdown-сравнения и fingerprint-таблица.
@@ -161,7 +172,9 @@ def main():
     baselines_path = Path(args.baselines)
     if baselines_path.exists():
         baselines_valid = filter_valid(
-            load_results(baselines_path), allow_synthetic=args.allow_synthetic
+            load_results(baselines_path),
+            allow_synthetic=args.allow_synthetic,
+            pmu_less_stand=args.pmu_less_stand,
         )
         valid = attach_slowdown(valid, baselines_valid)
     else:

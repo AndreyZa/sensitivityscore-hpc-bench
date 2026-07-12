@@ -55,33 +55,63 @@ def load_results(path: str | Path) -> pd.DataFrame:
     return df
 
 
-def filter_valid(df: pd.DataFrame, allow_synthetic: bool = False) -> pd.DataFrame:
+# Columns whose values come from the PMU (LLC + NUMA). On a stand without a
+# usable PMU the agent fills these from the synthetic host-CPU fallback — real
+# only in the io_pressure / makespan sense, never in the LLC/NUMA sense.
+_PMU_COLUMNS = ["llc_miss_rate", "numa_remote_ratio"]
+
+
+def filter_valid(
+    df: pd.DataFrame,
+    allow_synthetic: bool = False,
+    pmu_less_stand: bool = False,
+) -> pd.DataFrame:
     """Drops rows with submission errors or missing makespan — keeps rows with
     approximation="host-side" (config B), since that's a documented, expected
     approximation rather than a failure (docs §3.3).
 
-    approximation="synthetic-devbox" rows (fake LLC values from the local-dev
-    PMU fallback, see metrics-agent pkg/perf/synthetic.go) are dropped unless
-    allow_synthetic=True: they must never blend into dissertation results.
-    The flag exists only for exercising the analysis pipeline end-to-end on a
-    dev box where ALL data is synthetic anyway."""
+    approximation="synthetic-devbox" rows carry fake LLC/NUMA values from the
+    PMU fallback (metrics-agent pkg/perf/synthetic.go). Handling, in order:
+
+    - pmu_less_stand=True: this is a REAL stand that simply has no usable PMU
+      (e.g. cloud VMs where perf_event_open returns EINVAL — the STAGE Timeweb
+      cluster). io_pressure / makespan / placement_regret ARE real there; only
+      LLC/NUMA are synthetic. Keep the rows but NULL the PMU columns so the
+      synthetic host-CPU numbers can't be misread as real cache/NUMA data.
+      Score on io only (weights.json) and read the IO-axis results.
+    - allow_synthetic=True: keep everything as-is — for exercising the pipeline
+      on a fully-synthetic dev box; NOT dissertation data.
+    - default: drop synthetic-devbox rows entirely (they must never blend into
+      results silently)."""
     valid = df[~df["approximation"].astype(str).str.startswith("error:")]
     valid = valid[valid["makespan_s"].notna()]
 
     synthetic = valid["approximation"] == "synthetic-devbox"
     n_synthetic = int(synthetic.sum())
-    if n_synthetic and not allow_synthetic:
+    if not n_synthetic:
+        return valid
+
+    if pmu_less_stand:
         print(
-            f"[filter_valid] dropping {n_synthetic} synthetic-devbox rows "
-            "(local-dev PMU fallback, not real measurements); pass "
-            "--allow-synthetic to analyze.py to keep them for pipeline testing."
+            f"[filter_valid] PMU-less stand: keeping {n_synthetic} rows but "
+            "nulling LLC/NUMA (synthetic without a PMU); io_pressure/makespan "
+            "are real. Score/analyze the IO axis only."
         )
-        valid = valid[~synthetic]
-    elif n_synthetic:
+        valid = valid.copy()
+        present = [c for c in _PMU_COLUMNS if c in valid.columns]
+        valid.loc[synthetic, present] = float("nan")
+    elif allow_synthetic:
         print(
             f"[filter_valid] WARNING: keeping {n_synthetic} synthetic-devbox rows "
             "— pipeline-testing mode, NOT dissertation data."
         )
+    else:
+        print(
+            f"[filter_valid] dropping {n_synthetic} synthetic-devbox rows "
+            "(PMU fallback, not real measurements); pass --allow-synthetic "
+            "(pipeline testing) or --pmu-less-stand (real stand w/o PMU) to keep."
+        )
+        valid = valid[~synthetic]
     return valid
 
 

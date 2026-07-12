@@ -1,0 +1,106 @@
+# config-stage.yaml — STAGE (dev+) стенд: облачный кластер Timeweb, 2 воркера
+# по 2 vCPU, managed control-plane. Отличия от config.yaml (bare-metal план):
+#
+#   - PMU на этих VM недоступен (perf_event_open -> EINVAL): LLC/NUMA не
+#     измеряются честно. NUMA к тому же бессмысленна (1 домен). Поэтому
+#     score_weights = только IO (io.pressure через PSI — единственная реально
+#     измеримая ось на этом стенде; это штатная ручка абляции). Профили под
+#     2 vCPU задаются env-оверрайдами HARNESS_OVERRIDE_* (см. profiles.py) при
+#     запуске харнесса с хоста — тут они не дублируются.
+#   - Центр тяжести стенда — IO pressure-сценарий (диск-агрессор + жертва
+#     high-s-io). Batch-матрица не гоняется: без реального LLC она ничего не
+#     покажет для SensitivityScore. B/C/D не применимы.
+#
+# Запуск с хоста (см. README «Альтернатива: запуск с хоста»):
+#   export KUBECONFIG=~/.kube/configs/timeweb-stage
+#   export REDIS_ADDR=localhost:16379   # после port-forward svc/redis
+#   export HARNESS_OVERRIDE_HIGH_S_IO_CPU=1 HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 \
+#          HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=300000 \
+#          HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=1Gi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=2Gi \
+#          HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
+#   python run_experiment.py --config config-stage.yaml --baseline
+#   python run_experiment.py --config config-stage.yaml --pressure --scenarios io
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  # - trimaran   # опционально: нужен metrics-server (make trimaran-deps)
+
+# Ноды, на которые НЕ ставить поды (nodeAffinity NotIn, без cordon/taint).
+# worker-192.168.0.7 не имеет egress к Docker Hub (TLS timeout к
+# registry-1.docker.io) — тянет образы только из внутреннего cr-internal
+# Timeweb, куда наши образы не запушены. Исключаем её из эксперимента.
+exclude_nodes:
+  - worker-192.168.0.7
+
+profiles:
+  - low-s      # io=low  — контраст для fingerprint
+  - high-s-io  # io=high — жертва IO-сценария
+
+overcommit_ratios: [1.0] # batch-матрица не в фокусе стенда
+node_capacity_jobs: 1     # 2 vCPU на ноду — держим по одному job на ноду
+repetitions: 5
+cooldown_seconds: 20
+
+# Абляция под стенд: измерима только IO-ось (PMU нет). Веса ДОЛЖНЫ совпадать
+# с weights.json ConfigMap sensitivity-config (тоже io-only на STAGE).
+score_weights:
+  llc: 0.0
+  numa: 0.0
+  io: 1.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+# IO pressure-сценарий — единственный на этом стенде. Диск-агрессор на одном
+# воркере (второй остаётся чистым), поток high-s-io жертв через планировщик
+# каждого плеча. Managed control-plane -> IO-шторм воркера не заденет etcd
+# (в отличие от kind), диски у VM раздельные (sda per-node).
+pressure_scenarios:
+  - name: io
+    victim_profile: high-s-io
+    victim_count: 3
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2] # одна интенсивность для первого реального прогона
+    pressured_node_count: 1
+    # Давим worker-5 (есть egress, тянет агрессора), оставляем worker-6 чистой;
+    # worker-7 исключена (exclude_nodes). Явный список важнее count.
+    aggressor_nodes: ["worker-192.168.0.5"]
+    stabilize_seconds: 30
+    repetitions: 3
+    aggressor_args: ["--hdd", "2", "--hdd-bytes", "1g"]
+
+aggressor:
+  default_args: ["--hdd", "2", "--hdd-bytes", "1g"]
+  cpu_request: "200m" # мало — невидим для ресурсной модели default-планировщика
+  cpu_limit: "1"
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage.parquet"
+  baselines_file: "baselines-stage.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

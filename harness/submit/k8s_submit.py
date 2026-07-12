@@ -109,6 +109,10 @@ def submit_job(
         env=spec.env,
         sensitivity=spec.sensitivity,
         resources=spec.resources,
+        # Ноды, на которые НЕ ставить поды (например, worker без egress к
+        # registry на STAGE) — nodeAffinity NotIn по kubernetes.io/hostname,
+        # без cordon/taint самих нод.
+        exclude_nodes=cfg.get("exclude_nodes", []),
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:

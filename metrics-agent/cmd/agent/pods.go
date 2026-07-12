@@ -68,18 +68,21 @@ func kubepodsUnitNames(qos v1.PodQOSClass, uid string) (qosSlice, podSlice strin
 }
 
 // resolvePodCgroupPath maps a pod UID to its cgroup v2 directory. The path shape
-// depends on the cgroup driver (systemd vs cgroupfs) and QoS class — this
-// implements the systemd-driver layout, which is the default for kubelet since
-// 1.22+.
+// depends on the cgroup driver (systemd vs cgroupfs) and QoS class, which varies
+// per stand/cluster (docs §3.1, §3.3 — cross-check against the actual kubelet
+// --cgroup-driver config). It tries three layouts in order:
 //
-// It tries two layouts because this varies per stand/cluster (docs §3.1,
-// §3.3 — cross-check against the actual kubelet --cgroup-driver config):
-//   - classic: kubelet runs directly under system.slice, so kubepods.slice is
-//     a top-level unit (/sys/fs/cgroup/kubepods.slice/...).
-//   - nested: kubelet itself runs inside its own kubelet.slice (seen on this
-//     Docker Desktop/kind-based local cluster) — systemd then nests the whole
-//     kubepods hierarchy one level deeper and renames every descendant unit
-//     with a "kubelet-" prefix (/sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/...).
+//   - systemd classic: kubelet runs directly under system.slice, so
+//     kubepods.slice is a top-level unit (/sys/fs/cgroup/kubepods.slice/...),
+//     UID escaped with underscores. Default for kubelet 1.22+ on most distros.
+//   - systemd nested: kubelet itself runs inside its own kubelet.slice (seen on
+//     Docker Desktop/kind), so systemd nests the whole kubepods hierarchy one
+//     level deeper with a "kubelet-" prefix on every descendant unit.
+//   - cgroupfs driver: plain directories, no ".slice", raw dashed UID
+//     (/sys/fs/cgroup/kubepods/<qos>/pod<uid>). This is what k0s uses, and any
+//     cluster whose kubelet+containerd run the cgroupfs driver instead of
+//     systemd — without this branch every per-pod sample is skipped on such a
+//     cluster (node-root PSI still works, so only job:metrics go missing).
 func resolvePodCgroupPath(p localPod) (string, error) {
 	if p.uid == "" {
 		return "", fmt.Errorf("pod %s has no UID", p.name)
@@ -87,25 +90,50 @@ func resolvePodCgroupPath(p localPod) (string, error) {
 
 	qosSlice, podSlice := kubepodsUnitNames(p.qosClass, p.uid)
 
+	candidates := make([]string, 0, 3)
+
 	classic := cgroupFSRoot + "/kubepods.slice"
 	if qosSlice != "" {
 		classic += "/" + qosSlice
 	}
 	classic += "/" + podSlice
-	if _, err := os.Stat(classic); err == nil {
-		return classic, nil
-	}
+	candidates = append(candidates, classic)
 
 	nested := cgroupFSRoot + "/kubelet.slice/kubelet-kubepods.slice"
 	if qosSlice != "" {
 		nested += "/kubelet-" + qosSlice
 	}
 	nested += "/kubelet-" + podSlice
-	if _, err := os.Stat(nested); err == nil {
-		return nested, nil
+	candidates = append(candidates, nested)
+
+	cgroupfs := cgroupFSRoot + "/kubepods"
+	if seg := cgroupfsQoSSegment(p.qosClass); seg != "" {
+		cgroupfs += "/" + seg
+	}
+	cgroupfs += "/pod" + p.uid // cgroupfs keeps the raw dashed UID
+	candidates = append(candidates, cgroupfs)
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
 	}
 
-	return "", fmt.Errorf("cgroup not found for pod %s (tried %s and %s)", p.name, classic, nested)
+	return "", fmt.Errorf("cgroup not found for pod %s (tried %v)", p.name, candidates)
+}
+
+// cgroupfsQoSSegment is the QoS sub-directory under kubepods for the cgroupfs
+// driver: Guaranteed pods sit directly under kubepods (no segment), Burstable
+// and BestEffort each get their own segment.
+func cgroupfsQoSSegment(qos v1.PodQOSClass) string {
+	switch qos {
+	case v1.PodQOSBurstable:
+		return "burstable"
+	case v1.PodQOSGuaranteed:
+		return ""
+	default:
+		return "besteffort"
+	}
 }
 
 // dashUID converts a UUID's dashes to underscores as systemd's unit-name escaping
