@@ -190,11 +190,13 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 
 Осознанно оставлены как явные TODO:
 
-- Калибровка Net (`net_pressure` в score) — дизайн готов (см. выше), не
-  реализовано: агент должен получать `NET_REFERENCE_MBPS` (из эмпирического
-  `iperf3 --bidir` pod-to-pod теста на Этапе 0, не из номинала NIC) и писать
-  нормированный `net_pressure` рядом с сырым `net_bw`; `redis_source.go`
-  читает его так же, как сейчас читает `io_pressure`.
+- Калибровка Net (`net_pressure` в score) — измерительная половина
+  **готова и автоматизирована** (`make netcheck-run/-logs/-clean` —
+  cross-node `iperf3 --bidir` между двумя worker-нодами → печатает
+  `NET_REFERENCE_MBPS`, `scripts/netcheck/`); остаётся код в агенте:
+  прочитать `NET_REFERENCE_MBPS` из env и писать нормированный
+  `net_pressure` рядом с сырым `net_bw`, а `redis_source.go` — читать его
+  так же, как сейчас читает `io_pressure`.
 - `uncore_imc_*` PMU как уточнение NUMA-метрики (истинный bandwidth
   per-socket, но node-wide и специфичен для модели CPU) — см.
   `ReadUncoreNUMABandwidth`.

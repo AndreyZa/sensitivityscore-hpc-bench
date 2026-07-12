@@ -1,0 +1,84 @@
+# netcheck — cross-node bandwidth calibration for the Net dimension of S.
+#
+# Measures the realizable pod-to-pod throughput through the physical uplink
+# NIC + CNI overlay between TWO DISTINCT worker nodes — this is the honest
+# reference for normalizing net_bw into net_pressure (see
+# docs/Технический план экспериментов.md §3.4). NOT same-node: same-node
+# pod-to-pod traffic is bridged locally over veth and never touches the
+# physical NIC, so it would measure memory/bridge speed and hugely
+# overestimate the ceiling.
+#
+# Placeholders __NODE_CLIENT__ / __NODE_SERVER__ / __IPERF_IMAGE__ are
+# substituted by `make netcheck-run` (which picks two distinct worker nodes,
+# overridable via NODE_CLIENT=/NODE_SERVER=). nodeName pins bypass the
+# scheduler entirely — we want specific nodes, placement policy is irrelevant
+# to a bandwidth measurement.
+apiVersion: v1
+kind: Service
+metadata:
+  name: netcheck-server
+spec:
+  selector:
+    app: netcheck-server
+  ports:
+    - port: 5201
+      targetPort: 5201
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netcheck-server
+  labels:
+    app: netcheck-server
+spec:
+  restartPolicy: Never
+  nodeName: __NODE_SERVER__
+  containers:
+    - name: iperf3
+      image: __IPERF_IMAGE__
+      args: ["-s"]
+      ports:
+        - containerPort: 5201
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "128Mi"
+        limits:
+          cpu: "2"
+          memory: "256Mi"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netcheck-client
+  labels:
+    app: netcheck-client
+spec:
+  restartPolicy: Never
+  nodeName: __NODE_CLIENT__
+  containers:
+    - name: iperf3
+      image: __IPERF_IMAGE__
+      # Retry until the server's iperf3 is actually accepting (pod Ready only
+      # means the container started; the -s listener binds a moment later) —
+      # retry noise goes to stderr so stdout stays pure JSON for parse.py.
+      # --bidir measures both directions at once: sum_sent + sum_received
+      # matches metrics-agent's net_bw = rx+tx (pkg/cgroup/net.go TotalBytes).
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          i=0
+          while [ $i -lt 30 ]; do
+            if iperf3 -c netcheck-server -t 1 >/dev/null 2>&1; then break; fi
+            echo "netcheck: server not ready yet, retry $i" >&2
+            i=$((i + 1))
+            sleep 2
+          done
+          exec iperf3 -c netcheck-server --bidir -t 10 --json
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "128Mi"
+        limits:
+          cpu: "2"
+          memory: "256Mi"

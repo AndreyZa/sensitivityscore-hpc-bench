@@ -33,6 +33,11 @@ KIND_CLUSTER ?= sensitivityscore-dev
 SCHEDULER_DEPLOYMENT ?= sensitivityscore-scheduler
 HARNESS_NAMESPACE ?= sensitivityscore-bench
 
+# --- Net calibration (netcheck-*) ---
+# Stock upstream iperf3 image — not one of ours, override if the stand can't
+# reach Docker Hub / mirrors it elsewhere.
+IPERF_IMAGE  ?= networkstatic/iperf3
+
 # --- Python venvs ---
 PYTHON        ?= python3
 HARNESS_VENV  ?= harness/.venv
@@ -184,7 +189,40 @@ perfcheck-logs: ## Посмотреть результат (после того,
  
 .PHONY: perfcheck-clean
 perfcheck-clean: ## Убрать под perfcheck
-	$(KUBECTL) delete pod perfcheck --ignore-not-found	
+	$(KUBECTL) delete pod perfcheck --ignore-not-found
+
+# ---------------------------------------------------------------------------
+# Net-калибровка (Этап 0, рядом с perfcheck) — измерить реальную пропускную
+# способность uplink NIC + CNI между ДВУМЯ РАЗНЫМИ worker-нодами (cross-node,
+# НЕ на одной ноде: same-node трафик мостится локально через veth и не
+# касается физического NIC). Даёт NET_REFERENCE_MBPS для нормировки net_bw в
+# net_pressure — см. docs/Технический план экспериментов.md §3.4.
+# Только измерительная половина: код net_pressure в агенте — пока TODO.
+# ---------------------------------------------------------------------------
+
+.PHONY: netcheck-run
+netcheck-run: ## iperf3 server+client на двух разных worker-нодах (NODE_CLIENT=/NODE_SERVER= для явного выбора)
+	@set -e; \
+	workers=$$($(KUBECTL) get nodes --selector='!node-role.kubernetes.io/control-plane' -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | sort); \
+	nclient="$${NODE_CLIENT:-$$(echo "$$workers" | sed -n 1p)}"; \
+	nserver="$${NODE_SERVER:-$$(echo "$$workers" | sed -n 2p)}"; \
+	if [ -z "$$nserver" ] || [ "$$nclient" = "$$nserver" ]; then \
+		echo "netcheck: нужно >=2 разных worker-нод (есть: $$(echo $$workers | tr '\n' ' ')); задай NODE_CLIENT=/NODE_SERVER= вручную"; exit 1; \
+	fi; \
+	echo "netcheck: client=$$nclient server=$$nserver image=$(IPERF_IMAGE)"; \
+	sed -e "s|__NODE_CLIENT__|$$nclient|" -e "s|__NODE_SERVER__|$$nserver|" -e "s|__IPERF_IMAGE__|$(IPERF_IMAGE)|g" \
+		scripts/netcheck/netcheck.yaml | $(KUBECTL) apply -f -
+
+.PHONY: netcheck-logs
+netcheck-logs: ## Дождаться завершения клиента и распечатать NET_REFERENCE_MBPS
+	@$(KUBECTL) wait --for=jsonpath='{.status.phase}'=Succeeded pod/netcheck-client --timeout=120s || \
+		echo "netcheck: клиент ещё не Succeeded — показываю, что есть"; \
+	$(KUBECTL) logs pod/netcheck-client | $(PYTHON) scripts/netcheck/parse.py
+
+.PHONY: netcheck-clean
+netcheck-clean: ## Убрать поды и Service netcheck
+	$(KUBECTL) delete pod netcheck-server netcheck-client --ignore-not-found
+	$(KUBECTL) delete svc netcheck-server --ignore-not-found
 
 # Образы НЕ собираются здесь: рабочий цикл — build + push в Docker Hub
 # ($(REGISTRY)), кластер пуллит их сам (imagePullPolicy: Always). См.
