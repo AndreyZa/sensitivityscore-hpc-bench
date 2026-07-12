@@ -42,16 +42,91 @@ def tail_lines(path: Path, n: int = 12) -> list[str]:
         return [f"(лог {path} недоступен)"]
 
 
-def run_phase(log_lines_all: list[str]) -> str:
+def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float]]:
+    """-> (фаза, {фаза: unix-время старта}) по маркерам '=== X START HH:MM:SS ==='."""
     phase = "not started"
+    starts: dict[str, float] = {}
+    today = time.strftime("%Y-%m-%d")
     for l in log_lines_all:
-        if "BASELINE START" in l:
-            phase = "baseline"
-        elif "PRESSURE START" in l:
-            phase = "pressure"
+        m = re.search(r"=== (BASELINE|PRESSURE) START (\d\d:\d\d:\d\d)", l)
+        if m:
+            phase = m.group(1).lower()
+            try:
+                starts[phase] = time.mktime(
+                    time.strptime(f"{today} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
+                )
+            except ValueError:
+                pass
         elif "ALL DONE" in l or "PRESSURE DONE" in l:
             phase = "DONE"
-    return phase
+    return phase, starts
+
+
+def expected_rows(config_path: Path) -> dict[str, int]:
+    """Ожидаемое число строк по фазам из config.yaml харнесса — чтобы считать
+    процент готовности. Логика зеркалит run_experiment.py (baseline_profiles /
+    expand_configs / run_pressure_scenario)."""
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(config_path.read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+
+    profiles = list(cfg.get("profiles", []))
+    for sc in cfg.get("pressure_scenarios", []):
+        v = sc.get("victim_profile", "high-s")
+        if v not in profiles:
+            profiles.append(v)
+    baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
+
+    variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
+    arms = 0
+    for c in cfg.get("configs", []):
+        arms += len(variants) if c in ("A", "B") else 1
+
+    pressure_exp = 0
+    for sc in cfg.get("pressure_scenarios", []):
+        pressure_exp += (
+            arms
+            * len(sc.get("aggressors_per_node", [1]))
+            * sc.get("repetitions", cfg.get("repetitions", 10))
+            * sc.get("victim_count", 6)
+        )
+    return {"baseline": baseline_exp, "pressure": pressure_exp}
+
+
+def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> dict:
+    """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы."""
+    out: dict = {}
+    b_exp, p_exp = exp.get("baseline", 0), exp.get("pressure", 0)
+    total_exp = b_exp + p_exp
+    if not total_exp:
+        return out
+    done_overall = min(b_rows, b_exp) + min(p_rows, p_exp)
+    if phase == "pressure":  # baseline к этому моменту завершён
+        done_overall = b_exp + min(p_rows, p_exp)
+    out["overall_pct"] = round(100 * done_overall / total_exp)
+
+    cur_done, cur_exp = (b_rows, b_exp) if phase == "baseline" else (p_rows, p_exp)
+    if phase in ("baseline", "pressure") and cur_exp:
+        out["phase_pct"] = round(100 * min(cur_done, cur_exp) / cur_exp)
+        start = starts.get(phase)
+        if start and cur_done > 0:
+            elapsed = time.time() - start
+            rate = cur_done / elapsed  # строк/сек в текущей фазе
+            remaining_cur = max(cur_exp - cur_done, 0) / rate
+            # После baseline остаётся pressure — грубо тем же темпом на строку
+            # (честнее занизить, чем молчать; pressure-строки обычно дольше).
+            remaining = remaining_cur + (
+                (p_exp / rate) if phase == "baseline" and p_exp else 0
+            )
+            out["eta"] = time.strftime("%H:%M", time.localtime(time.time() + remaining))
+            out["eta_minutes"] = round(remaining / 60)
+    elif phase == "DONE":
+        out["overall_pct"] = 100
+        out["phase_pct"] = 100
+    return out
 
 
 def parquet_summary(path: Path) -> dict:
@@ -107,13 +182,21 @@ def collect() -> dict:
     log_path = Path(ARGS.log)
     all_lines = tail_lines(log_path, 4000)
     errors = [l for l in all_lines if re.search(r"ERROR|Traceback|failed", l)][-5:]
+    phase, starts = run_phase(all_lines)
+    results = parquet_summary(Path(ARGS.results))
+    baselines = parquet_summary(Path(ARGS.baselines))
+    exp = expected_rows(Path(ARGS.config))
     return {
         "time": time.strftime("%H:%M:%S"),
-        "phase": run_phase(all_lines),
+        "phase": phase,
+        "progress": progress(
+            phase, starts, baselines.get("rows", 0), results.get("rows", 0), exp
+        ),
+        "expected_rows": exp,
         "log_tail": tail_lines(log_path, 10),
         "log_errors": errors,
-        "results": parquet_summary(Path(ARGS.results)),
-        "baselines": parquet_summary(Path(ARGS.baselines)),
+        "results": results,
+        "baselines": baselines,
         "cluster": kubectl_snapshot(),
     }
 
@@ -126,6 +209,22 @@ def render_html(d: dict) -> str:
 
     phase = d["phase"]
     color = {"DONE": "#2e7d32", "pressure": "#e65100", "baseline": "#1565c0"}.get(phase, "#616161")
+    prog = d.get("progress", {})
+    pct = prog.get("overall_pct")
+    bar = ""
+    if pct is not None:
+        eta = (
+            f" · ETA ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
+            if "eta" in prog
+            else ""
+        )
+        phase_pct = (
+            f" (фаза {phase}: {prog['phase_pct']}%)" if "phase_pct" in prog else ""
+        )
+        bar = f"""<div style="margin:.6em 0 1.2em">
+<div style="font-size:1.15em;margin-bottom:.3em"><b>{pct}%</b> всего прогона{phase_pct}{eta}</div>
+<div style="background:#e0e0e0;height:14px;border-radius:7px;max-width:40em">
+<div style="background:{color};width:{pct}%;height:14px;border-radius:7px"></div></div></div>"""
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="10">
 <title>harness status</title>
@@ -134,6 +233,7 @@ pre{{background:#f5f5f5;padding:.7em;overflow-x:auto}}
 h2{{border-bottom:1px solid #ccc}}</style></head><body>
 <h1>Прогон харнесса — <span style="color:{color}">{phase}</span>
 <small style="color:#999">(обновлено {d['time']}, автообновление 10с)</small></h1>
+{bar}
 <h2>results ({html.escape(str(ARGS.results))})</h2>{pre(d['results'])}
 <h2>baselines ({html.escape(str(ARGS.baselines))})</h2>{pre(d['baselines'])}
 <h2>кластер (живые Job'ы / агрессоры)</h2>{pre(d['cluster'])}
@@ -167,6 +267,12 @@ def main():
     p.add_argument("--log", default="../full_run.log")
     p.add_argument("--results", default="results/results.parquet")
     p.add_argument("--baselines", default="results/baselines.parquet")
+    p.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml харнесса — из него считается ожидаемое число строк "
+        "(для процента готовности и ETA в шапке)",
+    )
     p.add_argument("--port", type=int, default=8787)
     p.add_argument("--bind", default="127.0.0.1")
     ARGS = p.parse_args()
