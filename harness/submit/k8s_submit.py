@@ -29,11 +29,17 @@ from submit.redis_metrics import fetch_job_metrics
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
+# schedulerName для каждого config-варианта. Правило: суффикс варианта = имя
+# профиля планировщика (см. k8s/scheduler-config/scheduler-config.yaml —
+# профили sensitivityscore и trimaran в одном Deployment), кроме "default" ->
+# штатный "default-scheduler". D — отдельный случай (slurm-bridge, без суффикса).
 SCHEDULER_NAME_BY_CONFIG = {
     "A-default": "default-scheduler",
     "A-sensitivityscore": "sensitivityscore",
+    "A-trimaran": "trimaran",  # load-aware бейзлайн H1-trimaran
     "B-default": "default-scheduler",
     "B-sensitivityscore": "sensitivityscore",
+    "B-trimaran": "trimaran",
     "D": "slurm-bridge",
 }
 

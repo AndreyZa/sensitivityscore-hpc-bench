@@ -69,6 +69,30 @@ def plot_metric_vs_makespan(
     return fig
 
 
+def plot_regret_by_config(df: pd.DataFrame, output_path: str | Path | None = None):
+    """Boxplot placement regret по config (hue = overcommit: для pressure-строк
+    это интенсивность давления, агрессоров на ноду) — график МЕХАНИЗМА:
+    interference-blind планировщик кладёт чувствительных жертв на придавленную
+    ноду (regret > 0 и растёт с интенсивностью), interference-aware уводит их
+    (regret ~ 0). В отличие от makespan, метрика решения почти не шумит."""
+    subset = df[df["placement_regret"].notna()]
+    if subset.empty:
+        raise ValueError("no rows with placement_regret")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.boxplot(data=subset, x="config", y="placement_regret", hue="overcommit", ax=ax)
+    ax.set_title("Placement regret by config (hue: intensity/overcommit)")
+    ax.set_xlabel("Configuration")
+    ax.set_ylabel("Placement regret (normalized interference, chosen - best)")
+    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
+    plt.xticks(rotation=30, ha="right")
+    fig.tight_layout()
+
+    if output_path:
+        fig.savefig(output_path, dpi=150)
+    return fig
+
+
 def plot_cv_comparison(cv_summary: pd.DataFrame, output_path: str | Path | None = None):
     """Bar chart comparing coefficient of variation between two configs across
     plan points — the stability comparison for H1 (docs §5.2/§5.3: CV rather than

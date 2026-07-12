@@ -25,6 +25,15 @@ EXPECTED_COLUMNS = {
     "io_pressure",
     "approximation",
     "scenario",
+    # Качество решения планировщика по снапшоту node:metrics на момент
+    # сабмита (harness/submit/node_pressure.py).
+    "interference_chosen",
+    "placement_regret",
+    # Заявленный S-вектор профиля — для fingerprint-таблицы (fingerprint()).
+    "sensitivity_llc",
+    "sensitivity_numa",
+    "sensitivity_net",
+    "sensitivity_io",
 }
 
 
@@ -74,3 +83,39 @@ def filter_valid(df: pd.DataFrame, allow_synthetic: bool = False) -> pd.DataFram
             "— pipeline-testing mode, NOT dissertation data."
         )
     return valid
+
+
+def isolated_makespans(baselines: pd.DataFrame) -> pd.Series:
+    """profile -> медианный соло-makespan из baselines.parquet (харнесс
+    --baseline). Медиана, не среднее: один шумный соло-прогон (например,
+    первый — с холодным image pull на ноде) не должен сдвигать знаменатель
+    всех slowdown этого профиля."""
+    solo = baselines[baselines["scenario"] == "baseline"]
+    if solo.empty:
+        raise ValueError(
+            "baselines file has no scenario='baseline' rows — was it produced "
+            "by run_experiment.py --baseline?"
+        )
+    return solo.groupby("profile")["makespan_s"].median()
+
+
+def attach_slowdown(df: pd.DataFrame, baselines: pd.DataFrame) -> pd.DataFrame:
+    """Добавляет makespan_isolated и slowdown = makespan_s / makespan_isolated.
+
+    Slowdown — стандартная метрика литературы по интерференции (Bubble-Up,
+    Paragon, Heracles): безразмерная, профили разной длительности становятся
+    сравнимыми и объединяемыми, а «замедлился в 1.8x» читается напрямую.
+    Профили без бейзлайна получают NaN (и предупреждение) — сравнения по
+    slowdown их молча не потеряют: stats отбрасывает NaN с падением n."""
+    iso = isolated_makespans(baselines)
+    out = df.copy()
+    out["makespan_isolated"] = out["profile"].map(iso)
+    out["slowdown"] = out["makespan_s"] / out["makespan_isolated"]
+
+    missing = sorted(set(out["profile"].dropna()) - set(iso.index))
+    if missing:
+        print(
+            f"[attach_slowdown] warning: no baseline for profiles {missing} — "
+            "their slowdown is NaN (run harness --baseline covering them)."
+        )
+    return out

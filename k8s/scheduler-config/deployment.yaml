@@ -132,3 +132,32 @@ roleRef:
   kind: Role
   name: extension-apiserver-authentication-reader
   apiGroup: rbac.authorization.k8s.io
+---
+# Права на чтение metrics.k8s.io — нужны профилю trimaran: его плагин
+# LoadVariationRiskBalancing тянет утилизацию нод через metrics-server
+# (metricProvider KubernetesMetricsServer). Без этого биндинга collector
+# получал бы 403 на metrics.k8s.io/nodes и молча ставил бы минимальный score
+# всем нодам (плечо A-trimaran выродилось бы в «без различения»). Профиль
+# sensitivityscore эти права не использует (он читает Redis), но
+# ServiceAccount на процесс один — грант общий.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sensitivityscore-scheduler-metrics-reader
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sensitivityscore-scheduler-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: sensitivityscore-scheduler
+    namespace: sensitivityscore-system
+roleRef:
+  kind: ClusterRole
+  name: sensitivityscore-scheduler-metrics-reader
+  apiGroup: rbac.authorization.k8s.io

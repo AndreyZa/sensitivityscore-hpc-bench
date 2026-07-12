@@ -2,9 +2,13 @@
 # (плагины без Args просто перечисляются в plugins.score.enabled, без
 # pluginConfig-блока).
 #
-# schedulerName: sensitivityscore — второй профиль планировщика, чтобы
-# default-scheduler продолжал работать как раньше и можно было переключать
-# schedulerName в манифесте Job для A/B-сравнения (H1).
+# Два профиля в ОДНОМ процессе планировщика (один Deployment, один бинарь
+# форка, в который вкомпилированы оба плагина — cmd/scheduler/main.go):
+#   schedulerName: sensitivityscore — наш interference-aware плагин (H1);
+#   schedulerName: trimaran         — второй бейзлайн, load-aware, но НЕ
+#                                     interference-aware (H1-trimaran, см. ниже).
+# default-scheduler продолжает работать штатно; плечо выбирается через
+# schedulerName в манифесте Job (SCHEDULER_NAME_BY_CONFIG в k8s_submit.py).
 #
 # weight: 5 — НЕ дефолтная единица. plugins.score.enabled ДОБАВЛЯЕТ плагин к
 # дефолтным score-плагинам (NodeResourcesFit, NodeResourcesBalancedAllocation,
@@ -25,3 +29,36 @@ profiles:
         enabled:
           - name: SensitivityScore
             weight: 5
+
+  # Trimaran / LoadVariationRiskBalancing — контрольный бейзлайн для H1.
+  # Тезис: если SensitivityScore выигрывает у default, скептик возразит, что
+  # выигрыш даёт «любой учёт загрузки нод», а не именно S-вектор. Trimaran —
+  # признанный load-aware плагин (из этого же форка scheduler-plugins): он
+  # балансирует РИСК по фактической утилизации CPU/памяти (среднее + σ через
+  # metrics-server), но СЛЕП к LLC/NUMA/IO-контенции — ровно к тому, что
+  # меряет наш агент. Если наш плагин обыгрывает и Trimaran на pressure-
+  # сценариях (агрессор с малым cpu-request невидим и для утилизации, и для
+  # requests), значит решает именно interference-awareness, а не load-
+  # awareness. Тот же вес 5, что у SensitivityScore, — единственное различие
+  # плеч A-trimaran/A-sensitivityscore это сам плагин, не его вес.
+  #
+  # Зависимость: LoadVariationRiskBalancing читает метрики через metrics-server
+  # (metricProvider.type: KubernetesMetricsServer — дефолт). Без него плагин НЕ
+  # падает и не роняет процесс (профиль sensitivityscore остаётся рабочим) —
+  # collector лишь логирует "Unable to populate metrics" и возвращает
+  # минимальный score всем нодам. Установить metrics-server на стенде:
+  # `make trimaran-deps` (см. Makefile). На dev-kind это плечо всё равно не
+  # различает ноды (общий kernel), оно для партнёрского стенда.
+  - schedulerName: trimaran
+    plugins:
+      score:
+        enabled:
+          - name: LoadVariationRiskBalancing
+            weight: 5
+    pluginConfig:
+      - name: LoadVariationRiskBalancing
+        args:
+          safeVarianceMargin: 1
+          safeVarianceSensitivity: 1
+          metricProvider:
+            type: KubernetesMetricsServer

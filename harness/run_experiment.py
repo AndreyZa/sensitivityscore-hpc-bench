@@ -9,7 +9,13 @@ see below):
 
     config | profile | overcommit | rep | node | makespan_s | makespan_source |
     submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
-    io_iops | io_pressure | approximation | batch_size | batch_index
+    io_iops | io_pressure | approximation | batch_size | batch_index |
+    interference_chosen | placement_regret | sensitivity_{llc,numa,net,io}
+
+    interference_chosen/placement_regret — качество решения планировщика по
+    снапшоту node:metrics на момент сабмита (submit/node_pressure.py);
+    sensitivity_* — заявленный S-вектор профиля (для fingerprint-таблицы
+    «заявленный vs измеренный» в analysis).
 
 makespan_s is the job's pure runtime measured by the cluster itself — pod
 container terminated startedAt->finishedAt for K8s backends, sacct Elapsed for
@@ -52,8 +58,8 @@ sys.path.insert(
     0, str(Path(__file__).parent)
 )  # allow `from submit import ...` / `from profiles import ...`
 
-from profiles import make_job_id
-from submit import aggressors, k8s_submit, slurm_submit
+from profiles import PROFILES, make_job_id
+from submit import aggressors, k8s_submit, node_pressure, slurm_submit
 from submit.redis_metrics import purge_job_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -63,14 +69,20 @@ BACKENDS = {"k8s": k8s_submit, "slurm": slurm_submit}
 
 
 def expand_configs(cfg: dict) -> list[str]:
-    """Config A is special-cased into A-default / A-sensitivityscore (docs §4:
-    direct A/B comparison of scheduler variants within the same infra config,
-    needed for H1). Config B likewise gets a default/sensitivityscore split for
-    the same reason (H2). C and D run as single variants."""
+    """Configs A and B are each split into scheduler-variant arms sharing the
+    same infra (docs §4: direct comparison of scheduler variants within one
+    infra config — H1 for A, H2 for B). C and D run as single variants.
+
+    Which arms A/B expand into is driven by cfg["scheduler_variants"] (default
+    ["default", "sensitivityscore"]). Add "trimaran" there to enable the
+    load-aware control baseline (H1-trimaran) as a third arm — opt-in, since
+    it multiplies the matrix/pressure cost by another arm and needs
+    metrics-server on the stand (see scheduler-config.yaml)."""
+    variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
     expanded = []
     for c in cfg["configs"]:
         if c in ("A", "B"):
-            expanded.extend([f"{c}-default", f"{c}-sensitivityscore"])
+            expanded.extend([f"{c}-{v}" for v in variants])
         else:
             expanded.append(c)
     return expanded
@@ -84,6 +96,22 @@ def backend_for(config: str, cfg: dict) -> str:
 # Delay before the single submit-phase retry — short on purpose: a member
 # resubmitted much later would no longer run concurrently with its batch.
 RESUBMIT_DELAY_SECONDS = 5
+
+
+def sensitivity_columns(profile: str) -> dict:
+    """Заявленный S-вектор профиля -> колонки строки результата. Нужен
+    fingerprint-таблице анализа («заявленный vs измеренный S») — analysis
+    не импортирует harness/profiles.py, декларация едет в самих данных."""
+    spec = PROFILES.get(profile)
+    if spec is None:
+        return {f"sensitivity_{axis}": None for axis in ("llc", "numa", "net", "io")}
+    s = spec.sensitivity
+    return {
+        "sensitivity_llc": s.llc,
+        "sensitivity_numa": s.numa,
+        "sensitivity_net": s.net,
+        "sensitivity_io": s.io,
+    }
 
 
 def error_row(
@@ -112,6 +140,9 @@ def error_row(
         "scenario": None,
         "batch_size": None,
         "batch_index": None,
+        "interference_chosen": float("nan"),
+        "placement_regret": float("nan"),
+        **sensitivity_columns(profile),
     }
     row.update(extra)
     return row
@@ -170,11 +201,20 @@ def run_one(
             "io_pressure": float("nan"),
             "approximation": "dry-run",
             "scenario": None,  # caller (run_batch / pressure arm) fills this in
+            "interference_chosen": float("nan"),
+            "placement_regret": float("nan"),
+            **sensitivity_columns(profile),
         }
 
     # Drop any leftover job:metrics keys from a previous run that crashed
     # before reading them — job_ids repeat across runs and the keys accumulate.
     purge_job_metrics(cfg["redis"]["addr"], job_id)
+
+    # Снапшот давления всех нод НА МОМЕНТ САБМИТА — из него после размещения
+    # считается placement regret (см. submit/node_pressure.py). До submit_job,
+    # а не после: собственная нагрузка job не должна попадать в ландшафт,
+    # по которому оценивается решение планировщика о её размещении.
+    pressure_snapshot = node_pressure.snapshot_node_pressure(cfg["redis"]["addr"])
 
     try:
         handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
@@ -188,9 +228,19 @@ def run_one(
 
     try:
         backend.wait_for_completion(handle, cfg)
-        return backend.record_result(
+        row = backend.record_result(
             handle, job_id, config, profile, overcommit, rep, cfg
         )
+        chosen, regret = node_pressure.placement_regret(
+            PROFILES[profile].sensitivity,
+            pressure_snapshot,
+            row.get("node"),
+            cfg.get("score_weights") or node_pressure.DEFAULT_WEIGHTS,
+        )
+        row["interference_chosen"] = chosen
+        row["placement_regret"] = regret
+        row.update(sensitivity_columns(profile))
+        return row
     finally:
         # Always clean up, including on wait timeout/failure — a job left
         # running would keep loading the node and contaminate the next plan
@@ -503,6 +553,72 @@ def run_pressure_mode(cfg: dict, args) -> None:
     log.info("done: %d pressure results written to %s", len(rows), results_path)
 
 
+def baseline_profiles(cfg: dict) -> list[str]:
+    """Профили для соло-бейзлайнов: матричные (cfg.profiles) плюс жертвы
+    pressure-сценариев (например high-s-io, которого нет в матрице) — slowdown
+    нужен всем строкам, где встречается профиль."""
+    profiles = list(cfg["profiles"])
+    for scenario in cfg.get("pressure_scenarios", []):
+        victim = scenario.get("victim_profile", "high-s")
+        if victim not in profiles:
+            profiles.append(victim)
+    return profiles
+
+
+def run_baseline_mode(cfg: dict, args) -> None:
+    """--baseline: соло-прогоны каждого профиля на пустом кластере ->
+    baselines.parquet (отдельный файл, не results!). Двойное назначение:
+
+    1) знаменатели slowdown = makespan_s / makespan_isolated — безразмерная
+       метрика замедления, на которой analysis гоняет сравнения (профили
+       разной длительности становятся объединяемыми);
+    2) fingerprint-таблица «заявленный S vs измеренный»: соло-строки несут и
+       декларацию (sensitivity_* колонки), и фактические метрики агента без
+       чужой интерференции.
+
+    Прогоны СТРОГО последовательные (никакого батча): любой сосед или живой
+    агрессор в кластере делает бейзлайн не изолированным — это молча занизит
+    все slowdown. Харнесс это не проверяет, чистота кластера на совести
+    запускающего."""
+    bl_cfg = cfg.get("baseline", {})
+    reps = bl_cfg.get("repetitions", 5)
+    config = bl_cfg.get("config", "A-default")
+    profiles = baseline_profiles(cfg)
+
+    log.warning(
+        "baseline mode: cluster MUST be idle (no aggressors, no leftover jobs) — "
+        "these rows become slowdown denominators and fingerprint ground truth"
+    )
+
+    results_dir = Path(cfg["output"]["results_dir"])
+    results_dir.mkdir(parents=True, exist_ok=True)
+    baselines_file = cfg["output"].get("baselines_file", "baselines.parquet")
+    if args.dry_run:
+        baselines_file = f"dry-run-{baselines_file}"
+    baselines_path = results_dir / baselines_file
+
+    rows: list[dict] = []
+    for profile in profiles:
+        for rep in range(reps):
+            # Свой суффикс вместо make_job_id: bейзлайн не должен коллидировать
+            # по job_id (и Redis-ключам job:metrics) с матричными прогонами.
+            job_id = f"{config}-{profile}-base-rep{rep:02d}"
+            try:
+                row = run_one(job_id, config, profile, 1.0, rep, cfg, args.dry_run)
+            except Exception as exc:  # noqa: BLE001 — не терять остальные бейзлайны
+                log.error("baseline %s failed: %s", job_id, exc)
+                row = error_row(config, profile, 1.0, rep, exc)
+            row["scenario"] = "baseline"
+            row["batch_size"] = 1
+            row["batch_index"] = 0
+            rows.append(row)
+            pd.DataFrame(rows).to_parquet(baselines_path, index=False)
+            if not args.dry_run:
+                time.sleep(cfg["cooldown_seconds"])
+
+    log.info("done: %d baseline rows written to %s", len(rows), baselines_path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -530,11 +646,22 @@ def main():
         nargs="*",
         help="With --pressure: restrict to these scenario names",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Run solo per-profile baselines on an IDLE cluster -> "
+        "baselines.parquet (slowdown denominators + fingerprint ground truth)",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
+    if args.pressure and args.baseline:
+        parser.error("--pressure and --baseline are mutually exclusive")
+    if args.baseline:
+        run_baseline_mode(cfg, args)
+        return
     if args.pressure:
         run_pressure_mode(cfg, args)
         return

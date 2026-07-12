@@ -1,0 +1,121 @@
+"""node_pressure.py — снапшот давления нод + расчёт placement regret.
+
+Regret размещения — прямая метрика качества решения планировщика, в отличие
+от makespan (конечный исход, на который влияет много шума):
+
+    regret = interference(выбранная нода) - min по нодам interference(нода),
+
+где interference — та же нормированная скор-функция, что в плагине
+SensitivityScore (dot(S_job, Pressure_node) с весами, Net исключён из суммы
+И из знаменателя — см. pkg/sensitivityscore/sensitivityscore.go в форке
+scheduler-plugins). Идеальный interference-aware планировщик даёт regret ~= 0;
+слепой к интерференции — большой regret ровно в pressure-сценариях. Метрика
+почти детерминированная, эффект виден даже там, где makespan шумит.
+
+Считается ХАРНЕССОМ, одинаково для всех плеч: в плече A-default плагин вообще
+не запущен, так что логи планировщика не подходят — а Redis-снапшот
+node:metrics:* доступен всегда, пока жив metrics-agent. Снапшот берётся в
+момент сабмита; фактическое решение планировщик принимает на секунды позже по
+своему кэшу (refresh до 10с) — для минутных окон давления агрессоров это
+несущественно, но оговаривается в методике.
+"""
+
+from __future__ import annotations
+
+import math
+
+import redis
+
+from profiles import Sensitivity
+from submit.redis_metrics import _connect
+
+# Зеркало extractSensitivityVector плагина: high|medium|low -> 1.0|0.5|0.0
+# (всё нераспознанное = 0.0, как в плагине).
+SENSITIVITY_VALUE = {"high": 1.0, "medium": 0.5}
+
+# Зеркало defaultWeights() плагина; переопределяется score_weights из
+# config.yaml. Должно совпадать с weights.json в ConfigMap sensitivity-config
+# (k8s/scheduler-config/sensitivity-configmap.yaml), иначе regret считается
+# не по той скор-функции, которой реально пользуется плагин.
+DEFAULT_WEIGHTS = {"llc": 1.0, "numa": 1.0, "io": 1.0}
+
+
+def _clamp01(v: float) -> float:
+    return 0.0 if v < 0 else 1.0 if v > 1 else v
+
+
+def snapshot_node_pressure(redis_addr: str) -> dict[str, dict[str, float]]:
+    """Читает все node:metrics:<node> хэши -> {node: {llc, numa, io}}, каждая
+    ось в [0,1] (тот же clamp, что parsePressureField в redis_source.go
+    плагина). Никогда не кидает: сломанный метрик-пайплайн не должен ронять
+    сабмит (regret тогда честно NaN), та же политика, что у fetch_job_metrics."""
+    snapshot: dict[str, dict[str, float]] = {}
+    try:
+        r = _connect(redis_addr)
+        for key in r.scan_iter(match="node:metrics:*"):
+            node = key.removeprefix("node:metrics:")
+            if not node:
+                continue
+            fields = r.hgetall(key)
+
+            def _field(name: str) -> float:
+                try:
+                    return _clamp01(float(fields.get(name, "nan")))
+                except ValueError:
+                    return 0.0
+
+            snapshot[node] = {
+                "llc": _field("llc_miss_rate"),
+                "numa": _field("numa_remote_ratio"),
+                # Net намеренно не участвует — как в скор-функции плагина.
+                "io": _field("io_pressure"),
+            }
+    except redis.exceptions.RedisError:
+        return {}
+    return snapshot
+
+
+def interference(
+    sensitivity: Sensitivity, pressure: dict[str, float], weights: dict[str, float]
+) -> float:
+    """Нормированное взвешенное скалярное произведение S_job x Pressure_node,
+    в [0,1] — та же формула, что Score() плагина (у него pressure в шкале
+    0-100 и знаменатель * 100; здесь обе части в [0,1], результат идентичен)."""
+    w_llc = weights.get("llc", 1.0)
+    w_numa = weights.get("numa", 1.0)
+    w_io = weights.get("io", 1.0)
+    denom = w_llc + w_numa + w_io
+    if denom <= 0:
+        return 0.0
+    s = {
+        axis: SENSITIVITY_VALUE.get(getattr(sensitivity, axis), 0.0)
+        for axis in ("llc", "numa", "io")
+    }
+    dot = (
+        s["llc"] * pressure.get("llc", 0.0) * w_llc
+        + s["numa"] * pressure.get("numa", 0.0) * w_numa
+        + s["io"] * pressure.get("io", 0.0) * w_io
+    )
+    return dot / denom
+
+
+def placement_regret(
+    sensitivity: Sensitivity,
+    snapshot: dict[str, dict[str, float]],
+    chosen_node: str | None,
+    weights: dict[str, float],
+) -> tuple[float, float]:
+    """-> (interference_chosen, regret), оба в [0,1] или NaN.
+
+    NaN, когда выбранная нода не в снапшоте (агент на ней не писал, TTL истёк,
+    Slurm-имя ноды не совпало с K8s-именем) или снапшот пуст — строка остаётся
+    валидной по makespan, просто без regret. min берётся по нодам снапшота:
+    это ноды с живым metrics-agent, т.е. ровно то множество, по которому и
+    плагин видит давление (остальным он даёт нейтральный score)."""
+    if not snapshot or not chosen_node or chosen_node not in snapshot:
+        return float("nan"), float("nan")
+    chosen = interference(sensitivity, snapshot[chosen_node], weights)
+    best = min(interference(sensitivity, p, weights) for p in snapshot.values())
+    regret = chosen - best
+    # Защита от -0.0 из плавающей арифметики в колонке результата.
+    return chosen, 0.0 if math.isclose(regret, 0.0, abs_tol=1e-12) else regret

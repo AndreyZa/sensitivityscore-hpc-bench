@@ -10,9 +10,16 @@ configs:
   - C # Slurm
   - D # Slinky / slurm-bridge (overcommit=1.0 only — whole-node allocation, see §3.1)
 
-# Note: configs A and B are each expanded into <X>-default / <X>-sensitivityscore
-# variants inside run_experiment.py:expand_configs() (same-infra A/B comparison
-# for H1/H2) — this is hardcoded there, not configurable here.
+# Configs A и B разворачиваются в плечи-варианты планировщика в пределах одной
+# инфраструктуры (run_experiment.py:expand_configs). Набор плеч задаётся здесь:
+scheduler_variants:
+  - default # штатный kube-scheduler (schedulerName default-scheduler)
+  - sensitivityscore # наш interference-aware плагин (H1/H2)
+  # - trimaran        # РАСКОММЕНТИРОВАТЬ для load-aware контрольного бейзлайна
+  #                   # (H1-trimaran): доказывает, что выигрыш даёт S-вектор, а
+  #                   # не «любой учёт загрузки». Добавляет третье плечо ко ВСЕМ
+  #                   # точкам плана и pressure-сценариям (дороже) и требует
+  #                   # metrics-server на стенде (`make trimaran-deps`).
 
 profiles:
   - low-s
@@ -33,6 +40,25 @@ node_capacity_jobs: 2
 repetitions: 10
 
 cooldown_seconds: 30 # pause between runs, let the node cool from the previous run
+
+# Веса осей скор-функции для расчёта placement regret харнессом
+# (submit/node_pressure.py). ДОЛЖНЫ совпадать с weights.json из ConfigMap
+# sensitivity-config (k8s/scheduler-config/sensitivity-configmap.yaml) —
+# иначе regret считается не по той функции, которой пользуется плагин.
+# Net отсутствует намеренно: он исключён и из score плагина.
+score_weights:
+  llc: 1.0
+  numa: 1.0
+  io: 1.0
+
+# --- Соло-бейзлайны (run_experiment.py --baseline) ---
+# Каждый профиль (матричные + жертвы pressure-сценариев) гоняется
+# repetitions раз строго последовательно на ПУСТОМ кластере ->
+# results/baselines.parquet. Из них analysis берёт: знаменатели slowdown
+# (makespan_isolated per profile) и fingerprint «заявленный vs измеренный S».
+baseline:
+  repetitions: 5
+  config: A-default # через какой планировщик сабмитить (на пустом кластере не влияет на makespan)
 
 # Per-config submission backend, see harness/submit/*.py
 backends:
@@ -123,6 +149,7 @@ aggressor:
 output:
   results_dir: "results"
   results_file: "results.parquet"
+  baselines_file: "baselines.parquet" # выход --baseline (соло-прогоны, отдельно от results)
 
 redis:
   addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
