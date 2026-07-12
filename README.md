@@ -171,7 +171,10 @@ make nuke                   # всё вышеперечисленное + Deploy
 NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 (PSI `io.pressure` — в score; сырые IOPS — только для анализа), Net
 (`/proc/<pid>/net/dev`, байты/с — только для анализа: у сырой полосы нет
-честной шкалы [0,1] без калибровки под NIC, в score Net не участвует).
+честной шкалы [0,1] без калибровки под NIC, в score Net не участвует —
+план калибровки через эмпирический `iperf3 --bidir` вместо номинала NIC
+готов, см. `docs/Технический план экспериментов.md` §3.4 и
+`docs/Программа экспериментов (Geant4).md` §4/§8, реализация — TODO ниже).
 
 Экспериментальная часть усилена тремя защитами H1 плюс контрольным
 бейзлайном (см. `harness/README.md`, `analysis/README.md`):
@@ -187,6 +190,11 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 
 Осознанно оставлены как явные TODO:
 
+- Калибровка Net (`net_pressure` в score) — дизайн готов (см. выше), не
+  реализовано: агент должен получать `NET_REFERENCE_MBPS` (из эмпирического
+  `iperf3 --bidir` pod-to-pod теста на Этапе 0, не из номинала NIC) и писать
+  нормированный `net_pressure` рядом с сырым `net_bw`; `redis_source.go`
+  читает его так же, как сейчас читает `io_pressure`.
 - `uncore_imc_*` PMU как уточнение NUMA-метрики (истинный bandwidth
   per-socket, но node-wide и специфичен для модели CPU) — см.
   `ReadUncoreNUMABandwidth`.
