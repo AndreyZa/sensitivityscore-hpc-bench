@@ -27,7 +27,13 @@ configs:
 scheduler_variants:
   - default
   - sensitivityscore
-  # - trimaran   # опционально: нужен metrics-server (make trimaran-deps)
+  # Контрольное плечо H1-trimaran (load-aware, но не interference-aware):
+  # профиль trimaran задеплоен на STAGE, metrics-server у k0s из коробки,
+  # collector читает метрики (проверено в логах). На STAGE Trimaran особенно
+  # показателен: --hdd-агрессоры потребляют заметный CPU, так что частично
+  # он шторм «видит» через утилизацию — если sensitivityscore всё равно
+  # лучше, IO-сигнал незаменим; если сравнимы — честно так и напишем.
+  - trimaran
 
 # Ноды, на которые НЕ ставить поды (nodeAffinity NotIn, без cordon/taint).
 # worker-192.168.0.7 изначально была без egress к Docker Hub, но её

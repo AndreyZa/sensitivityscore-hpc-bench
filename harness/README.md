@@ -144,6 +144,19 @@ make harness-run-pressure-incluster
 make harness-logs-incluster JOB=harness-pressure
 ```
 
+## Мониторинг прогресса (HTTP-эндпойнт)
+
+`status_server.py` — локальная страница статуса идущего прогона: фаза
+(baseline/pressure/DONE), сколько строк уже в parquet по плечам и нодам,
+живые Job'ы/агрессоры в кластере, хвост лога и ошибки. Только чтение.
+
+```bash
+.venv/bin/python status_server.py \
+    --log /path/to/run.log \
+    --results results/results.parquet --baselines results/baselines.parquet
+# -> http://localhost:8787  (HTML, автообновление 10с; /json — для скриптов)
+```
+
 ## Проверка без реального запуска
 
 ```bash
