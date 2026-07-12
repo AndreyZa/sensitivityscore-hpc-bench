@@ -10,7 +10,26 @@ templates/*.j2             — Jinja2-шаблоны манифестов (k8s J
 submit/k8s_submit.py       — backend для A/B/D (kubectl apply/wait)
 submit/slurm_submit.py     — backend для C (sbatch/squeue/sacct)
 submit/redis_metrics.py    — общее чтение job:metrics:* из Redis
+submit/node_pressure.py    — снапшот node:metrics + placement regret (см. ниже)
 run_experiment.py           — главный цикл, пишет results/results.parquet
+```
+
+## Режимы запуска (три взаимоисключающих)
+
+| Режим | Флаг | Что делает | Выход |
+|---|---|---|---|
+| Матрица | *(по умолчанию)* | config × profile × overcommit × rep | `results.parquet` |
+| Pressure | `--pressure` | агрессоры + поток жертв (H1 «money experiment») | `results.parquet` |
+| Baseline | `--baseline` | соло-прогоны профилей на ПУСТОМ кластере | `baselines.parquet` |
+
+`--baseline` гоняет каждый профиль (матричные + жертвы pressure-сценариев)
+последовательно в изоляции. Из него `../analysis/` берёт знаменатели slowdown
+(`makespan_isolated` на профиль) и «эталон» для fingerprint-таблицы (заявленный
+vs измеренный S). Кластер обязан быть пустым — сосед или живой агрессор молча
+занизит все slowdown. Запускать до боевой матрицы, один раз на стенд:
+
+```bash
+python run_experiment.py --baseline        # -> results/baselines.parquet
 ```
 
 ## Установка
@@ -142,7 +161,8 @@ python run_experiment.py --dry-run
 ```
 config | profile | overcommit | rep | node | makespan_s | makespan_source |
 submit_ts | start_ts | end_ts | llc_miss_rate | numa_remote_ratio | net_bw |
-io_iops | io_pressure | approximation | batch_size | batch_index
+io_iops | io_pressure | approximation | scenario | batch_size | batch_index |
+interference_chosen | placement_regret | sensitivity_{llc,numa,net,io}
 ```
 
 - `makespan_s` — чистое время исполнения, измеренное самим кластером:
@@ -164,6 +184,19 @@ io_iops | io_pressure | approximation | batch_size | batch_index
   участвует (у неё нет честной шкалы [0,1] без калибровки max-IOPS
   устройства). На ядрах без PSI `io_pressure` будет 0 (агент предупредит в
   логе один раз).
+- `interference_chosen`/`placement_regret` — качество решения планировщика.
+  Перед сабмитом харнесс снимает снапшот давления всех нод (`node:metrics:*`)
+  и после размещения считает `regret = interference(выбранной) − min по нодам`
+  той же скор-функцией, что плагин (`submit/node_pressure.py`; веса —
+  `score_weights` в config.yaml, обязаны совпадать с `weights.json` ConfigMap).
+  Считается на стороне харнесса, поэтому покрыто и плечо `A-default`, где
+  плагин не запущен. NaN, если ноды нет в снапшоте (агент не писал / TTL / имя
+  Slurm-ноды не совпало). Наиболее осмысленно на pressure-сценариях; в batch
+  снапшот снимается до того, как со-размещённые члены создадут давление, так
+  что там regret ≈ 0 у всех плеч.
+- `sensitivity_{llc,numa,net,io}` — заявленный S-вектор профиля из
+  `profiles.py`, едет в данные для fingerprint-таблицы анализа (analysis не
+  импортирует harness).
 
 Пишется инкрементально после каждого прогона — падение харнесса на середине
 матрицы не теряет уже выполненные измерения. `--dry-run` пишет в отдельный
@@ -172,10 +205,19 @@ io_iops | io_pressure | approximation | batch_size | batch_index
 
 ## Особенности реализации относительно плана
 
-- Конфигурация **A** и **B** внутри харнесса разворачиваются в два варианта
-  (`A-default` / `A-sensitivityscore`, аналогично для B) — иначе H1/H2 (прямое
-  A/B-сравнение планировщиков внутри одной инфраструктурной конфигурации)
-  нечем было бы отличить в результатах.
+- Конфигурация **A** и **B** внутри харнесса разворачиваются в плечи-варианты
+  планировщика (`A-default` / `A-sensitivityscore`, аналогично для B) — иначе
+  H1/H2 (прямое A/B-сравнение планировщиков внутри одной инфраструктурной
+  конфигурации) нечем было бы отличить в результатах. Набор плеч задаётся
+  `scheduler_variants` в config.yaml.
+- **Trimaran** (`LoadVariationRiskBalancing`) — опциональное третье плечо
+  (`A-trimaran`, H1-trimaran): включается добавлением `trimaran` в
+  `scheduler_variants`. Load-aware контрольный бейзлайн (видит утилизацию
+  CPU/памяти через metrics-server, но слеп к LLC/NUMA/IO) — обыгрыш его на
+  pressure-сценариях отделяет interference-awareness от «любого учёта
+  загрузки». Добавляет плечо ко всем точкам (дороже) и требует metrics-server
+  на стенде (`make trimaran-deps`); профиль планировщика — в
+  `k8s/scheduler-config/scheduler-config.yaml`.
 - Конфигурация **D** (Slinky) автоматически пропускает точки плана с
   `overcommit > 1.0` — whole-node allocation не поддерживает co-location
   (Программа экспериментов §3.1).

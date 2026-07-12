@@ -99,25 +99,47 @@ make harness-rbac                                  # namespace/ServiceAccount/RB
 
 make harness-run-pilot-incluster                    # пилот: 1 точка плана, 3 повтора, config A
 make harness-logs-incluster JOB=harness-pilot       # следить за прогоном
-make harness-fetch-results JOB=harness-pilot        # забрать results.parquet на хост
+make harness-fetch-results                          # забрать results.parquet на хост
+
+# Соло-бейзлайны на ПУСТОМ кластере (нужны для slowdown-нормировки и
+# fingerprint-таблицы в анализе) — один раз на стенд, до боевой матрицы:
+make harness-run-baseline-incluster
+make harness-fetch-baselines
 
 # если пилот чистый — полная матрица (пока только config A: B/C/D нужна
 # инфраструктура партнёров, см. docs §0)
 make harness-run-config-a-incluster
 make harness-logs-incluster JOB=harness-config-a
-make harness-fetch-results JOB=harness-config-a
+make harness-fetch-results
+
+# «money experiment» — pressure-сценарии (агрессоры + поток жертв):
+make image-aggressor && docker push andreyza/aggressor:dev
+make harness-run-pressure-incluster
+make harness-fetch-results
 
 make harness-clean-reader                           # убрать read-only под, поднятый для выгрузки
 ```
 
+Опционально — контрольный бейзлайн Trimaran (H1-trimaran): раскомментировать
+`trimaran` в `scheduler_variants` (`harness/config.yaml`), поставить
+metrics-server (`make trimaran-deps`), пересобрать образ харнесса. Добавляет
+третье плечо `A-trimaran` ко всем прогонам выше.
+
 ### 4. Анализ и проверка H1–H4
 
-Читает локальный `harness/results/results.parquet` (после `harness-fetch-results` выше):
+Читает локальные `harness/results/{results,baselines}.parquet` (после
+`harness-fetch-results` / `harness-fetch-baselines` выше):
 
 ```bash
-make analyze   # report/summary.md, comparisons.csv, makespan_boxplot.png, llc_vs_makespan.png
+make analyze   # report/: summary.md, comparisons.csv, fingerprint.csv + графики
 make report    # analyze + сразу открыть summary.md
 ```
+
+Сравнения идут по трём метрикам (`makespan_s`, `slowdown` при наличии
+бейзлайнов, `placement_regret`), каждая — своя Holm-семья. `placement_regret` и
+fingerprint-таблица закрывают типовые вопросы к H1 («разница случайна» —
+regret показывает механизм; «аннотации подогнаны» — fingerprint сверяет
+заявленный S с измеренным).
 
 ### Уборка
 
@@ -132,6 +154,7 @@ make nuke                   # всё вышеперечисленное + Deploy
 | # | Формулировка (кратко) |
 |---|---|
 | H1 | SensitivityScore (config A) даёт меньший makespan и меньшую дисперсию, чем default kube-scheduler, при co-location разных профилей S |
+| H1-trimaran | Преимущество даёт именно S-вектор, а не «любой учёт загрузки»: SensitivityScore обыгрывает и load-aware Trimaran (слепой к LLC/NUMA/IO) на pressure-сценариях |
 | H2 | Оверхед виртуализации (config B) снижает эффективность, но относительное преимущество SensitivityScore над default сохраняется |
 | H3 | Slurm (config C) — верхняя граница на однородной нагрузке, но проигрывает SensitivityScore в co-location сценариях |
 | H4 | Slinky/slurm-bridge (config D) близок к C на однородной нагрузке, но проигрывает A в сценариях смешанной чувствительности |
@@ -149,6 +172,18 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 (PSI `io.pressure` — в score; сырые IOPS — только для анализа), Net
 (`/proc/<pid>/net/dev`, байты/с — только для анализа: у сырой полосы нет
 честной шкалы [0,1] без калибровки под NIC, в score Net не участвует).
+
+Экспериментальная часть усилена тремя защитами H1 плюс контрольным
+бейзлайном (см. `harness/README.md`, `analysis/README.md`):
+
+- **placement regret** — прямая метрика решения планировщика (давление
+  выбранной ноды − минимум доступных), почти без шума исхода;
+- **slowdown-нормировка** — `makespan / изолированный` из соло-бейзлайнов
+  (`--baseline`), делает профили разной длительности объединяемыми;
+- **fingerprint** — таблица «заявленный vs измеренный S» с проверкой
+  монотонности, превращает ручные аннотации в верифицированные профили;
+- **Trimaran** (`LoadVariationRiskBalancing`) — load-aware, но не
+  interference-aware контрольный бейзлайн (H1-trimaran), опционален.
 
 Осознанно оставлены как явные TODO:
 

@@ -1,0 +1,37 @@
+# Соло-бейзлайны (run_experiment.py --baseline): каждый профиль прогоняется в
+# ИЗОЛЯЦИИ на пустом кластере -> results/baselines.parquet. Из них analysis
+# берёт знаменатели slowdown и «эталон» для fingerprint-таблицы. Выполняется
+# изнутри кластера, как и остальные harness-Job'ы; apply rbac.yaml и pvc.yaml
+# сначала. ВАЖНО: перед запуском убедись, что кластер пуст (нет чужих подов,
+# нет живых агрессоров) — иначе бейзлайны не изолированы и все slowdown
+# занизятся. См. harness/README.md, секцию «Режимы запуска».
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harness-baseline
+  namespace: sensitivityscore-bench
+spec:
+  backoffLimit: 0 # one attempt — rerun manually rather than letting k8s silently resubmit the whole series
+  template:
+    spec:
+      serviceAccountName: harness-runner
+      restartPolicy: Never
+      containers:
+        - name: harness
+          image: andreyza/harness:dev
+          imagePullPolicy: Always
+          args: ["--baseline"]
+          volumeMounts:
+            - name: results
+              mountPath: /app/results
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: harness-results

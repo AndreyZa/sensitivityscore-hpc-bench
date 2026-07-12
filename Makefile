@@ -39,8 +39,9 @@ HARNESS_VENV  ?= harness/.venv
 ANALYSIS_VENV ?= analysis/.venv
 
 # --- Harness / analysis output paths ---
-RESULTS_FILE ?= harness/results/results.parquet
-REPORT_DIR   ?= analysis/report
+RESULTS_FILE   ?= harness/results/results.parquet
+BASELINES_FILE ?= harness/results/baselines.parquet
+REPORT_DIR     ?= analysis/report
 
 # ---------------------------------------------------------------------------
 # help
@@ -346,6 +347,11 @@ harness-run-pressure-incluster: harness-rbac ## Pressure-сценарии (аг�
 	$(KUBECTL) delete job harness-pressure -n $(HARNESS_NAMESPACE) --ignore-not-found
 	$(KUBECTL) apply -f harness/deploy/job-pressure.yaml
 
+.PHONY: harness-run-baseline-incluster
+harness-run-baseline-incluster: harness-rbac ## Соло-бейзлайны (--baseline) как Job — кластер ДОЛЖЕН быть пустым (slowdown/fingerprint)
+	$(KUBECTL) delete job harness-baseline -n $(HARNESS_NAMESPACE) --ignore-not-found
+	$(KUBECTL) apply -f harness/deploy/job-baseline.yaml
+
 .PHONY: harness-logs-incluster
 harness-logs-incluster: ## Логи текущего in-cluster harness Job (укажи JOB=harness-pilot|harness-config-a)
 	$(KUBECTL) logs -n $(HARNESS_NAMESPACE) job/$(JOB) -f
@@ -356,6 +362,12 @@ harness-fetch-results: ## Скопировать results.parquet с PVC на х�
 	@$(KUBECTL) wait --for=condition=ready pod/harness-results-reader -n $(HARNESS_NAMESPACE) --timeout=60s
 	$(KUBECTL) cp -n $(HARNESS_NAMESPACE) harness-results-reader:/results/results.parquet "$(RESULTS_FILE)"
 
+.PHONY: harness-fetch-baselines
+harness-fetch-baselines: ## Скопировать baselines.parquet с PVC на хост (после harness-run-baseline-incluster)
+	@$(KUBECTL) get pod harness-results-reader -n $(HARNESS_NAMESPACE) >/dev/null 2>&1 || $(KUBECTL) apply -f harness/deploy/results-reader.yaml
+	@$(KUBECTL) wait --for=condition=ready pod/harness-results-reader -n $(HARNESS_NAMESPACE) --timeout=60s
+	$(KUBECTL) cp -n $(HARNESS_NAMESPACE) harness-results-reader:/results/baselines.parquet "$(BASELINES_FILE)"
+
 .PHONY: harness-clean-reader
 harness-clean-reader: ## Убрать read-only под для выгрузки результатов (после harness-fetch-results)
 	$(KUBECTL) delete -f harness/deploy/results-reader.yaml --ignore-not-found
@@ -365,9 +377,9 @@ harness-clean-reader: ## Убрать read-only под для выгрузки �
 # ---------------------------------------------------------------------------
 
 .PHONY: analyze
-analyze: venv-analysis ## Прогнать H1-H4 анализ по текущим результатам харнесса
+analyze: venv-analysis ## Прогнать H1-H4 анализ по текущим результатам харнесса (+ baselines.parquet, если есть: slowdown/fingerprint)
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python analyze.py \
-		--results ../$(RESULTS_FILE) --outdir report
+		--results ../$(RESULTS_FILE) --baselines ../$(BASELINES_FILE) --outdir report
 
 .PHONY: report
 report: analyze ## analyze + сразу открыть summary.md (macOS/Linux `open`/`xdg-open`)
