@@ -78,12 +78,18 @@ def summarize_hypothesis(
     config_a: str,
     config_b: str,
     value_fmt: str = "{:.1f}s",
+    show_cv: bool = True,
 ) -> str:
     """Renders one hypothesis section from the already-computed comparison
     sweep. Significance verdicts use mw_p_holm (Holm-Bonferroni adjusted over
     the whole sweep) — with ~20 tests at alpha=0.05, an uncorrected verdict
     would produce about one spurious "significant" point by chance alone; the
-    raw p is still shown for reference."""
+    raw p is still shown for reference.
+
+    show_cv=False drops the CV annotation: CV = σ/μ is a stability measure that
+    only means something for a positive-magnitude metric (makespan, slowdown).
+    For placement_regret the arm we care about sits at μ≈0, so CV explodes or
+    is NaN — printing it is noise, not information."""
     lines = [f"### {name}: {config_a} vs {config_b}\n"]
     rows = comparisons[
         (comparisons["config_a"] == config_a)
@@ -109,12 +115,14 @@ def summarize_hypothesis(
         )
         # По всем метрикам сравнения «меньше = лучше» (см. COMPARISON_METRICS).
         direction = "better" if result["mean_a"] < result["mean_b"] else "worse"
+        cv_a = f" (CV={result['cv_a']:.3f})" if show_cv else ""
+        cv_b = f" (CV={result['cv_b']:.3f})" if show_cv else ""
         mean_a = value_fmt.format(result["mean_a"])
         mean_b = value_fmt.format(result["mean_b"])
         lines.append(
             f"- profile={result['profile']}, overcommit={result['overcommit']}: "
-            f"{config_a} mean={mean_a} (CV={result['cv_a']:.3f}), "
-            f"{config_b} mean={mean_b} (CV={result['cv_b']:.3f}) — "
+            f"{config_a} mean={mean_a}{cv_a}, "
+            f"{config_b} mean={mean_b}{cv_b} — "
             f"{config_a} {direction}, Mann-Whitney p={p:.4f}, "
             f"Holm-adjusted p={p_holm:.4f} ({sig}), "
             f"Cliff's delta={delta:.3f} ({mag}), "
@@ -178,6 +186,13 @@ def main():
         for metric_col, metric_label, value_fmt in COMPARISON_METRICS:
             if metric_col not in subset.columns or subset[metric_col].notna().sum() == 0:
                 continue
+            # Пропускаем метрику без сигнала в этом сценарии: если по ВСЕМ
+            # плечам значения ~0, сравнивать нечего. Так placement_regret
+            # уходит из batch-сценария (снапшот берётся до того, как со-
+            # размещённые члены создают давление -> regret ≈ 0 у всех), но
+            # остаётся в pressure-сценариях, где default имеет regret > 0.
+            if subset[metric_col].abs().max() < 1e-9:
+                continue
             comparisons = run_all_comparisons(subset, pairs, value_col=metric_col)
             if comparisons.empty:
                 continue
@@ -185,9 +200,10 @@ def main():
             comparisons.insert(0, "scenario", scenario)
             scenario_frames.append(comparisons)
 
+            show_cv = metric_col != "placement_regret"
             summary_sections.append(f"## Метрика: {metric_label}\n")
             summary_sections.extend(
-                summarize_hypothesis(comparisons, name, a, b, value_fmt)
+                summarize_hypothesis(comparisons, name, a, b, value_fmt, show_cv)
                 for name, (a, b) in HYPOTHESIS_PAIRS.items()
             )
 
@@ -231,7 +247,9 @@ def main():
     # (regret > 0), interference-aware планировщик уводит (regret ~ 0).
     for scenario in valid["scenario"].dropna().unique():
         sub = valid[valid["scenario"] == scenario]
-        if sub["placement_regret"].notna().any():
+        # Тот же порог, что для сравнений: строим regret-график только там, где
+        # есть сигнал (pressure-сценарии), а не плоскую линию на нуле у batch.
+        if sub["placement_regret"].abs().max() >= 1e-9:
             suffix = scenario.replace(":", "-")
             plot_regret_by_config(
                 sub, output_path=outdir / f"placement_regret-{suffix}.png"
