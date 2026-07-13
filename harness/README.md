@@ -163,15 +163,19 @@ make harness-logs-incluster JOB=harness-pressure
 
 ## Мониторинг прогресса (HTTP-эндпойнт)
 
-`status_server.py` — локальная страница статуса идущего прогона: фаза
-(baseline/pressure/DONE), сколько строк уже в parquet по плечам и нодам,
-живые Job'ы/агрессоры в кластере, хвост лога и ошибки. Только чтение.
+Статус-сервер живёт отдельным пакетом `../statusserver/` (см. его
+`__init__.py`): локальная страница статуса идущего прогона — фаза, прогресс
+и ETA, план эксперимента, таблица размещения по планировщикам, живые
+Job'ы/агрессоры, хвост лога. Только чтение.
 
 ```bash
-.venv/bin/python status_server.py \
-    --log /path/to/run.log \
-    --results results/results.parquet --baselines results/baselines.parquet
+# из корня репозитория (зависимости — venv харнесса):
+harness/.venv/bin/python -m statusserver \
+    --log harness/stage-pressure.log --config harness/config-stage.yaml \
+    --results harness/results/results-stage.parquet \
+    --baselines harness/results/baselines-stage.parquet
 # -> http://localhost:8787  (HTML, автообновление 10с; /json — для скриптов)
+# для STAGE есть готовый ./statusserver/run-stage.sh
 ```
 
 ## Проверка без реального запуска

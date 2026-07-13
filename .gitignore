@@ -18,6 +18,8 @@ venv/
 harness/results/*.parquet
 harness/results/*.out
 harness/*.log
+harness/*.out
+statusserver/*.out
 analysis/report/
 
 # --- OS / editor ---
