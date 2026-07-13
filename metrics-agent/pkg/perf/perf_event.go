@@ -9,20 +9,80 @@ package perf
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// Counter is an open perf_event_open() file descriptor scoped to one cgroup.
+// Counter is a set of cgroup-scoped hardware-counter fds — one per online CPU.
+//
+// cgroup-scoped perf events (PERF_FLAG_PID_CGROUP) are inherently per-CPU:
+// perf_event_open(2) rejects cpu == -1 for them with EINVAL, regardless of
+// privileges or perf_event_paranoid (a cgroup runs across many CPUs, so the
+// kernel measures it one CPU at a time — exactly why `perf stat --cgroup`
+// opens one event per CPU internally). Passing cpu == -1 here was a latent
+// bug that made EVERY cgroup-scoped open fail with EINVAL, misread for years
+// as "the hypervisor blocks PMU" — it was the argument, not the environment.
+// Read() sums across all CPUs to give the cgroup's total.
 type Counter struct {
-	fd   int
+	fds  []int
 	name string
 }
 
-// OpenCgroupCounter opens a cgroup-scoped hardware counter. cgroupFD must be an
-// open file descriptor on the target pod's cgroup directory (e.g.
+// onlineCPUs returns the kernel's online-CPU numbers from
+// /sys/devices/system/cpu/online (e.g. "0-15" or "0,2-4,7"). A cgroup event
+// must target an online CPU. Falls back to 0..NumCPU-1 if the file is
+// unreadable (extremely rare — sysfs not mounted).
+func onlineCPUs() ([]int, error) {
+	data, err := os.ReadFile("/sys/devices/system/cpu/online")
+	if err != nil {
+		n := runtime.NumCPU()
+		cpus := make([]int, n)
+		for i := range cpus {
+			cpus[i] = i
+		}
+		return cpus, nil
+	}
+	return parseCPUList(strings.TrimSpace(string(data)))
+}
+
+// parseCPUList parses a Linux CPU-range list ("0-3,5,7-8") into explicit CPU
+// numbers.
+func parseCPUList(s string) ([]int, error) {
+	var cpus []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		start, err := strconv.Atoi(lo)
+		if err != nil {
+			return nil, fmt.Errorf("parse cpu list %q: %w", s, err)
+		}
+		end := start
+		if isRange {
+			if end, err = strconv.Atoi(hi); err != nil {
+				return nil, fmt.Errorf("parse cpu list %q: %w", s, err)
+			}
+		}
+		for c := start; c <= end; c++ {
+			cpus = append(cpus, c)
+		}
+	}
+	if len(cpus) == 0 {
+		return nil, fmt.Errorf("no CPUs parsed from %q", s)
+	}
+	return cpus, nil
+}
+
+// OpenCgroupCounter opens a cgroup-scoped hardware counter — one perf fd per
+// online CPU (see Counter). cgroupFD must be an open file descriptor on the
+// target pod's cgroup directory (e.g.
 // /sys/fs/cgroup/kubepods.slice/.../<pod-cgroup>), obtained via os.Open(path).Fd().
 //
 // Requires CAP_PERFMON (see metrics-agent/deploy/daemonset.yaml) — deliberately
@@ -30,20 +90,30 @@ type Counter struct {
 // the dissertation's argument that the approach is safer than a blanket
 // privileged DaemonSet).
 func OpenCgroupCounter(cgroupFD int, name string, typ uint32, config uint64) (*Counter, error) {
-	attr := unix.PerfEventAttr{
-		Type:   typ,
-		Config: config,
-		Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
-		Bits:   unix.PerfBitDisabled | unix.PerfBitInherit,
+	cpus, err := onlineCPUs()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate online CPUs for %s: %w", name, err)
 	}
 
-	// cpu=-1 (any CPU), groupFD=-1 (standalone counter), flags=PID_CGROUP because
-	// the first arg is interpreted as a cgroup fd rather than a PID in that mode.
-	fd, err := unix.PerfEventOpen(&attr, cgroupFD, -1, -1, unix.PERF_FLAG_PID_CGROUP)
-	if err != nil {
-		return nil, fmt.Errorf("perf_event_open(%s): %w", name, err)
+	c := &Counter{name: name, fds: make([]int, 0, len(cpus))}
+	for _, cpu := range cpus {
+		attr := unix.PerfEventAttr{
+			Type:   typ,
+			Config: config,
+			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:   unix.PerfBitDisabled | unix.PerfBitInherit,
+		}
+		// cpu MUST be >= 0 for PERF_FLAG_PID_CGROUP (cgroup events are per-CPU;
+		// cpu == -1 => EINVAL). groupFD=-1 (standalone). The first arg is the
+		// cgroup fd, not a PID, in this mode.
+		fd, err := unix.PerfEventOpen(&attr, cgroupFD, cpu, -1, unix.PERF_FLAG_PID_CGROUP)
+		if err != nil {
+			c.Close()
+			return nil, fmt.Errorf("perf_event_open(%s) cpu=%d: %w", name, cpu, err)
+		}
+		c.fds = append(c.fds, fd)
 	}
-	return &Counter{fd: fd, name: name}, nil
+	return c, nil
 }
 
 // LLCMissesCounter opens PERF_COUNT_HW_CACHE_MISSES (LL cache misses), per the
@@ -93,27 +163,54 @@ func NodeLoadMissesCounter(cgroupFD int) (*Counter, error) {
 			unix.PERF_COUNT_HW_CACHE_RESULT_MISS))
 }
 
-// Read returns the current cumulative counter value.
+// Read returns the current cumulative counter value, summed across every
+// per-CPU fd — the cgroup's total activity regardless of which CPU it ran on.
 func (c *Counter) Read() (uint64, error) {
+	var total uint64
 	buf := make([]byte, 8)
-	n, err := unix.Read(c.fd, buf)
-	if err != nil {
-		return 0, fmt.Errorf("read perf counter %s: %w", c.name, err)
+	for _, fd := range c.fds {
+		n, err := unix.Read(fd, buf)
+		if err != nil {
+			return 0, fmt.Errorf("read perf counter %s: %w", c.name, err)
+		}
+		if n != 8 {
+			return 0, fmt.Errorf("read perf counter %s: short read (%d bytes)", c.name, n)
+		}
+		var v uint64
+		for i := 7; i >= 0; i-- {
+			v = v<<8 | uint64(buf[i])
+		}
+		total += v
 	}
-	if n != 8 {
-		return 0, fmt.Errorf("read perf counter %s: short read (%d bytes)", c.name, n)
-	}
-	var v uint64
-	for i := 7; i >= 0; i-- {
-		v = v<<8 | uint64(buf[i])
-	}
-	return v, nil
+	return total, nil
 }
 
-func (c *Counter) Enable() error  { return unix.IoctlSetInt(c.fd, unix.PERF_EVENT_IOC_ENABLE, 0) }
-func (c *Counter) Disable() error { return unix.IoctlSetInt(c.fd, unix.PERF_EVENT_IOC_DISABLE, 0) }
-func (c *Counter) Reset() error   { return unix.IoctlSetInt(c.fd, unix.PERF_EVENT_IOC_RESET, 0) }
-func (c *Counter) Close() error   { return unix.Close(c.fd) }
+func (c *Counter) Enable() error  { return c.ioctlAll(unix.PERF_EVENT_IOC_ENABLE) }
+func (c *Counter) Disable() error { return c.ioctlAll(unix.PERF_EVENT_IOC_DISABLE) }
+func (c *Counter) Reset() error   { return c.ioctlAll(unix.PERF_EVENT_IOC_RESET) }
+
+// ioctlAll applies a perf ioctl to every per-CPU fd, stopping at the first error.
+func (c *Counter) ioctlAll(req uint) error {
+	for _, fd := range c.fds {
+		if err := unix.IoctlSetInt(fd, req, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close releases every per-CPU fd; safe on a partially-opened Counter (used by
+// OpenCgroupCounter's own error path).
+func (c *Counter) Close() error {
+	var firstErr error
+	for _, fd := range c.fds {
+		if err := unix.Close(fd); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	c.fds = nil
+	return firstErr
+}
 
 // OpenPodCgroup opens the cgroup directory for a given cgroup v2 path; pass
 // int(f.Fd()) into OpenCgroupCounter. Path resolution (pod UID -> cgroup path
@@ -133,16 +230,20 @@ func OpenPodCgroup(cgroupPath string) (*os.File, error) {
 }
 
 // ProbeHardwareCounters mirrors cmd/perfcheck's check — opening an actual
-// PERF_FLAG_PID_CGROUP-scoped LLC-misses counter against cgroupPath — rather
-// than a plain per-process open. A plain, non-cgroup-scoped open silently
-// succeeds on WSL2/Docker Desktop even though the cgroup-scoped mode
-// sampleCgroup actually depends on fails there with EINVAL, so testing
-// anything less than the real code path gives a false positive.
+// PERF_FLAG_PID_CGROUP-scoped LLC-misses counter against cgroupPath (now
+// per-CPU, see OpenCgroupCounter) rather than a plain per-process open, so it
+// exercises the exact path the samplers use.
+//
+// NOTE: this probe used to fail with EINVAL "on WSL2/Docker Desktop", which
+// was blamed on the hypervisor — that was actually the cpu == -1 bug in
+// OpenCgroupCounter (cgroup events require cpu >= 0). With that fixed the
+// cgroup-scoped probe succeeds and counts on WSL2, VMware, and bare metal
+// alike; a failure now is a real environment issue, not this artifact.
 //
 // It also treats "opened fine but read exactly zero after real memory
-// activity" as unavailable: cmd/perfcheck documents this as the hypervisor
-// faking syscall success without real PMU passthrough, and a counter that
-// never counts is as useless to the agent as one that fails to open.
+// activity" as unavailable: a hypervisor can fake syscall success without
+// real PMU passthrough, and a counter that never counts is as useless to the
+// agent as one that fails to open.
 func ProbeHardwareCounters(cgroupPath string) (bool, error) {
 	cgroupFile, err := OpenPodCgroup(cgroupPath)
 	if err != nil {
