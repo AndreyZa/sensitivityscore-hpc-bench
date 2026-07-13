@@ -235,6 +235,15 @@ netcheck-logs: ## Дождаться завершения клиента и ра
 		echo "netcheck: клиент ещё не Succeeded — показываю, что есть"; \
 	$(KUBECTL) logs pod/netcheck-client | $(PYTHON) scripts/netcheck/parse.py
 
+.PHONY: netcheck-apply
+netcheck-apply: ## Выставить измеренный референс на DaemonSet: make netcheck-apply NET_REFERENCE_MBPS=<N> (перезапускает агент — делать МЕЖДУ сериями, не в прогоне)
+	@test -n "$(NET_REFERENCE_MBPS)" || { echo "укажи число из 'make netcheck-logs': make netcheck-apply NET_REFERENCE_MBPS=<N> (пусто = ось Net выключить -> netcheck-disable)"; exit 1; }
+	$(KUBECTL) -n $(NAMESPACE) set env ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=$(NET_REFERENCE_MBPS)
+
+.PHONY: netcheck-disable
+netcheck-disable: ## Выключить Net-ось (NET_REFERENCE_MBPS='' — сырой net_bw пишется, net_pressure=0)
+	$(KUBECTL) -n $(NAMESPACE) set env ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS-
+
 .PHONY: netcheck-clean
 netcheck-clean: ## Убрать поды и Service netcheck
 	$(KUBECTL) delete pod netcheck-server netcheck-client --ignore-not-found

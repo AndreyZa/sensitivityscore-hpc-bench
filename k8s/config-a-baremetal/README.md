@@ -5,13 +5,14 @@
 ## Использование
 
 ```bash
-# default kube-scheduler (baseline):
+# SensitivityScore (custom plugin) — через make:
+make submit-job-low-s       # kubectl apply k8s/config-a-baremetal/job-low-s.yaml
+make submit-job-high-s
+make clean-jobs             # убрать после ручного прогона (app=geant4-bench)
+
+# default kube-scheduler (baseline) — таргета нет, sed-вариант вручную:
 sed 's/schedulerName: sensitivityscore/schedulerName: default-scheduler/' \
   job-low-s.yaml | kubectl apply -f -
-
-# SensitivityScore (custom plugin), как есть:
-kubectl apply -f job-low-s.yaml
-kubectl apply -f job-high-s.yaml
 ```
 
 На практике манифесты генерируются из шаблона харнессом (`harness/templates/job-template.yaml.j2`)

@@ -42,7 +42,7 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 ## Сборка
 
 ```bash
-go build ./...
+go build ./...                      # или: make -C .. build-go
 make -C .. image-metrics-agent      # -> andreyza/metrics-agent:dev
-kubectl apply -f deploy/daemonset.yaml
+make -C .. deploy-metrics-agent     # kubectl apply deploy/daemonset.yaml
 ```
