@@ -38,6 +38,7 @@ from plots import (
     plot_cv_comparison,
     plot_makespan_boxplot,
     plot_metric_vs_makespan,
+    plot_interference_vs_makespan,
     plot_regret_by_config,
 )
 from stats import run_all_comparisons
@@ -251,14 +252,32 @@ def main():
         plot_makespan_boxplot(
             batch, overcommit=2.0, output_path=outdir / "makespan_boxplot.png"
         )
+    # Оси, где метрика строки — свойство самой задачи (её промахи/стойлы):
+    # скаттер против времени выполнения обосновывает ось. net_pressure задачи
+    # тут НЕ строится: Geant4 сети не генерирует, у жертв он ~1e-8 и график
+    # только вводит в заблуждение; сетевую ось валидируют графики
+    # интерференции узла и regret по net-сценарию.
     for metric, label, fname in [
-        ("llc_miss_rate", "LLC miss rate (normalized)", "llc_vs_makespan.png"),
-        ("io_pressure", "IO pressure (PSI stall share)", "io_pressure_vs_makespan.png"),
-        ("numa_remote_ratio", "NUMA remote read ratio", "numa_vs_makespan.png"),
-        ("net_pressure", "Net pressure (share of reference bandwidth)", "net_vs_makespan.png"),
+        ("llc_miss_rate", "Промахи кэша LLC (нормированные)", "llc_vs_makespan.png"),
+        ("io_pressure", "Дисковое давление (доля ожидания IO, PSI)",
+         "io_pressure_vs_makespan.png"),
+        ("numa_remote_ratio", "Доля удалённых NUMA-обращений", "numa_vs_makespan.png"),
     ]:
         if valid[metric].notna().any():
             plot_metric_vs_makespan(valid, metric, label, output_path=outdir / fname)
+
+    # Интерференция ВЫБРАННОГО узла на момент решения против времени
+    # выполнения — по каждому pressure-сценарию: прямой механизм (узел под
+    # нагрузкой -> задача дольше), работает для любой оси, включая Net.
+    for scenario in valid["scenario"].dropna().unique():
+        if not str(scenario).startswith("pressure:"):
+            continue
+        sub = valid[valid["scenario"] == scenario]
+        if sub["interference_chosen"].notna().any():
+            suffix = scenario.replace(":", "-")
+            plot_interference_vs_makespan(
+                sub, output_path=outdir / f"interference_vs_makespan-{suffix}.png"
+            )
 
     # Placement regret по плечам — на pressure-сценариях это главный график
     # механизма: default кладёт чувствительных жертв на придавленную ноду
