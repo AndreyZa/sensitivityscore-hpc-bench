@@ -255,6 +255,7 @@ def main():
         ("llc_miss_rate", "LLC miss rate (normalized)", "llc_vs_makespan.png"),
         ("io_pressure", "IO pressure (PSI stall share)", "io_pressure_vs_makespan.png"),
         ("numa_remote_ratio", "NUMA remote read ratio", "numa_vs_makespan.png"),
+        ("net_pressure", "Net pressure (share of reference bandwidth)", "net_vs_makespan.png"),
     ]:
         if valid[metric].notna().any():
             plot_metric_vs_makespan(valid, metric, label, output_path=outdir / fname)

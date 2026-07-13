@@ -344,6 +344,59 @@ def digest_section(dig: dict) -> str:
     return "".join(parts)
 
 
+# Человекочитаемые подписи графиков analyze.py: имя файла -> (группа, подпись).
+# Порядок групп = порядок показа; главный график механизма — первым.
+PLOT_SCENARIOS = {
+    "pressure-io": "Диск (IO)",
+    "pressure-net": "Сеть (Net)",
+    "pressure-llc": "Кэш (LLC)",
+}
+PLOT_STEMS = {
+    "placement_regret": ("Механизм размещения",
+                         "Ошибка размещения по планировщикам"),
+    "cv_comparison": ("Стабильность", "Разброс времени выполнения (CV)"),
+    "llc_vs_makespan": ("Оси чувствительности", "Кэш (LLC) и время выполнения"),
+    "io_pressure_vs_makespan": ("Оси чувствительности",
+                                "Диск (IO) и время выполнения"),
+    "net_vs_makespan": ("Оси чувствительности", "Сеть (Net) и время выполнения"),
+    "numa_vs_makespan": ("Оси чувствительности", "NUMA и время выполнения"),
+    "makespan_boxplot": ("Время выполнения", "Время по конфигурациям"),
+}
+PLOT_GROUP_ORDER = ["Механизм размещения", "Стабильность",
+                    "Оси чувствительности", "Время выполнения", "Прочее"]
+
+
+def plot_caption(png: str) -> tuple[str, str]:
+    """-> (группа, подпись) для файла графика; незнакомые имена — в «Прочее»."""
+    base = png.removesuffix(".png")
+    scenario = ""
+    for suf, label in PLOT_SCENARIOS.items():
+        if base.endswith("-" + suf):
+            scenario = label
+            base = base[: -len(suf) - 1]
+            break
+    group, title = PLOT_STEMS.get(base, ("Прочее", base))
+    return group, (f"{title} — {scenario}" if scenario else title)
+
+
+def gallery_section(plots: list[str]) -> str:
+    """Графики группами по смыслу; клик открывает лайтбокс с листанием
+    (сам лайтбокс — статический #lb в конце страницы, вне .wrap)."""
+    groups: dict[str, list[str]] = {}
+    for png in plots:
+        g, cap = plot_caption(png)
+        groups.setdefault(g, []).append(
+            f"<a href='/report/{esc(png)}' class='thumb' data-cap='{esc(cap)}'>"
+            f"<img src='/report/{esc(png)}' alt='{esc(cap)}' loading='lazy'>"
+            f"<span>{esc(cap)}</span></a>"
+        )
+    parts = []
+    for g in PLOT_GROUP_ORDER:
+        if g in groups:
+            parts.append(f"<h4>{esc(g)}</h4><div class='gallery'>{''.join(groups[g])}</div>")
+    return "".join(parts)
+
+
 def report_section(rep: dict) -> str:
     dig_html = digest_section(rep.get("digest") or {})
     if not rep["exists"] and not dig_html:
@@ -352,18 +405,11 @@ def report_section(rep: dict) -> str:
     parts = []
     if dig_html:
         parts.append(dig_html)
-    # Графики — компактной сеткой-миниатюрами, каждая кликается в полный размер.
     if rep["plots"]:
-        thumbs = "".join(
-            f"<a href='/report/{esc(png)}' target='_blank' class='thumb'>"
-            f"<img src='/report/{esc(png)}' alt='{esc(png)}' loading='lazy'>"
-            f"<span>{esc(png.replace('.png','').replace('-pressure',''))}</span></a>"
-            for png in rep["plots"]
-        )
         parts.append(
             "<details data-k='plots'><summary>графики "
             f"<span class='dim'>({len(rep['plots'])})</span></summary>"
-            f"<div class='gallery'>{thumbs}</div></details>"
+            f"{gallery_section(rep['plots'])}</details>"
         )
     # Полный текстовый отчёт — для тех, кому нужны все p/CV/fingerprint.
     if rep["exists"]:
@@ -501,11 +547,23 @@ details summary{{cursor:pointer;font-size:.85em;margin:.4em 0}}
 pre{{background:var(--bg);padding:.7em;overflow-x:auto;font-size:.82em;
   border-radius:8px;border:1px solid var(--line)}}
 code{{background:var(--bg);padding:.1em .35em;border-radius:4px;font-size:.9em}}
-.gallery{{display:flex;flex-wrap:wrap;gap:.6em;margin-top:.5em}}
+.gallery{{display:flex;flex-wrap:wrap;gap:.6em;margin-top:.3em}}
 .thumb{{border:1px solid var(--line);border-radius:8px;padding:.35em;text-decoration:none;
-  color:var(--dim);font-size:.76em;text-align:center;background:var(--card)}}
-.thumb img{{display:block;max-height:200px;max-width:100%;border-radius:4px;margin-bottom:.2em}}
+  color:var(--dim);font-size:.76em;text-align:center;background:var(--card);
+  max-width:240px;cursor:zoom-in}}
+.thumb img{{display:block;max-height:150px;max-width:100%;border-radius:4px;margin:0 auto .2em}}
 .thumb:hover{{border-color:var(--herobd)}}
+#lb{{position:fixed;inset:0;z-index:50;background:rgba(10,12,16,.82);
+  display:flex;align-items:center;justify-content:center;gap:.6em}}
+#lb[hidden]{{display:none}}
+#lb figure{{margin:0;max-width:88vw;text-align:center}}
+#lb img{{max-width:88vw;max-height:82vh;border-radius:8px;background:#fff}}
+#lb figcaption{{color:#e6e8eb;font-size:.9em;margin-top:.5em}}
+#lb figcaption a{{color:#9ec2ff;margin-left:.7em;font-size:.85em}}
+#lb button{{background:rgba(255,255,255,.12);border:none;color:#fff;font-size:1.5em;
+  border-radius:999px;width:1.7em;height:1.7em;cursor:pointer;line-height:1}}
+#lb button:hover{{background:rgba(255,255,255,.25)}}
+#lbclose{{position:absolute;top:.6em;right:.7em}}
 .fullmd{{font-size:.9em;opacity:.92}}
 .fullmd table{{font-size:.88em}}
 a{{color:#4c8dff}}
@@ -568,6 +626,15 @@ select.pill{{padding:.2em .5em}}
   <pre>{esc(chr(10).join(d['log_errors']) or '—')}</pre>
 </details>
 
+</div>
+
+<div id="lb" hidden>
+  <button id="lbprev" title="предыдущий">‹</button>
+  <figure><img id="lbimg" alt="">
+    <figcaption><span id="lbcap"></span><a id="lbfile" href="#" target="_blank">файл ↗</a></figcaption>
+  </figure>
+  <button id="lbnext" title="следующий">›</button>
+  <button id="lbclose" title="закрыть (Esc)">✕</button>
 </div>
 <script>
 /* Кнопка темы: цикл авто -> светлая -> тёмная. */
@@ -656,6 +723,35 @@ document.addEventListener('toggle', function(){{
   try{{ sessionStorage.setItem(DETK, JSON.stringify(openSet())); }}catch(e){{}}
 }}, true);
 try{{ applyOpen(JSON.parse(sessionStorage.getItem(DETK)||'[]')); }}catch(e){{}}
+
+/* Лайтбокс графиков: клик по миниатюре открывает оверлей с листанием
+   (кнопки, стрелки клавиатуры), Esc или клик по фону закрывает. Живёт вне
+   .wrap — мягкое обновление страницы его не трогает. */
+var lbIdx=-1;
+function lbThumbs(){{ return [].slice.call(document.querySelectorAll('a.thumb')); }}
+function lbShow(i){{
+  var t=lbThumbs(); if(!t.length) return;
+  lbIdx=(i+t.length)%t.length;
+  document.getElementById('lbimg').src=t[lbIdx].getAttribute('href');
+  document.getElementById('lbcap').textContent=t[lbIdx].dataset.cap||'';
+  document.getElementById('lbfile').href=t[lbIdx].getAttribute('href');
+  document.getElementById('lb').hidden=false;
+}}
+function lbHide(){{ document.getElementById('lb').hidden=true; lbIdx=-1; }}
+document.addEventListener('click', function(e){{
+  var a=e.target.closest&&e.target.closest('a.thumb');
+  if(a){{ e.preventDefault(); lbShow(lbThumbs().indexOf(a)); return; }}
+  if(e.target.id==='lb'||e.target.id==='lbclose') lbHide();
+  else if(e.target.id==='lbprev') lbShow(lbIdx-1);
+  else if(e.target.id==='lbnext') lbShow(lbIdx+1);
+}});
+document.addEventListener('keydown', function(e){{
+  if(document.getElementById('lb').hidden) return;
+  if(e.key==='Escape') lbHide();
+  else if(e.key==='ArrowLeft') lbShow(lbIdx-1);
+  else if(e.key==='ArrowRight') lbShow(lbIdx+1);
+}});
+
 paintControls(); armTimer();
 </script>
 </body></html>"""
