@@ -60,10 +60,13 @@ spec:
     - name: iperf3
       image: __IPERF_IMAGE__
       # Retry until the server's iperf3 is actually accepting (pod Ready only
-      # means the container started; the -s listener binds a moment later) —
-      # retry noise goes to stderr so stdout stays pure JSON for parse.py.
-      # --bidir measures both directions at once: sum_sent + sum_received
-      # matches metrics-agent's net_bw = rx+tx (pkg/cgroup/net.go TotalBytes).
+      # means the container started; the -s listener binds a moment later).
+      # Retry noise goes to stderr, but note `kubectl logs` MERGES stdout and
+      # stderr into one stream — so it still lands before the JSON in the
+      # logs, and parse.py deliberately skips to the first '{' to tolerate it
+      # (learned the hard way on a live run). --bidir measures both directions
+      # at once: sum_sent + sum_received matches metrics-agent's net_bw =
+      # rx+tx (pkg/cgroup/net.go TotalBytes).
       command: ["/bin/sh", "-c"]
       args:
         - |

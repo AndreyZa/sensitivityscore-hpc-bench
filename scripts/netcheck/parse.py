@@ -54,12 +54,24 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    try:
-        report = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"netcheck: stdin is not valid JSON ({e}).", file=sys.stderr)
+
+    # `kubectl logs` merges the container's stdout AND stderr into one stream,
+    # so the client pod's "server not ready, retry N" lines (emitted to stderr
+    # while it waits for the iperf3 listener) land right before the JSON —
+    # iperf3 itself can also print warnings first. Skip to the first '{' and
+    # decode just that object, ignoring any leading noise or trailing output.
+    brace = raw.find("{")
+    if brace == -1:
+        print("netcheck: no JSON object found in input.", file=sys.stderr)
         print("First 200 chars were:", file=sys.stderr)
         print(raw[:200], file=sys.stderr)
+        return 1
+    try:
+        report, _ = json.JSONDecoder().raw_decode(raw[brace:])
+    except json.JSONDecodeError as e:
+        print(f"netcheck: could not decode iperf3 JSON ({e}).", file=sys.stderr)
+        print("First 200 chars from the first brace were:", file=sys.stderr)
+        print(raw[brace : brace + 200], file=sys.stderr)
         return 1
 
     if err := report.get("error"):
