@@ -45,19 +45,29 @@ cooldown_seconds: 30 # pause between runs, let the node cool from the previous r
 # (submit/node_pressure.py). ДОЛЖНЫ совпадать с weights.json из ConfigMap
 # sensitivity-config (k8s/scheduler-config/sensitivity-configmap.yaml) —
 # иначе regret считается не по той функции, которой пользуется плагин.
-# Net отсутствует намеренно: он исключён и из score плагина.
+# Net участвует наравне с остальными осями (net_pressure = net_bw /
+# NET_REFERENCE_MBPS калибровки стенда, см. make netcheck-run); на стенде
+# без калибровки агент пишет net_pressure=0, при желании ось можно явно
+# выключить весом 0 и здесь, и в weights.json.
 score_weights:
   llc: 1.0
   numa: 1.0
+  net: 1.0
   io: 1.0
 
 # --- Соло-бейзлайны (run_experiment.py --baseline) ---
 # Каждый профиль (матричные + жертвы pressure-сценариев) гоняется
 # repetitions раз строго последовательно на ПУСТОМ кластере ->
 # results/baselines.parquet. Из них analysis берёт: знаменатели slowdown
-# (makespan_isolated per profile) и fingerprint «заявленный vs измеренный S».
+# (makespan_isolated per (profile, node)) и fingerprint «заявленный vs
+# измеренный S». per_node: true (дефолт) пинует соло-прогоны на КАЖДУЮ
+# worker-ноду — «одинаковые» ноды бывают в разы разной реальной скорости
+# (урок STAGE: пересозданный worker оказался ~1.9x медленнее соседей), общий
+# знаменатель тогда приписывает разницу железа интерференции. per_node: false
+# — только для заведомо однородного стенда (в <nodes> раз дешевле).
 baseline:
   repetitions: 5
+  per_node: true
   config: A-default # через какой планировщик сабмитить (на пустом кластере не влияет на makespan)
 
 # Per-config submission backend, see harness/submit/*.py

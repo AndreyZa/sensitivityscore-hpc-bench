@@ -30,12 +30,19 @@ spec:
     - name: stress
       image: {{ image }}
       imagePullPolicy: Always # конвенция репо: dev-теги мутабельны, нода не должна жить с закэшированным старым образом
-      {# args приходят из сценария (aggressor_args: --stream для LLC/membw,
-         --hdd для диска) поверх фиксированного --temp-path: временные файлы
-         IO-стрессоров пишутся в /scratch (emptyDir -> реальный диск ноды).
-         Без --timeout: "--timeout 0" у stress-ng = "0 секунд" (мгновенный
-         выход), бесконечный прогон — дефолт без флага. #}
+      {# По умолчанию ENTRYPOINT образа — stress-ng, args приходят из сценария
+         (aggressor_args: --stream для LLC/membw, --hdd для диска) поверх
+         фиксированного --temp-path: временные файлы IO-стрессоров пишутся в
+         /scratch (emptyDir -> реальный диск ноды). Без --timeout: "--timeout
+         0" у stress-ng = "0 секунд" (мгновенный выход), бесконечный прогон —
+         дефолт без флага. Net-шторм (aggressors.py) переопределяет command
+         целиком (iperf3 сервер/клиент). #}
+      {% if command_json %}
+      command: {{ command_json }}
+      {% endif %}
+      {% if args_json %}
       args: {{ args_json }}
+      {% endif %}
       volumeMounts:
         - name: scratch
           mountPath: /scratch

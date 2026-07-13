@@ -134,6 +134,7 @@ def error_row(
         "llc_miss_rate": float("nan"),
         "numa_remote_ratio": float("nan"),
         "net_bw": float("nan"),
+        "net_pressure": float("nan"),
         "io_iops": float("nan"),
         "io_pressure": float("nan"),
         "approximation": f"error:{exc}",
@@ -156,6 +157,7 @@ def run_one(
     rep: int,
     cfg: dict,
     dry_run: bool,
+    pin_node: str | None = None,
 ) -> dict:
     """Submit one job, wait, record, clean up.
 
@@ -197,6 +199,7 @@ def run_one(
             "llc_miss_rate": float("nan"),
             "numa_remote_ratio": float("nan"),
             "net_bw": float("nan"),
+            "net_pressure": float("nan"),
             "io_iops": float("nan"),
             "io_pressure": float("nan"),
             "approximation": "dry-run",
@@ -217,14 +220,18 @@ def run_one(
     pressure_snapshot = node_pressure.snapshot_node_pressure(cfg["redis"]["addr"])
 
     try:
-        handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
+        handle = backend.submit_job(
+            job_id, config, profile, overcommit, cfg, pin_node=pin_node
+        )
     except Exception as exc:  # noqa: BLE001 — one quick submit retry, see docstring
         log.warning(
             "submit failed for %s (%s) — cleaning up and retrying once", job_id, exc
         )
         backend.abort_submission(job_id, cfg)
         time.sleep(RESUBMIT_DELAY_SECONDS)
-        handle = backend.submit_job(job_id, config, profile, overcommit, cfg)
+        handle = backend.submit_job(
+            job_id, config, profile, overcommit, cfg, pin_node=pin_node
+        )
 
     try:
         backend.wait_for_completion(handle, cfg)
@@ -391,7 +398,9 @@ def run_pressure_arm(
             time.sleep(scenario.get("stabilize_seconds", 30))
             # Давление должно быть живым к моменту подачи жертв — молча
             # вышедший агрессор превращает плечо в измерение на чистой ноде.
-            aggressors.assert_running(len(nodes or []) * intensity, cfg)
+            aggressors.assert_running(
+                aggressors.expected_pods(len(nodes or []), intensity, scenario), cfg
+            )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=victim_count) as pool:
             futures = {pool.submit(_run_victim, i): i for i in range(victim_count)}
@@ -576,6 +585,15 @@ def run_baseline_mode(cfg: dict, args) -> None:
        декларацию (sensitivity_* колонки), и фактические метрики агента без
        чужой интерференции.
 
+    PER-NODE: каждый профиль прогоняется на КАЖДОЙ worker-ноде (nodeSelector-
+    пин), а не там, куда планировщик положит. Урок STAGE: «одинаковые» облачные
+    ноды бывают в разы разной реальной скорости (пересозданный worker оказался
+    ~1.9x медленнее соседей), а непиновые соло-прогоны пустого кластера
+    ложатся на ОДНУ ноду — общий знаменатель slowdown тогда систематически
+    лжёт для остальных нод. analysis нормирует per (profile, node).
+    Отключается baseline.per_node: false (например, на заведомо однородном
+    bare-metal, чтобы не платить x<nodes> за прогон).
+
     Прогоны СТРОГО последовательные (никакого батча): любой сосед или живой
     агрессор в кластере делает бейзлайн не изолированным — это молча занизит
     все slowdown. Харнесс это не проверяет, чистота кластера на совести
@@ -584,6 +602,20 @@ def run_baseline_mode(cfg: dict, args) -> None:
     reps = bl_cfg.get("repetitions", 5)
     config = bl_cfg.get("config", "A-default")
     profiles = baseline_profiles(cfg)
+
+    nodes: list[str | None] = [None]
+    if bl_cfg.get("per_node", True) and not args.dry_run:
+        if backend_for(config, cfg) != "k8s":
+            log.warning(
+                "baseline per_node: %s is not a k8s backend — falling back to "
+                "unpinned solo runs (one shared denominator per profile)",
+                config,
+            )
+        else:
+            nodes = list(k8s_submit.list_worker_nodes())
+            if not nodes:
+                raise RuntimeError("baseline per_node: no worker nodes found")
+            log.info("baseline mode: per-node pinning across %s", ",".join(nodes))
 
     log.warning(
         "baseline mode: cluster MUST be idle (no aggressors, no leftover jobs) — "
@@ -599,22 +631,29 @@ def run_baseline_mode(cfg: dict, args) -> None:
 
     rows: list[dict] = []
     for profile in profiles:
-        for rep in range(reps):
-            # Свой суффикс вместо make_job_id: bейзлайн не должен коллидировать
-            # по job_id (и Redis-ключам job:metrics) с матричными прогонами.
-            job_id = f"{config}-{profile}-base-rep{rep:02d}"
-            try:
-                row = run_one(job_id, config, profile, 1.0, rep, cfg, args.dry_run)
-            except Exception as exc:  # noqa: BLE001 — не терять остальные бейзлайны
-                log.error("baseline %s failed: %s", job_id, exc)
-                row = error_row(config, profile, 1.0, rep, exc)
-            row["scenario"] = "baseline"
-            row["batch_size"] = 1
-            row["batch_index"] = 0
-            rows.append(row)
-            pd.DataFrame(rows).to_parquet(baselines_path, index=False)
-            if not args.dry_run:
-                time.sleep(cfg["cooldown_seconds"])
+        for node in nodes:
+            # Нода — часть job_id (и Redis-ключей job:metrics): бейзлайны
+            # одного профиля на разных нодах не должны коллидировать.
+            node_tag = f"-{node}" if node else ""
+            for rep in range(reps):
+                # Свой суффикс вместо make_job_id: бейзлайн не должен
+                # коллидировать по job_id с матричными прогонами.
+                job_id = f"{config}-{profile}-base{node_tag}-rep{rep:02d}"
+                try:
+                    row = run_one(
+                        job_id, config, profile, 1.0, rep, cfg, args.dry_run,
+                        pin_node=node,
+                    )
+                except Exception as exc:  # noqa: BLE001 — не терять остальные бейзлайны
+                    log.error("baseline %s failed: %s", job_id, exc)
+                    row = error_row(config, profile, 1.0, rep, exc, node=node)
+                row["scenario"] = "baseline"
+                row["batch_size"] = 1
+                row["batch_index"] = 0
+                rows.append(row)
+                pd.DataFrame(rows).to_parquet(baselines_path, index=False)
+                if not args.dry_run:
+                    time.sleep(cfg["cooldown_seconds"])
 
     log.info("done: %d baseline rows written to %s", len(rows), baselines_path)
 

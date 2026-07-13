@@ -75,6 +75,25 @@ def ensure_namespace(namespace: str) -> None:
 log = logging.getLogger(__name__)
 
 
+def list_worker_nodes() -> list[str]:
+    """Worker-ноды кластера (без control-plane), отсортированные по имени —
+    детерминированный порядок для per-node бейзлайнов и pressure-сценариев."""
+    result = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "nodes",
+            "--selector=!node-role.kubernetes.io/control-plane",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sorted(result.stdout.split())
+
+
 class K8sJobHandle:
     def __init__(self, job_id: str, k8s_name: str, namespace: str):
         self.job_id = job_id
@@ -90,7 +109,12 @@ class K8sJobHandle:
 
 
 def submit_job(
-    job_id: str, config: str, profile: str, overcommit: float, cfg: dict
+    job_id: str,
+    config: str,
+    profile: str,
+    overcommit: float,
+    cfg: dict,
+    pin_node: str | None = None,
 ) -> K8sJobHandle:
     spec = PROFILES[profile]
     namespace = cfg["kubernetes"]["namespace"]
@@ -113,6 +137,11 @@ def submit_job(
         # registry на STAGE) — nodeAffinity NotIn по kubernetes.io/hostname,
         # без cordon/taint самих нод.
         exclude_nodes=cfg.get("exclude_nodes", []),
+        # Жёсткая привязка к конкретной ноде (nodeSelector) — для per-node
+        # соло-бейзлайнов: облачные "одинаковые" ноды бывают в разы разной
+        # скорости (пересозданный worker STAGE оказался ~1.9x медленнее
+        # соседей), общий на все ноды знаменатель slowdown тогда лжёт.
+        pin_node=pin_node,
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:

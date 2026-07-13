@@ -74,6 +74,29 @@ PROFILES: dict[str, ProfileSpec] = {
             "memory_limit": _ov("high-s", "MEM_LIM", "6Gi"),
         },
     ),
+    # Жертва Net pressure-сценария: ДЕКЛАРИРУЕТ net=high (плагин уводит её от
+    # нод с высоким net_pressure), по вычислительной части — тот же Geant4.
+    # ЧЕСТНАЯ ОГОВОРКА: сам воркер сети пока не генерирует (OUTPUT_MODE=none),
+    # так что fingerprint-таблица покажет для net "заявлено high / измерено
+    # ~0" — сценарий валидирует ДЕТЕКЦИЮ шторма агентом и РЕШЕНИЯ планировщика
+    # (placement/regret), а не деградацию самой жертвы от сетевой контенции.
+    # Воркер с реальным сетевым выводом (стрим результатов на sink, как burst
+    # для IO) — осознанный TODO в README.
+    "high-s-net": ProfileSpec(
+        env={
+            "G4_THREADS": _ov("high-s-net", "THREADS", "1"),
+            "PHYSICS_LIST": "QGSP_BERT",
+            "N_PRIMARIES": _ov("high-s-net", "PRIMARIES", "300000"),
+            "OUTPUT_MODE": "none",
+            "RNG_SEED": "42",
+        },
+        sensitivity=Sensitivity(llc="low", numa="low", net="high", io="low"),
+        resources={
+            "cpu": _ov("high-s-net", "CPU", "1"),
+            "memory_request": _ov("high-s-net", "MEM_REQ", "1Gi"),
+            "memory_limit": _ov("high-s-net", "MEM_LIM", "2Gi"),
+        },
+    ),
     # high-s + реальный дисковый вывод (burst-писатель entrypoint.sh) — жертва
     # для IO pressure-сценария: декларирует io=high И действительно страдает
     # от дисковой контенции (fsync-записи стоят в очереди к придавленному

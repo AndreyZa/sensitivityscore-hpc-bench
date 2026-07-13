@@ -42,6 +42,19 @@ func main() {
 		log.Fatalf("k8s client: %v", err)
 	}
 
+	// Net-калибровка стенда: NET_REFERENCE_MBPS — реально достижимый cross-node
+	// aggregate (rx+tx, Mbit/s) из `make netcheck-run` (scripts/netcheck/,
+	// docs §3.4). С ним появляется net_pressure = net_bw / reference ∈ [0,1] —
+	// Net-ось PressureVector для скор-функции. Без него ось честно выключена
+	// (net_pressure=0; сырой net_bw пишется в любом случае, для анализа).
+	netRefMbps := netReferenceFromEnv()
+	if netRefMbps > 0 {
+		log.Printf("net calibration: NET_REFERENCE_MBPS=%.0f — net_pressure dimension ON", netRefMbps)
+	} else {
+		log.Printf("WARNING: NET_REFERENCE_MBPS not set — net_pressure stays 0 " +
+			"(Net dimension off; run `make netcheck-run` and set the env on this DaemonSet)")
+	}
+
 	writer := redisclient.NewWriter(redisAddr, redisTTL)
 	defer writer.Close()
 
@@ -72,10 +85,20 @@ func main() {
 	nodePSI := &nodePSISampler{}
 
 	for range ticker.C {
-		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI); err != nil {
+		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI, netRefMbps); err != nil {
 			log.Printf("sample error: %v", err)
 		}
 	}
+}
+
+// netPressure normalizes a raw rx+tx bytes/s rate into the [0,1] Net dimension
+// using the stand's calibrated reference (Mbit/s). 0 when uncalibrated —
+// the dimension is then off rather than lying with an arbitrary scale.
+func netPressure(netBWBytesPerSec, refMbps float64) float64 {
+	if refMbps <= 0 {
+		return 0
+	}
+	return clamp01(netBWBytesPerSec * 8 / 1e6 / refMbps)
 }
 
 // nodePSISampler tracks the NODE-root cgroup's io.pressure across ticks. The
@@ -287,7 +310,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 // it instead of perf_event_open() and tagged accordingly. samplers carries the
 // per-pod cross-tick state; pods that left the node are evicted (and their
 // counters closed) here.
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler) error {
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler, netRefMbps float64) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
@@ -389,6 +412,9 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		syntheticSum += sample.LLCMissRate // only meaningful in synthetic mode
 		nodeAgg.NetBW += sample.NetBW
 		nodeAgg.IOIOPS += sample.IOIOPS
+		// Net dimension: normalized here (not in podSampler.sample) so the
+		// calibration constant stays a process-level concern like the PMU probe.
+		sample.NetPressure = netPressure(sample.NetBW, netRefMbps)
 
 		if jobID, ok := p.annotations[annoJobID]; ok {
 			if err := writer.WriteJobMetrics(ctx, jobID, nodeName, sample); err != nil {
@@ -409,6 +435,9 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		nodeAgg.NUMARemoteRatio = clamp01(perf.Ratio(nodeDeltas.numaNum, nodeDeltas.numaDen))
 	}
 	nodeAgg.IOPressure = clamp01(nodePSI.pressure())
+	// Node-level Net: the summed pod rx+tx rate against the same calibrated
+	// reference — bandwidth is additive, so the sum is the honest node figure.
+	nodeAgg.NetPressure = netPressure(nodeAgg.NetBW, netRefMbps)
 
 	return writer.WriteNodeMetrics(ctx, nodeName, nodeAgg)
 }
@@ -444,6 +473,21 @@ func envOr(key, def string) string {
 // default 5s cadence: the first tick after a pod appears only primes the
 // baseline (see podSampler.sample), so anything shorter-lived than ~2x the
 // interval is invisible to the agent regardless of how long it actually ran.
+// netReferenceFromEnv reads the NET_REFERENCE_MBPS calibration (see main).
+// Unset/empty means "Net dimension off" (returns 0); a malformed or negative
+// value is a config error worth failing loudly on, like SAMPLE_INTERVAL_SECONDS.
+func netReferenceFromEnv() float64 {
+	v := os.Getenv("NET_REFERENCE_MBPS")
+	if v == "" {
+		return 0
+	}
+	mbps, err := strconv.ParseFloat(v, 64)
+	if err != nil || mbps <= 0 {
+		log.Fatalf("invalid NET_REFERENCE_MBPS: %q (want a positive Mbit/s figure from `make netcheck-logs`)", v)
+	}
+	return mbps
+}
+
 func sampleIntervalFromEnv() time.Duration {
 	v := os.Getenv("SAMPLE_INTERVAL_SECONDS")
 	if v == "" {

@@ -33,6 +33,13 @@ spec:
     spec:
       schedulerName: {{ scheduler_name }}
       restartPolicy: Never
+      {% if pin_node %}
+      {# per-node бейзлайны: соло-прогон прибивается к конкретной ноде, чтобы
+         знаменатель slowdown существовал для КАЖДОЙ ноды — облачные ноды
+         одинаковой конфигурации бывают в разы разной реальной скорости. #}
+      nodeSelector:
+        kubernetes.io/hostname: "{{ pin_node }}"
+      {% endif %}
       {% if exclude_nodes %}
       {# Держим поды подальше от указанных нод — на STAGE так исключается
          worker без egress к registry (не тянет образы). Это affinity на уровне

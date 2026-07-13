@@ -86,6 +86,14 @@ def stand_info() -> dict:
     return data
 
 
+def worker_node_count() -> int:
+    """Число worker-нод (без control-plane) для расчёта ожидаемых per-node
+    бейзлайнов. Через кэш stand_info; managed control-plane (STAGE) в списке
+    нод и так не отображается, on-prem кластеру цифра чуть завысит ожидание —
+    прогресс тогда консервативен, не сломан."""
+    return len(stand_info().get("nodes", [])) or 1
+
+
 # ------------------------------------------------------------- прогресс ----
 
 
@@ -126,6 +134,9 @@ def expected_rows(config_path: Path) -> dict[str, int]:
         if v not in profiles:
             profiles.append(v)
     baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
+    # per-node бейзлайны (дефолт run_experiment): множитель = число worker-нод.
+    if cfg.get("baseline", {}).get("per_node", True):
+        baseline_exp *= max(worker_node_count(), 1)
 
     variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
     arms = 0

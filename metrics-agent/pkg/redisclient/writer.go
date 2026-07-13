@@ -14,7 +14,8 @@ import (
 type Sample struct {
 	LLCMissRate     float64
 	NUMARemoteRatio float64
-	NetBW           float64
+	NetBW           float64 // raw rx+tx bytes/s over the tick window — analysis-side activity metric
+	NetPressure     float64 // NetBW normalized by the stand's NET_REFERENCE_MBPS calibration, [0,1] — the scheduler's Net dimension (0 when uncalibrated)
 	IOIOPS          float64 // raw ops/s over the tick window — analysis-side activity metric
 	IOPressure      float64 // PSI io.pressure "some" share of the window, [0,1] — the scheduler's IO dimension
 	Approximation   string  // "" | "host-side", see docs §3.3
@@ -67,6 +68,7 @@ func (w *Writer) WriteJobMetrics(ctx context.Context, jobID, nodeName string, s 
 	pipe.HIncrByFloat(ctx, key, "llc_miss_rate_sum", s.LLCMissRate)
 	pipe.HIncrByFloat(ctx, key, "numa_remote_ratio_sum", s.NUMARemoteRatio)
 	pipe.HIncrByFloat(ctx, key, "net_bw_sum", s.NetBW)
+	pipe.HIncrByFloat(ctx, key, "net_pressure_sum", s.NetPressure)
 	pipe.HIncrByFloat(ctx, key, "io_iops_sum", s.IOIOPS)
 	pipe.HIncrByFloat(ctx, key, "io_pressure_sum", s.IOPressure)
 	pipe.HIncrBy(ctx, key, "samples", 1)
@@ -85,6 +87,7 @@ func sampleToFields(s Sample) map[string]any {
 		"llc_miss_rate":     s.LLCMissRate,
 		"numa_remote_ratio": s.NUMARemoteRatio,
 		"net_bw":            s.NetBW,
+		"net_pressure":      s.NetPressure,
 		"io_iops":           s.IOIOPS,
 		"io_pressure":       s.IOPressure,
 		"ts":                time.Now().Unix(),

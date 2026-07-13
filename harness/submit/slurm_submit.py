@@ -44,9 +44,19 @@ class SlurmJobHandle:
 
 
 def submit_job(
-    job_id: str, config: str, profile: str, overcommit: float, cfg: dict
+    job_id: str,
+    config: str,
+    profile: str,
+    overcommit: float,
+    cfg: dict,
+    pin_node: str | None = None,
 ) -> SlurmJobHandle:
     spec = PROFILES[profile]
+    if pin_node:
+        # per-node бейзлайны (--baseline) идут через K8s-конфиг; для Slurm
+        # пин не реализован (означал бы sbatch -w и таблицу соответствия имён
+        # нод) — честно падаем, а не молча меряем на случайной ноде.
+        raise NotImplementedError("pin_node is not supported by the Slurm backend")
 
     template = _env.get_template("sbatch-template.sh.j2")
     script = template.render(

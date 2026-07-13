@@ -115,45 +115,81 @@ def filter_valid(
     return valid
 
 
-def isolated_makespans(baselines: pd.DataFrame) -> pd.Series:
-    """profile -> медианный соло-makespan из baselines.parquet (харнесс
-    --baseline). Медиана, не среднее: один шумный соло-прогон (например,
-    первый — с холодным image pull на ноде) не должен сдвигать знаменатель
-    всех slowdown этого профиля."""
+def isolated_makespans(baselines: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """-> (per_node, per_profile): медианные соло-makespan из baselines.parquet
+    (харнесс --baseline). per_node индексирован (profile, node) — основной
+    знаменатель slowdown; per_profile — fallback для строк на нодах без своего
+    бейзлайна. Медиана, не среднее: один шумный соло-прогон (например, первый —
+    с холодным image pull на ноде) не должен сдвигать знаменатель."""
     solo = baselines[baselines["scenario"] == "baseline"]
+    solo = solo[solo["makespan_s"].notna()]
     if solo.empty:
         raise ValueError(
             "baselines file has no scenario='baseline' rows — was it produced "
             "by run_experiment.py --baseline?"
         )
-    return solo.groupby("profile")["makespan_s"].median()
+    per_node = solo.groupby(["profile", "node"])["makespan_s"].median()
+    per_profile = solo.groupby("profile")["makespan_s"].median()
+    return per_node, per_profile
 
 
 def attach_slowdown(df: pd.DataFrame, baselines: pd.DataFrame) -> pd.DataFrame:
-    """Добавляет makespan_isolated и slowdown = makespan_s / makespan_isolated.
+    """Добавляет makespan_isolated, slowdown = makespan_s / makespan_isolated и
+    slowdown_basis ("node" | "profile").
 
     Slowdown — стандартная метрика литературы по интерференции (Bubble-Up,
     Paragon, Heracles): безразмерная, профили разной длительности становятся
     сравнимыми и объединяемыми, а «замедлился в 1.8x» читается напрямую.
-    Профили без бейзлайна получают NaN (и предупреждение) — сравнения по
-    slowdown их молча не потеряют: stats отбрасывает NaN с падением n.
 
-    Оговорка: знаменатель — на профиль, но НЕ на инфраструктуру (бейзлайны
-    гоняются одной конфигурацией, обычно bare-metal A-default). Для сравнений
-    внутри одной инфраструктуры (H1: A vs A, H2: B vs B) делитель у обоих плеч
-    общий, поэтому Mann-Whitney/Cliff's на slowdown идентичны тем же на сыром
-    makespan — вывод не меняется. Для кросс-инфра ЧТЕНИЯ абсолютного slowdown
-    у B/C/D оверхед инфраструктуры подмешивается к замедлению от интерференции;
-    это надо держать в уме, интерпретируя абсолютные значения (не сравнения)."""
-    iso = isolated_makespans(baselines)
+    Знаменатель — PER (profile, node), из пиновых per-node бейзлайнов
+    (--baseline). Урок STAGE: «одинаковые» облачные ноды бывают в ~1.9x разной
+    реальной скорости, и общий на все ноды знаменатель приписывал разницу
+    железа интерференции. С per-node нормировкой slowdown измеряет только то,
+    что сделала ко-локация, а «планировщик увёл job с медленной ноды» честно
+    остаётся в makespan-метрике, не в slowdown. Строки на нодах без своего
+    бейзлайна получают fallback-знаменатель профиля (slowdown_basis="profile",
+    с предупреждением) — хуже, но лучше молчаливого NaN.
+
+    Оговорка (как раньше): знаменатель на инфраструктуру не делится (бейзлайны
+    гоняются одной конфигурацией, обычно A-default). Для сравнений внутри одной
+    инфраструктуры это не влияет; кросс-инфра абсолютные значения slowdown
+    подмешивают оверхед инфраструктуры."""
+    per_node, per_profile = isolated_makespans(baselines)
     out = df.copy()
-    out["makespan_isolated"] = out["profile"].map(iso)
+
+    keys = pd.MultiIndex.from_arrays([out["profile"], out["node"]])
+    iso_node = pd.Series(
+        [per_node.get(k, float("nan")) for k in keys], index=out.index, dtype=float
+    )
+    iso_profile = out["profile"].map(per_profile)
+
+    out["makespan_isolated"] = iso_node.fillna(iso_profile)
+    out["slowdown_basis"] = "node"
+    out.loc[iso_node.isna() & iso_profile.notna(), "slowdown_basis"] = "profile"
+    out.loc[out["makespan_isolated"].isna(), "slowdown_basis"] = None
     out["slowdown"] = out["makespan_s"] / out["makespan_isolated"]
 
-    missing = sorted(set(out["profile"].dropna()) - set(iso.index))
+    n_fallback = int((out["slowdown_basis"] == "profile").sum())
+    if n_fallback:
+        pairs = sorted(
+            set(
+                zip(
+                    out.loc[out["slowdown_basis"] == "profile", "profile"],
+                    out.loc[out["slowdown_basis"] == "profile", "node"].astype(str),
+                )
+            )
+        )
+        print(
+            f"[attach_slowdown] warning: {n_fallback} rows have no per-node "
+            f"baseline for {pairs} — using the profile-wide median (nodes of "
+            "unequal speed then leak hardware differences into slowdown; rerun "
+            "harness --baseline with per_node pinning)."
+        )
+    missing = sorted(set(out["profile"].dropna()) - set(per_profile.index))
     if missing:
         print(
-            f"[attach_slowdown] warning: no baseline for profiles {missing} — "
-            "their slowdown is NaN (run harness --baseline covering them)."
+            f"[attach_slowdown] warning: no baseline at all for profiles "
+            f"{missing} — their slowdown is NaN (run harness --baseline "
+            "covering them)."
         )
     return out

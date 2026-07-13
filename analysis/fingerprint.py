@@ -10,8 +10,13 @@ harness/profiles.py в самих данных) с фактическим пов
 либо декларацию ДО боевых прогонов.
 
 Замечание к осям: llc/numa/io измеряются в честных [0,1]-шкалах (miss ratio,
-remote ratio, PSI stall share); net — сырые bytes/s (analysis-only, в score
-не входит), для fingerprint это не мешает — сравнение внутри оси относительное.
+remote ratio, PSI stall share); net для fingerprint берётся сырыми bytes/s —
+сравнение внутри оси относительное, и сырая метрика не зависит от того,
+откалиброван ли NET_REFERENCE_MBPS на стенде (в score при этом идёт
+нормированный net_pressure). Известная честная оговорка: профиль high-s-net
+ДЕКЛАРИРУЕТ net=high, но сетевого трафика сам пока не генерирует (см.
+harness/profiles.py) — монотонность по оси net ожидаемо флагается, это
+осознанный компромисс до появления сетевого OUTPUT_MODE у воркера.
 """
 
 from __future__ import annotations

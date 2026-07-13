@@ -43,6 +43,15 @@ spec:
               # job duration was the real fix, and 5s keeps per-node
               # kube-apiserver LIST traffic 5x lower for the partner stand.
               value: "5"
+            - name: NET_REFERENCE_MBPS
+              # Net-калибровка стенда: реально достижимый cross-node aggregate
+              # (rx+tx, Mbit/s) из `make netcheck-run && make netcheck-logs`.
+              # Пусто = Net-ось выключена (net_pressure=0, сырой net_bw
+              # пишется всё равно). Значение СТЕНДО-СПЕЦИФИЧНО — задаётся при
+              # деплое (kubectl -n sensitivityscore-system set env
+              # ds/metrics-agent NET_REFERENCE_MBPS=<из netcheck>), в
+              # манифесте намеренно не хардкодится.
+              value: ""
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the
             # container's own /proc show every host process (net.go reads

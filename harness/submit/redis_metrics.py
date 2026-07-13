@@ -69,6 +69,7 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
         "llc_miss_rate": float("nan"),
         "numa_remote_ratio": float("nan"),
         "net_bw": float("nan"),
+        "net_pressure": float("nan"),
         "io_iops": float("nan"),
         "io_pressure": float("nan"),
     }
@@ -112,6 +113,9 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
         "llc_miss_rate": lifetime_mean("llc_miss_rate_sum"),
         "numa_remote_ratio": lifetime_mean("numa_remote_ratio_sum"),
         "net_bw": lifetime_mean("net_bw_sum"),
+        # net_pressure — net_bw, нормированный калибровкой NET_REFERENCE_MBPS
+        # стенда, [0,1] (Net-ось скор-функции); nan на старых данных без поля.
+        "net_pressure": lifetime_mean("net_pressure_sum"),
         # io_iops — сырая активность (ops/s, агрессор); io_pressure — PSI-доля
         # времени в ожидании IO, [0,1] (её же читает планировщик из node:metrics).
         "io_iops": lifetime_mean("io_iops_sum"),

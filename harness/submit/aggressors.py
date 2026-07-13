@@ -1,10 +1,19 @@
-"""aggressors.py — управление фоновыми LLC/membw-агрессорами pressure-сценария.
+"""aggressors.py — управление фоновыми агрессорами pressure-сценария.
 
-Агрессоры (stress-ng --stream, см. aggressor/Dockerfile) прибиваются к нодам
+Агрессоры (stress-ng / iperf3, см. aggressor/Dockerfile) прибиваются к нодам
 через spec.nodeName — МИМО планировщиков, чтобы оба плеча сравнения
 (A-default / A-sensitivityscore) видели идентичный ландшафт давления. Малый
 cpu-request при большом реальном давлении — намеренно: это тот случай, где
 ресурсная модель default-планировщика слепа, а SensitivityScore видит.
+
+Два режима (scenario["aggressor_mode"]):
+  - по умолчанию — stress-ng с args из scenario["aggressor_args"]
+    (--stream: LLC/полоса памяти; --hdd: диск, видно в PSI io.pressure);
+  - "net" — iperf3-пары НА ОДНОЙ штормимой ноде: на каждый слот свой сервер
+    (iperf3 держит один тест за раз) + UDP-клиент с фиксированным
+    -b scenario["net_bitrate_mbps"]. Трафик идёт pod-to-pod через veth и
+    засвечивает net_bw/net_pressure ТОЛЬКО штормимой ноды — cross-node пара
+    засветила бы rx-стороной и вторую (чистую) ноду.
 """
 
 from __future__ import annotations
@@ -57,53 +66,32 @@ def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
     return workers[:count]
 
 
-def deploy(
-    nodes: list[str],
-    per_node: int,
-    scenario: dict,
-    cfg: dict,
-) -> None:
-    """Разворачивает per_node агрессоров на каждой из nodes и ждёт их Ready.
+def expected_pods(node_count: int, per_node: int, scenario: dict) -> int:
+    """Сколько подов-агрессоров обязано быть Running у плеча (для
+    assert_running): net-режим добавляет к клиентам по iperf3-серверу на слот."""
+    if scenario.get("aggressor_mode") == "net":
+        return node_count * per_node * 2
+    return node_count * per_node
 
-    Тип давления задаётся scenario["aggressor_args"] (stress-ng-аргументы:
-    --stream N для LLC/полосы памяти, --hdd N [--hdd-bytes ...] для диска —
-    IO-давление тогда видно и в PSI io.pressure); дефолт —
-    cfg["aggressor"]["default_args"]. --temp-path /scratch добавляется всегда
-    (emptyDir в шаблоне): файловые стрессоры пишут на реальный диск ноды, а
-    не в overlay-слой контейнера.
-    """
-    from submit.k8s_submit import ensure_namespace  # локальный импорт: избегаем цикла на уровне модулей
 
-    namespace = cfg["kubernetes"]["namespace"]
-    # Агрессоры деплоятся ДО первого сабмита job (который сам создаёт
-    # namespace) — после make harness-clean-full namespace не существует.
-    ensure_namespace(namespace)
-
-    template = _env.get_template("aggressor-pod.yaml.j2")
+def _render_pod(scenario: dict, cfg: dict, **overrides) -> str:
+    """Один под-агрессор по шаблону; общие для всех режимов поля берутся из
+    cfg["aggressor"], специфичные (name/node/command/args) — из overrides."""
     agg_cfg = cfg.get("aggressor", {})
-
-    args = ["--temp-path", "/scratch"] + list(
-        scenario.get("aggressor_args") or agg_cfg.get("default_args", ["--stream", "2"])
+    params = dict(
+        namespace=cfg["kubernetes"]["namespace"],
+        scenario=scenario["name"],
+        image=cfg["images"]["aggressor"],
+        cpu_request=agg_cfg.get("cpu_request", "500m"),
+        cpu_limit=agg_cfg.get("cpu_limit", "2"),
+        mem_request=agg_cfg.get("mem_request", "512Mi"),
+        mem_limit=agg_cfg.get("mem_limit", "2Gi"),
     )
+    params.update(overrides)
+    return _env.get_template("aggressor-pod.yaml.j2").render(**params)
 
-    manifests = []
-    for node in nodes:
-        for slot in range(per_node):
-            manifests.append(
-                template.render(
-                    name=f"ss-aggressor-{node}-{slot}".lower(),
-                    namespace=namespace,
-                    scenario=scenario["name"],
-                    node_name=node,
-                    image=cfg["images"]["aggressor"],
-                    args_json=json.dumps(args),
-                    cpu_request=agg_cfg.get("cpu_request", "500m"),
-                    cpu_limit=agg_cfg.get("cpu_limit", "2"),
-                    mem_request=agg_cfg.get("mem_request", "512Mi"),
-                    mem_limit=agg_cfg.get("mem_limit", "2Gi"),
-                )
-            )
 
+def _apply_and_wait(manifests: list[str], namespace: str) -> None:
     result = subprocess.run(
         ["kubectl", "apply", "-f", "-"],
         input="\n---\n".join(manifests),
@@ -115,12 +103,6 @@ def deploy(
         # stderr обязателен в сообщении: CalledProcessError без него прячет
         # причину ('namespaces not found' искали дольше, чем чинили).
         raise RuntimeError(f"aggressor apply failed: {result.stderr.strip()}")
-    log.info(
-        "aggressors: %d pods on nodes %s (x%d per node), waiting for Ready",
-        len(manifests),
-        ",".join(nodes),
-        per_node,
-    )
     subprocess.run(
         [
             "kubectl",
@@ -135,6 +117,120 @@ def deploy(
         ],
         check=True,
         capture_output=True,
+    )
+
+
+def _pod_ip(name: str, namespace: str) -> str:
+    result = subprocess.run(
+        ["kubectl", "get", "pod", name, "-n", namespace,
+         "-o", "jsonpath={.status.podIP}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    ip = result.stdout.strip()
+    if not ip:
+        raise RuntimeError(f"aggressor pod {name} is Ready but has no podIP")
+    return ip
+
+
+def _deploy_net(nodes: list[str], per_node: int, scenario: dict, cfg: dict) -> None:
+    """Net-шторм: на каждой ноде per_node пар (iperf3-сервер + UDP-клиент на
+    фиксированном битрейте). Серверы деплоятся первыми (клиенту нужен podIP);
+    свой сервер на каждый слот — iperf3 обслуживает один тест за раз."""
+    namespace = cfg["kubernetes"]["namespace"]
+    bitrate = int(scenario.get("net_bitrate_mbps", 400))
+
+    servers = []  # (node, slot, pod name)
+    manifests = []
+    for node in nodes:
+        for slot in range(per_node):
+            name = f"ss-aggressor-{node}-srv{slot}".lower()
+            servers.append((node, slot, name))
+            manifests.append(
+                _render_pod(
+                    scenario, cfg,
+                    name=name,
+                    node_name=node,
+                    command_json=json.dumps(["iperf3", "-s"]),
+                )
+            )
+    _apply_and_wait(manifests, namespace)
+
+    manifests = []
+    for node, slot, server_name in servers:
+        ip = _pod_ip(server_name, namespace)
+        # Вечный клиент с рестарт-циклом: разовый `iperf3 -t` рано или поздно
+        # истечёт/оборвётся, а под с restartPolicy: Never не перезапустится —
+        # шторм бы молча закончился посреди плеча.
+        client_cmd = (
+            f"while true; do iperf3 -u -c {ip} -b {bitrate}M -t 86400 -l 1400; "
+            f'echo "iperf3 client exited; retrying"; sleep 2; done'
+        )
+        manifests.append(
+            _render_pod(
+                scenario, cfg,
+                name=f"ss-aggressor-{node}-{slot}".lower(),
+                node_name=node,
+                command_json=json.dumps(["/bin/sh", "-c", client_cmd]),
+            )
+        )
+    _apply_and_wait(manifests, namespace)
+    log.info(
+        "net aggressors: %d iperf3 pairs on nodes %s (x%d per node, %dM UDP each)",
+        len(servers), ",".join(nodes), per_node, bitrate,
+    )
+
+
+def deploy(
+    nodes: list[str],
+    per_node: int,
+    scenario: dict,
+    cfg: dict,
+) -> None:
+    """Разворачивает агрессоров на каждой из nodes и ждёт их Ready.
+
+    Режим по умолчанию — stress-ng: тип давления задаётся
+    scenario["aggressor_args"] (--stream N для LLC/полосы памяти, --hdd N
+    [--hdd-bytes ...] для диска — IO-давление тогда видно и в PSI
+    io.pressure); дефолт — cfg["aggressor"]["default_args"]. --temp-path
+    /scratch добавляется всегда (emptyDir в шаблоне): файловые стрессоры
+    пишут на реальный диск ноды, а не в overlay-слой контейнера.
+    aggressor_mode: "net" — см. _deploy_net.
+    """
+    from submit.k8s_submit import ensure_namespace  # локальный импорт: избегаем цикла на уровне модулей
+
+    namespace = cfg["kubernetes"]["namespace"]
+    # Агрессоры деплоятся ДО первого сабмита job (который сам создаёт
+    # namespace) — после make harness-clean-full namespace не существует.
+    ensure_namespace(namespace)
+
+    if scenario.get("aggressor_mode") == "net":
+        _deploy_net(nodes, per_node, scenario, cfg)
+        return
+
+    agg_cfg = cfg.get("aggressor", {})
+    args = ["--temp-path", "/scratch"] + list(
+        scenario.get("aggressor_args") or agg_cfg.get("default_args", ["--stream", "2"])
+    )
+
+    manifests = []
+    for node in nodes:
+        for slot in range(per_node):
+            manifests.append(
+                _render_pod(
+                    scenario, cfg,
+                    name=f"ss-aggressor-{node}-{slot}".lower(),
+                    node_name=node,
+                    args_json=json.dumps(args),
+                )
+            )
+    _apply_and_wait(manifests, namespace)
+    log.info(
+        "aggressors: %d pods on nodes %s (x%d per node) Ready",
+        len(manifests),
+        ",".join(nodes),
+        per_node,
     )
 
 
