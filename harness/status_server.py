@@ -340,6 +340,57 @@ def baseline_summary(path: Path) -> dict:
         return {"exists": True, "error": str(e)}
 
 
+DIGEST_METRICS = [
+    ("makespan_s", "makespan, с", "{:.1f}"),
+    ("slowdown", "slowdown", "{:.2f}×"),
+    ("placement_regret", "regret", "{:.3f}"),
+]
+
+
+def analysis_digest(report_dir: Path) -> dict:
+    """Компактная выжимка из comparisons.csv: на каждый сценарий и метрику —
+    среднее SensitivityScore и средние соперников с Holm-p и Cliff's δ. Строки
+    без данных (B/C/D) молча отбрасываются — это не «ждём», а «неприменимо на
+    этом стенде». Читаем структурированный csv, а не сырой summary.md."""
+    csv = report_dir / "comparisons.csv"
+    if not csv.exists():
+        return {"exists": False}
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(csv)
+        df = df[df["mean_b"].notna() & (df["mw_n_b"].fillna(0) > 0)]
+        scenarios: dict = {}
+        for sc, g in df.groupby("scenario"):
+            metrics = []
+            for col, label, fmt in DIGEST_METRICS:
+                gm = g[g["metric"] == col]
+                if gm.empty:
+                    continue
+                ss_mean = float(gm.iloc[0]["mean_a"])
+                opponents = {}
+                for r in gm.to_dict("records"):
+                    holm = r.get("mw_p_holm")
+                    sig = bool(pd.notna(holm) and holm < 0.05)
+                    opponents[r["config_b"]] = {
+                        "mean": float(r["mean_b"]),
+                        "p_holm": None if pd.isna(holm) else float(holm),
+                        "delta": None if pd.isna(r.get("cliffs_delta")) else float(r["cliffs_delta"]),
+                        "better": float(r["mean_a"]) < float(r["mean_b"]),
+                        "sig": sig,
+                    }
+                metrics.append(
+                    {"col": col, "label": label, "fmt": fmt,
+                     "ss": ss_mean, "opponents": opponents}
+                )
+            if metrics:
+                scenarios[sc] = metrics
+        return {"exists": True, "scenarios": scenarios,
+                "mtime": time.strftime("%H:%M:%S", time.localtime(csv.stat().st_mtime))}
+    except Exception as e:  # noqa: BLE001
+        return {"exists": True, "error": str(e)}
+
+
 def kubectl_snapshot() -> dict:
     """Живые Job'ы и агрессоры — best-effort, пустые списки если kubectl нет."""
     out: dict = {}
@@ -400,6 +451,7 @@ def collect() -> dict:
             "plots": sorted(p.name for p in report_dir.glob("*.png"))
             if report_dir.is_dir()
             else [],
+            "digest": analysis_digest(report_dir),
         },
     }
 
@@ -626,21 +678,93 @@ def inline(s: str) -> str:
     return s
 
 
+def digest_cell(op: dict, fmt: str) -> str:
+    """Ячейка соперника в дайджест-таблице: среднее + значок значимости."""
+    val = fmt.format(op["mean"])
+    if op.get("sig") and op.get("better"):
+        mark, cls = "✓", "good"  # SensitivityScore значимо лучше
+    elif op.get("sig"):
+        mark, cls = "✗", "bad"  # значимо ХУЖЕ
+    else:
+        mark, cls = "·", "dim"  # разницы нет
+    p = op.get("p_holm")
+    ptxt = f" p={p:.2g}" if p is not None else ""
+    return f"<td class='{cls}'>{esc(val)}<span class='pct'>{esc(ptxt)}</span> {mark}</td>"
+
+
+def digest_section(dig: dict) -> str:
+    """Компактный вердикт: таблица метрика × (SensitivityScore | соперники)."""
+    if not dig.get("exists"):
+        return ""
+    if "error" in dig:
+        return f"<p class='err'>{esc(dig['error'])}</p>"
+    scs = dig.get("scenarios") or {}
+    if not scs:
+        return "<p class='dim'>сравнений ещё нет</p>"
+    parts = [f"<p class='dim'>обновлён {esc(dig.get('mtime','?'))} · "
+             "✓ SensitivityScore значимо лучше (Holm p&lt;0.05), · нет разницы</p>"]
+    for sc in sorted(scs):
+        metrics = scs[sc]
+        opponents = []
+        for m in metrics:
+            for cb in m["opponents"]:
+                if cb not in opponents:
+                    opponents.append(cb)
+        opp_order = [a for a in ARM_ORDER if a in opponents] + [
+            a for a in opponents if a not in ARM_ORDER
+        ]
+        head = ("<tr><th>метрика</th><th>SensitivityScore</th>"
+                + "".join(f"<th>vs {esc(arm_label(a))}</th>" for a in opp_order)
+                + "</tr>")
+        rows = []
+        for m in metrics:
+            ss = m["fmt"].format(m["ss"])
+            cells = "".join(
+                digest_cell(m["opponents"][a], m["fmt"]) if a in m["opponents"]
+                else "<td class='dim'>—</td>"
+                for a in opp_order
+            )
+            rows.append(
+                f"<tr><td>{esc(m['label'])}</td><td><b>{esc(ss)}</b></td>{cells}</tr>"
+            )
+        parts.append(
+            f"<h3>{esc(scenario_label(sc))}</h3>"
+            f"<table class='money'>{head}{''.join(rows)}</table>"
+        )
+    return "".join(parts)
+
+
 def report_section(rep: dict) -> str:
-    if not rep["exists"]:
+    dig_html = digest_section(rep.get("digest") or {})
+    if not rep["exists"] and not dig_html:
         return ("<p class='dim'>появится после прогона: "
                 f"<code>analyze.py ... --outdir {esc(rep['dir'])}</code></p>")
     parts = []
-    try:
-        md = (Path(rep["dir"]) / "summary.md").read_text(encoding="utf-8")
-        parts.append(md_to_html(md))
-    except OSError as e:
-        parts.append(f"<p class='err'>{esc(e)}</p>")
-    for png in rep["plots"]:
-        parts.append(
-            f"<figure><img src='/report/{esc(png)}' alt='{esc(png)}'>"
-            f"<figcaption>{esc(png)}</figcaption></figure>"
+    if dig_html:
+        parts.append(dig_html)
+    # Графики — компактной сеткой-миниатюрами, каждая кликается в полный размер.
+    if rep["plots"]:
+        thumbs = "".join(
+            f"<a href='/report/{esc(png)}' target='_blank' class='thumb'>"
+            f"<img src='/report/{esc(png)}' alt='{esc(png)}' loading='lazy'>"
+            f"<span>{esc(png.replace('.png','').replace('-pressure',''))}</span></a>"
+            for png in rep["plots"]
         )
+        parts.append(
+            "<details data-k='plots'><summary>графики "
+            f"<span class='dim'>({len(rep['plots'])})</span></summary>"
+            f"<div class='gallery'>{thumbs}</div></details>"
+        )
+    # Полный текстовый отчёт — для тех, кому нужны все p/CV/fingerprint.
+    if rep["exists"]:
+        try:
+            md = (Path(rep["dir"]) / "summary.md").read_text(encoding="utf-8")
+            parts.append(
+                "<details data-k='fullreport'><summary>полный текстовый "
+                f"отчёт</summary><div class='fullmd'>{md_to_html(md)}</div></details>"
+            )
+        except OSError as e:
+            parts.append(f"<p class='err'>{esc(e)}</p>")
     return "".join(parts)
 
 
@@ -676,21 +800,28 @@ def render_html(d: dict) -> str:
     stand_label = esc(st.get("label") or "стенд")
 
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="10">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{stand_label} · {esc(phase_word)} {pct if pct is not None else ''}%</title>
+<script>
+/* Тема применяется ДО отрисовки — без вспышки не той темы при каждом обновлении.
+   Режим (auto|light|dark) в localStorage; auto резолвится по системной теме. */
+(function(){{
+  var m=localStorage.getItem('ssTheme')||'auto';
+  var dark=m==='dark'||(m==='auto'&&matchMedia('(prefers-color-scheme:dark)').matches);
+  var r=document.documentElement;
+  r.dataset.theme=dark?'dark':'light'; r.dataset.themeMode=m;
+}})();
+</script>
 <style>
 :root{{
   --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --dim:#6b7280; --line:#e5e7eb;
   --good:#1a7f52; --goodbg:#e6f6ee; --warn:#b45309; --warnbg:#fdf2e0;
   --bad:#c0392b; --badbg:#fdecea; --hero:#eef4ff; --herobd:#c9dcff;
 }}
-@media (prefers-color-scheme:dark){{
-  :root{{
-    --bg:#0f1115; --card:#181b21; --ink:#e6e8eb; --dim:#9aa4b2;
-    --line:#2a2f3a; --good:#4ade80; --goodbg:#12241a; --warn:#fbbf24;
-    --warnbg:#2a1f0a; --bad:#f87171; --badbg:#2a1414; --hero:#12203a; --herobd:#1e3a66;
-  }}
+:root[data-theme="dark"]{{
+  --bg:#0f1115; --card:#181b21; --ink:#e6e8eb; --dim:#9aa4b2;
+  --line:#2a2f3a; --good:#4ade80; --goodbg:#12241a; --warn:#fbbf24;
+  --warnbg:#2a1f0a; --bad:#f87171; --badbg:#2a1414; --hero:#12203a; --herobd:#1e3a66;
 }}
 *{{box-sizing:border-box}}
 body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;
@@ -732,17 +863,25 @@ details summary{{cursor:pointer;font-size:.85em;margin:.4em 0}}
 pre{{background:var(--bg);padding:.7em;overflow-x:auto;font-size:.82em;
   border-radius:8px;border:1px solid var(--line)}}
 code{{background:var(--bg);padding:.1em .35em;border-radius:4px;font-size:.9em}}
-figure{{margin:1em 0;border:1px solid var(--line);border-radius:8px;padding:.5em;
-  display:inline-block;max-width:100%}}
-figure img{{max-width:100%;height:auto;display:block}}
-figcaption{{color:var(--dim);font-size:.78em;text-align:center;margin-top:.3em}}
+.gallery{{display:flex;flex-wrap:wrap;gap:.6em;margin-top:.5em}}
+.thumb{{border:1px solid var(--line);border-radius:8px;padding:.35em;text-decoration:none;
+  color:var(--dim);font-size:.76em;text-align:center;background:var(--card)}}
+.thumb img{{display:block;max-height:200px;max-width:100%;border-radius:4px;margin-bottom:.2em}}
+.thumb:hover{{border-color:var(--herobd)}}
+.fullmd{{font-size:.9em;opacity:.92}}
+.fullmd table{{font-size:.88em}}
 a{{color:#4c8dff}}
+.themebtn{{background:var(--card);border:1px solid var(--line);color:var(--ink);
+  border-radius:999px;padding:.2em .8em;font-size:.8em;cursor:pointer;font-family:inherit}}
+.themebtn:hover{{border-color:var(--herobd)}}
+.refreshing{{opacity:.5;transition:opacity .3s}}
 </style></head><body><div class="wrap">
 
 <div class="top">
   <span class="badge">{esc(phase_word)}</span>
   <h1>{stand_label}</h1>
   <span class="upd">обновлено {esc(d['time'])} · авто-10с · <a href="/json">/json</a></span>
+  <button id="themebtn" class="themebtn" onclick="cycleTheme()" title="тема">🌗</button>
 </div>
 <div class="now">{hero_now(d)}</div>
 {bar}
@@ -767,7 +906,7 @@ a{{color:#4c8dff}}
   {report_section(d['report'])}
 </div>
 
-<details class="card">
+<details class="card" data-k="standlogs">
   <summary>Стенд и логи</summary>
   <p class='dim'>{esc(st.get('server',''))}</p>
   {table(["нода", "kubelet", "ядро", "cpu", "mem"], st.get("nodes", []))}
@@ -777,7 +916,48 @@ a{{color:#4c8dff}}
   <pre>{esc(chr(10).join(d['log_errors']) or '—')}</pre>
 </details>
 
-</div></body></html>"""
+</div>
+<script>
+/* Кнопка темы: цикл авто -> светлая -> тёмная. */
+function paintThemeBtn(){{
+  var m=document.documentElement.dataset.themeMode||'auto';
+  var b=document.getElementById('themebtn');
+  if(b) b.textContent=({{auto:'🌗 авто',light:'☀️ светлая',dark:'🌙 тёмная'}})[m];
+}}
+function cycleTheme(){{
+  var order=['auto','light','dark'];
+  var m=localStorage.getItem('ssTheme')||'auto';
+  var next=order[(order.indexOf(m)+1)%order.length];
+  localStorage.setItem('ssTheme',next);
+  var dark=next==='dark'||(next==='auto'&&matchMedia('(prefers-color-scheme:dark)').matches);
+  var r=document.documentElement; r.dataset.theme=dark?'dark':'light'; r.dataset.themeMode=next;
+  paintThemeBtn();
+}}
+/* Мягкое авто-обновление: перезагрузка каждые 10с, но с сохранением прокрутки
+   и раскрытых <details> — иначе открытый блок «графики» схлопывался бы, а
+   страница прыгала бы вверх на каждом тике. */
+var UIK='ssStatusUI';
+history.scrollRestoration='manual';
+function saveUI(){{
+  try{{
+    var open=[].slice.call(document.querySelectorAll('details[data-k]'))
+      .filter(function(d){{return d.open}}).map(function(d){{return d.dataset.k}});
+    sessionStorage.setItem(UIK, JSON.stringify({{open:open, y:window.scrollY}}));
+  }}catch(e){{}}
+}}
+function restoreUI(){{
+  try{{
+    var s=JSON.parse(sessionStorage.getItem(UIK)||'{{}}');
+    (s.open||[]).forEach(function(k){{
+      var d=document.querySelector('details[data-k="'+k+'"]'); if(d) d.open=true;
+    }});
+    if(s.y) window.scrollTo(0,s.y);
+  }}catch(e){{}}
+}}
+paintThemeBtn(); restoreUI();
+setTimeout(function(){{ saveUI(); document.body.classList.add('refreshing'); location.reload(); }}, 10000);
+</script>
+</body></html>"""
 
 
 # ---------------------------------------------------------------- сервер ----
