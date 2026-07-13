@@ -511,15 +511,13 @@ a{{color:#4c8dff}}
 .pill:hover{{border-color:var(--herobd)}}
 select.pill{{padding:.2em .5em}}
 #conn{{color:var(--bad);font-weight:600}}
-@keyframes spin{{to{{transform:rotate(360deg)}}}}
-#refnow.busy{{animation:spin .8s linear infinite}}
 @media (max-width:640px){{ table{{display:block;overflow-x:auto}} }}
 </style></head><body><div class="wrap" style="--accent:{color}">
 
 <div class="top">
   <span class="badge">{esc(phase_word)}</span>
   <h1>{stand_label}</h1>
-  <span class="upd"><span id="conn"></span>обновлено {esc(d['time'])}<span id="cd"></span> · <a href="/json">/json</a></span>
+  <span class="upd"><span id="conn"></span>обновлено {esc(d['time'])} · <a href="/json">/json</a></span>
   <span class="ctl">
     <button id="refnow" class="pill" onclick="refreshNow()" title="обновить сейчас">⟳</button>
     <select id="refsel" class="pill" onchange="setRefresh(this.value)" title="интервал авто-обновления">
@@ -593,7 +591,7 @@ function cycleTheme(){{
    в шапке, значение в localStorage; в фоновой вкладке обновление спит и
    навёрстывает при возвращении. */
 var REFK='ssRefresh', DETK='ssOpenDetails';
-var timer=null, lastOk=Date.now(), nextAt=0;
+var timer=null, lastOk=Date.now();
 function refreshSeconds(){{
   var v=parseInt(localStorage.getItem(REFK)||'10',10);
   return isNaN(v)?10:v;
@@ -601,8 +599,7 @@ function refreshSeconds(){{
 function armTimer(){{
   clearTimeout(timer);
   var s=refreshSeconds();
-  if(s>0){{ timer=setTimeout(refreshNow, s*1000); nextAt=Date.now()+s*1000; }}
-  else nextAt=0;
+  if(s>0) timer=setTimeout(refreshNow, s*1000);
 }}
 function setRefresh(v){{ localStorage.setItem(REFK, String(v)); armTimer(); }}
 function openSet(){{
@@ -626,8 +623,6 @@ function paintControls(){{
 function refreshNow(){{
   if(document.hidden){{ armTimer(); return; }}
   clearTimeout(timer);
-  var btn=document.getElementById('refnow');
-  if(btn) btn.classList.add('busy');
   fetch(location.pathname+location.search, {{cache:'no-store'}})
     .then(function(r){{ if(!r.ok) throw new Error(r.status); return r.text(); }})
     .then(function(html){{
@@ -645,21 +640,8 @@ function refreshNow(){{
       lastOk=Date.now();
       setConn(false); paintControls(); armTimer();
     }})
-    .catch(function(){{ setConn(true); armTimer(); }})
-    .finally(function(){{
-      var b=document.getElementById('refnow');
-      if(b) b.classList.remove('busy');
-    }});
+    .catch(function(){{ setConn(true); armTimer(); }});
 }}
-/* Обратный отсчёт до следующего обновления — рядом со временем в шапке. */
-setInterval(function(){{
-  var c=document.getElementById('cd');
-  if(!c) return;
-  if(nextAt>0 && !document.hidden){{
-    var left=Math.max(0, Math.round((nextAt-Date.now())/1000));
-    c.textContent=' · следующее через '+left+' с';
-  }} else c.textContent='';
-}}, 1000);
 /* Фоновая вкладка не обновляется; при возвращении — сразу, если данные устарели. */
 document.addEventListener('visibilitychange', function(){{
   if(document.hidden) return;
