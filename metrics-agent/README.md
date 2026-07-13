@@ -7,7 +7,7 @@ docs §3.2).
 
 ```
 pkg/perf/        — perf_event_open() обёртка: LLC misses/references, cgroup-scoped
-pkg/cgroup/       — io.stat (Disk I/O); net.go — заглушка под eBPF socket hook
+pkg/cgroup/       — io.stat (Disk I/O); net.go — rx+tx байты из /proc/<pid>/net/dev
 pkg/redisclient/  — запись node:metrics:* / job:metrics:*
 pkg/vpmu/         — health-check vPMU-доступности для серии B (§3.3)
 cmd/agent/        — цикл сэмплирования: discover pods on node -> sample -> write
@@ -16,8 +16,11 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 ## Реализовано
 
 - LLC miss rate через честные PMU-счётчики (`PERF_COUNT_HW_CACHE_MISSES` /
-  `_REFERENCES`, cgroup-scoped).
-- Disk I/O через cgroup v2 `io.stat`.
+  `_REFERENCES`, cgroup-scoped, по счётчику на online-CPU).
+- Disk I/O через cgroup v2 `io.stat` + PSI `io.pressure`.
+- Network bytes (`net.go: ReadNetStats` из `/proc/<pid>/net/dev`, rx+tx) →
+  `net_pressure = net_bw / NET_REFERENCE_MBPS` при калибровке стенда (иначе
+  сырой `net_bw` пишется, а ось выключена). См. `make netcheck-run`.
 - Redis writer с правильным разделением `node:metrics:*` (TTL) / `job:metrics:*`
   (без TTL, для последующей выгрузки харнессом в Parquet).
 - vPMU health-check (in-guest + `virsh capabilities`) для конфигурации B.
@@ -27,11 +30,11 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 - **NUMA bandwidth** (`pkg/perf/perf_event.go: ReadUncoreNUMABandwidth`) — требует
   определения модели PMU хоста (CPUID) и выбора нужного `uncore_imc_*` устройства;
   специфично для железа стенда, не угадывается заранее.
-- **Network bytes** (`pkg/cgroup/net.go: ReadNetStats`) — cgroup v2 не имеет
-  встроенного network-байт-каунтера; нужен отдельный eBPF `cgroup_skb` hook
-  (через `cilium/ebpf`), это отдельная единица работы, требующая подтверждения
-  версии ядра/BTF на стенде партнёров (см. открытый вопрос в Программе
-  экспериментов §8).
+- **NUMA remote ratio точнее через uncore-IMC** — сейчас NUMA считается
+  переносимо как `node-load-misses / node-loads` (generic node-события PMU),
+  этого достаточно; истинный per-node bandwidth (`uncore_imc_*`) — см. пункт
+  выше про `ReadUncoreNUMABandwidth`. На односокетных узлах ось вырождена
+  (1 NUMA-домен → `node_load_misses` = ENOENT, `numa_remote_ratio` ≡ 0).
 - `resolvePodCgroupPath` (`cmd/agent/pods.go`) реализует системный (`systemd`)
   cgroup driver layout — если на стенде используется `cgroupfs`, путь нужно
   поправить.
@@ -40,6 +43,6 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 
 ```bash
 go build ./...
-docker build -t sensitivityscore-bench/metrics-agent:dev .
+make -C .. image-metrics-agent      # -> andreyza/metrics-agent:dev
 kubectl apply -f deploy/daemonset.yaml
 ```

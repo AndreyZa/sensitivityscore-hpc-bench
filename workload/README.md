@@ -22,7 +22,7 @@ docker build -t sensitivityscore-bench/geant4:11.2 ./workload
 | `G4_THREADS` | `1` | число физических ядер на NUMA-домене узла |
 | `PHYSICS_LIST` | `QGSP_BERT` | `FTFP_BERT_HP` |
 | `N_PRIMARIES` | `10000` | `1000000`–`10000000` |
-| `OUTPUT_MODE` | `none` | `ntuple` (⚠ пока не реализовано, см. ниже) |
+| `OUTPUT_MODE` | `none` | `burst` (реальная запись с fsync; `ntuple` — TODO, см. ниже) |
 | `RNG_SEED` | фикс. на повтор | фикс. на повтор |
 
 ## Как реально передаются параметры (важно)
@@ -36,11 +36,14 @@ docker build -t sensitivityscore-bench/geant4:11.2 ./workload
 - **Physics list** — через переменную окружения `PHYSLIST`, которую
   `G4PhysListFactory::ReferencePhysList()` читает напрямую (это
   подтверждённый механизм в исходниках Geant4, не выдумка).
-- **Disk I/O (OUTPUT_MODE=ntuple)** — **пока не реализовано**. Нужны
-  UI-команды `/analysis/...` для настройки per-event ntuple-вывода, которые
-  зависят от конкретной настройки `AnalysisManager` в `TestEm5` этой версии
-  — оставлено как явный TODO (см. комментарии в `entrypoint.sh`/`macros/run.mac`),
-  чтобы не городить второй слой непроверенных предположений поверх первого.
+- **Disk I/O** — реализовано через `OUTPUT_MODE=burst`: параллельно с compute
+  каждые `IO_INTERVAL_SECONDS` пишется `IO_BURST_MB` МБ с `fsync` (fsync
+  принципиален — иначе запись оседает в page cache и io.pressure не растёт).
+  Это и есть дисковая ось жертвы high-s-io (`profiles.py`). Настоящий per-event
+  `OUTPUT_MODE=ntuple` (UI-команды `/analysis/...`, завязанные на
+  `AnalysisManager` конкретного `TestEm5`) **пока не реализован** — оставлен
+  как TODO (комментарии в `entrypoint.sh`), burst выбран как честная и
+  проверяемая эмуляция вместо второго слоя непроверенных предположений.
 
 ## Локальный запуск (sanity-check)
 

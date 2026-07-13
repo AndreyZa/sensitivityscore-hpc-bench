@@ -53,9 +53,9 @@ CAP_PERFMON на под (см. `docs/Программа эксперименто
 
 ```bash
 make perfcheck-image                       # локальная сборка образа
-docker push andreyza/perfcheck:dev         # ноды стенда — отдельные машины, тянут образ из registry
-make perfcheck-run
-make perfcheck-logs                        # STATUS должен быть Completed, не Error
+make perfcheck-push                        # ноды стенда — отдельные машины, тянут образ из registry
+make perfcheck-run NODE=<имя-узла>         # на неоднородном стенде — по каждому узлу; без NODE встаёт куда придётся
+make perfcheck-logs                        # ждём Completed; SUCCESS с НЕнулевым числом = PMU честный (read=0 = гипервизор подделывает)
 make perfcheck-clean
 ```
 
