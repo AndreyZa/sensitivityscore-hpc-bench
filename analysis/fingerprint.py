@@ -90,6 +90,11 @@ def to_markdown(table: pd.DataFrame) -> str:
         "|---|---|---|---|---|",
     ]
     for r in table.to_dict("records"):
+        # Оси без единого сэмпла на стенде (например LLC/NUMA на STAGE, где
+        # PMU занулён) — не строка данных, а шум: пропускаем. csv (fingerprint.csv)
+        # сохраняет все оси; сюда, в человекочитаемую сводку, они не нужны.
+        if r["n"] == 0:
+            continue
         if pd.isna(r["measured_mean"]):
             measured = "—"
         elif pd.isna(r["measured_std"]):

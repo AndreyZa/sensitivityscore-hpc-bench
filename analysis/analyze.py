@@ -90,7 +90,6 @@ def summarize_hypothesis(
     only means something for a positive-magnitude metric (makespan, slowdown).
     For placement_regret the arm we care about sits at μ≈0, so CV explodes or
     is NaN — printing it is noise, not information."""
-    lines = [f"### {name}: {config_a} vs {config_b}\n"]
     rows = comparisons[
         (comparisons["config_a"] == config_a)
         & (comparisons["config_b"] == config_b)
@@ -98,10 +97,12 @@ def summarize_hypothesis(
         & (comparisons["mw_n_b"] > 0)
     ]
     if rows.empty:
-        lines.append(
-            "- no data yet for this comparison (run the missing configs first)"
-        )
-        return "\n".join(lines)
+        # Пусто -> секцию не печатаем вовсе (раньше был "no data yet" на
+        # каждую метрику; на A-only стенде это 9 мёртвых строк H2/H3/H4 —
+        # чистый шум). Отсутствующие сравнения по-прежнему видны в
+        # comparisons.csv (там пустые строки сохраняются для полноты).
+        return ""
+    lines = [f"### {name}: {config_a} vs {config_b}\n"]
 
     for result in rows.to_dict("records"):
         p = result["mw_p_value"]
@@ -214,11 +215,14 @@ def main():
             scenario_frames.append(comparisons)
 
             show_cv = metric_col != "placement_regret"
-            summary_sections.append(f"## Метрика: {metric_label}\n")
-            summary_sections.extend(
-                summarize_hypothesis(comparisons, name, a, b, value_fmt, show_cv)
+            hyp_sections = [
+                s
                 for name, (a, b) in HYPOTHESIS_PAIRS.items()
-            )
+                if (s := summarize_hypothesis(comparisons, name, a, b, value_fmt, show_cv))
+            ]
+            if hyp_sections:  # заголовок метрики только если под ним что-то есть
+                summary_sections.append(f"## Метрика: {metric_label}\n")
+                summary_sections.extend(hyp_sections)
 
     comparisons = (
         pd.concat(scenario_frames, ignore_index=True)
