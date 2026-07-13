@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """status_server.py — локальный HTTP-эндпойнт прогресса прогонов харнесса.
 
-Одна страница (авто-обновление 10с) + /json для скриптов. Задача — с одного
-взгляда понять, что происходит:
-  - шапка «сейчас»: фаза, сценарий (IO/Net), плечо, номер повтора, крупный
-    прогресс-бар всего прогона + ETA;
-  - главная метрика (money-таблица): по каждому сценарию, по каждому плечу —
-    сколько жертв ушло в шторм (это и есть ответ «работает ли планировщик»),
-    средний makespan и regret; строка SensitivityScore подсвечена, лучший по
-    доле-в-шторм отмечен;
-  - живой кластер: агрессоры (сколько Running, на какой ноде) и активные
-    Job'ы жертв;
-  - бейзлайны как матрица профиль × нода (сразу видно, что w7 медленнее);
+Одна страница (авто-обновление 10с) + /json для скриптов. Терминология на
+странице рассчитана на читателя со стороны (научный руководитель), а не на
+жаргон проекта: «планировщик» вместо «плечо», «повторение» вместо «реп»,
+«эталонные прогоны» вместо «бейзлайны», «перегруженный узел» вместо «шторм».
+Секции:
+  - шапка «сейчас»: этап, сценарий, планировщик, номер повторения; крупный
+    прогресс-бар всего прогона + ожидаемое время завершения; краткий план
+    эксперимента с объёмами каждого этапа;
+  - ключевая таблица: по каждому сценарию, по каждому планировщику — какая
+    доля задач размещена на перегруженный узел (прямой показатель качества
+    решений планировщика), среднее время выполнения и ошибка размещения;
+  - текущее состояние кластера: генераторы фоновой нагрузки и выполняющиеся
+    задачи;
+  - эталонные прогоны матрицей профиль × узел (видна неоднородность узлов);
   - секция «Анализ», когда в --report появляется summary.md после analyze.py
     (рендерит markdown + PNG-графики, сервер отдаёт их по /report/<файл>);
   - хвост лога и последние ошибки.
@@ -44,24 +47,29 @@ ARGS: argparse.Namespace  # заполняется в main()
 _STAND_CACHE: dict = {"ts": 0.0, "data": {}}
 STAND_TTL_SECONDS = 300  # топология кластера меняется редко
 
-# Порядок и подписи плеч. Префикс "A-" в UI не показываем — на STAGE всё
-# config A, и "A-" в каждой строке был тем самым визуальным шумом.
+# Порядок и подписи сравниваемых планировщиков. Внутренние имена конфигураций
+# ("A-default") на страницу не выводятся — читателю важен планировщик, а не
+# код инфраструктурной конфигурации.
 ARM_ORDER = ["A-default", "A-sensitivityscore", "A-trimaran"]
 ARM_LABEL = {
     "A-default": "default",
     "A-sensitivityscore": "SensitivityScore",
     "A-trimaran": "trimaran",
 }
-# Плечо, которое мы проверяем (его строку подсвечиваем).
+# Исследуемый планировщик (его строка в таблицах подсвечивается).
 HERO_ARM = "A-sensitivityscore"
 
 SCENARIO_LABEL = {
-    "pressure:io": "IO — дисковый шторм",
-    "pressure:net": "Net — сетевой шторм",
-    "pressure:llc": "LLC — шторм кэша/памяти",
+    "pressure:io": "Диск (IO): фоновая дисковая нагрузка",
+    "pressure:net": "Сеть (Net): фоновая сетевая нагрузка",
+    "pressure:llc": "Кэш (LLC): фоновая нагрузка на кэш и память",
 }
-# Профиль жертвы -> короткое имя сценария для шапки «сейчас».
-PROFILE_SCENARIO = {"high-s-io": "IO", "high-s-net": "Net", "high-s": "LLC"}
+# Профиль задачи -> сценарий, к которому она относится (для шапки «сейчас»).
+PROFILE_SCENARIO = {
+    "high-s-io": "pressure:io",
+    "high-s-net": "pressure:net",
+    "high-s": "pressure:llc",
+}
 
 
 def esc(s) -> str:
@@ -125,12 +133,15 @@ def stand_info() -> dict:
     return data
 
 
-def worker_node_count() -> int:
-    """Число worker-нод (без control-plane) для расчёта ожидаемых per-node
-    бейзлайнов. Через кэш stand_info; managed control-plane (STAGE) в списке
-    нод и так не отображается, on-prem кластеру цифра чуть завысит ожидание —
-    прогресс тогда консервативен, не сломан."""
-    return len(stand_info().get("nodes", [])) or 1
+def worker_node_count(cfg: dict | None = None) -> int:
+    """Число worker-узлов, участвующих в прогоне, для расчёта ожидаемых
+    per-node эталонных прогонов: все узлы кластера минус exclude_nodes
+    конфига (исключённые узлы харнесс обходит и в эталонах, и в матрице).
+    Через кэш stand_info; managed control-plane (STAGE) в списке узлов и так
+    не отображается."""
+    names = {row[0] for row in stand_info().get("nodes", []) if row}
+    excluded = set((cfg or {}).get("exclude_nodes", []))
+    return len(names - excluded) or 1
 
 
 # ------------------------------------------------------------- прогресс ----
@@ -200,7 +211,7 @@ def expected_rows(cfg: dict) -> dict[str, int]:
             profiles.append(v)
     baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
     if cfg.get("baseline", {}).get("per_node", True):
-        baseline_exp *= max(worker_node_count(), 1)
+        baseline_exp *= max(worker_node_count(cfg), 1)
     pressure_exp = sum(expected_by_scenario(cfg).values())
     return {"baseline": baseline_exp, "pressure": pressure_exp}
 
@@ -341,11 +352,11 @@ def baseline_summary(path: Path) -> dict:
 
 
 def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict) -> list[dict]:
-    """Краткий план всего эксперимента для шапки: этапы по порядку (бейзлайны
-    -> каждый pressure-сценарий -> анализ), у каждого — формула объёма
-    («3 плеча × 10 реп × 6 жертв»), сделано/ожидается и состояние
-    done|active|pending. Отвечает на вопросы «а что после этой фазы?» и
-    «какой вообще планчик?» без чтения config.yaml."""
+    """Краткий план эксперимента для шапки страницы: этапы по порядку
+    (эталонные прогоны -> каждый сценарий фоновой нагрузки -> анализ), у
+    каждого — формула объёма («3 планировщика × 10 повторений × 6 задач»),
+    сделано/ожидается и состояние done|active|partial|pending. План считается
+    из того же config.yaml, по которому работает харнесс."""
     variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
     arms = sum(len(variants) if c in ("A", "B") else 1 for c in cfg.get("configs", []))
 
@@ -356,16 +367,16 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
             profiles.append(v)
     b_reps = cfg.get("baseline", {}).get("repetitions", 5)
     per_node = cfg.get("baseline", {}).get("per_node", True)
-    nodes_n = max(worker_node_count(), 1) if per_node else 1
+    nodes_n = max(worker_node_count(cfg), 1) if per_node else 1
     b_exp = len(profiles) * b_reps * nodes_n
-    b_detail = f"{len(profiles)} проф × {b_reps} реп"
+    b_detail = f"{len(profiles)} профиля × {b_reps} повторения"
     if per_node:
-        b_detail = f"{len(profiles)} проф × {nodes_n} нод × {b_reps} реп"
+        b_detail = f"{len(profiles)} профиля × {nodes_n} узлов × {b_reps} повторения"
 
     stages: list[dict] = [{
         "key": "baseline",
-        "label": "Соло-бейзлайны (пин per-node)",
-        "detail": b_detail + " — знаменатели slowdown + fingerprint",
+        "label": "Эталонные прогоны (изолированно, на каждом узле)",
+        "detail": b_detail + " — нормировочная база для замедления",
         "done": min(baselines.get("rows", 0), b_exp),
         "expected": b_exp,
     }]
@@ -377,9 +388,10 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
         victims = sc.get("victim_count", 6)
         intensities = len(sc.get("aggressors_per_node", [1]))
         exp_i = arms * intensities * reps * victims
-        detail = f"{arms} плеча × {reps} реп × {victims} жертв"
+        detail = f"{arms} планировщика × {reps} повторений × {victims} задач"
         if intensities > 1:
-            detail = f"{arms} плеча × {intensities} инт. × {reps} реп × {victims} жертв"
+            detail = (f"{arms} планировщика × {intensities} уровня нагрузки × "
+                      f"{reps} повторений × {victims} задач")
         stages.append({
             "key": col,
             "label": scenario_label(col),
@@ -390,18 +402,19 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
 
     stages.append({
         "key": "analysis",
-        "label": "Анализ",
-        "detail": "analyze.py: Mann-Whitney/Holm/Cliff's δ, slowdown per-node, графики — секция ниже",
+        "label": "Статистический анализ",
+        "detail": "критерий Манна-Уитни с поправкой Холма, размер эффекта "
+                  "(Cliff's δ), нормированное замедление, графики — секция ниже",
         "done": 1 if report.get("exists") or (report.get("digest") or {}).get("exists") else 0,
         "expected": 1,
     })
 
-    # Состояния: всё добитое — done; первый недобитый этап — active, если
-    # прогон жив (для этапа «анализ» active не бывает — он запускается руками
-    # после прогона); остальные — pending. Особый случай: недобитые бейзлайны
-    # при уже идущей pressure-фазе — это НЕ активный этап, а долг «добрать»
-    # (например, в кластер добавили ноды посреди серии — per-node знаменатели
-    # для них появятся только после доп. прогона --baseline).
+    # Состояния: завершённый этап — done; первый незавершённый — active, пока
+    # прогон жив (этап анализа active не бывает — он запускается вручную после
+    # прогона); остальные — pending. Особый случай: незавершённые эталонные
+    # прогоны при уже идущей основной серии — не активный этап, а partial
+    # («дополнить»): например, после добавления узлов в кластер эталоны для
+    # них появятся только отдельным прогоном --baseline.
     active_assigned = False
     for st in stages:
         if st["done"] >= st["expected"] and st["expected"] > 0:
@@ -417,9 +430,9 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
 
 
 DIGEST_METRICS = [
-    ("makespan_s", "makespan, с", "{:.1f}"),
-    ("slowdown", "slowdown", "{:.2f}×"),
-    ("placement_regret", "regret", "{:.3f}"),
+    ("makespan_s", "время выполнения, с", "{:.1f}"),
+    ("slowdown", "замедление", "{:.2f}×"),
+    ("placement_regret", "ошибка размещения", "{:.3f}"),
 ]
 
 
@@ -549,7 +562,7 @@ def table(headers: list[str], rows: list[list], caption: str = "") -> str:
 
 
 def hero_now(d: dict) -> str:
-    """Крупная строка «что прямо сейчас»."""
+    """Крупная строка «что выполняется прямо сейчас»."""
     phase = d["phase"]
     act = d.get("activity") or {}
     reps = d.get("reps") or {}
@@ -557,25 +570,27 @@ def hero_now(d: dict) -> str:
         return "Прогон завершён ✓"
     if phase == "baseline":
         total = reps.get("baseline")
-        rep = f"rep {act['rep'] + 1}/{total}" if "rep" in act and total else ""
+        rep = (f"повторение {act['rep'] + 1} из {total}"
+               if "rep" in act and total else "")
         node = ""
         m = re.search(r"base-(worker-[\d.]+)-rep", act.get("job_id", ""))
         if m:
-            node = f" на {m.group(1).replace('worker-', 'w-')}"
+            node = f" · узел {m.group(1).replace('worker-', 'w-')}"
         prof = act.get("profile", "")
-        return f"Бейзлайн · {esc(prof)}{esc(node)} · {esc(rep)}".strip(" ·")
+        return f"Эталонный прогон · профиль {esc(prof)}{esc(node)} · {esc(rep)}".strip(" ·")
     if phase == "pressure":
-        sc = act.get("scenario") or "?"
+        sc_col = act.get("scenario") or ""
+        sc = scenario_label(sc_col) if sc_col else "?"
         arm = arm_label(act.get("arm", "?"))
-        total = (reps.get("pressure") or {}).get(
-            {"IO": "io", "Net": "net", "LLC": "llc"}.get(sc, ""), None
-        )
-        rep = f"rep {act['rep'] + 1}/{total}" if "rep" in act and total else (
-            f"rep {act['rep'] + 1}" if "rep" in act else ""
-        )
-        vic = f" · жертва v{act['victim']}" if act.get("victim") is not None else ""
-        return f"{esc(sc)}-шторм · плечо <b>{esc(arm)}</b> · {esc(rep)}{esc(vic)}".strip(" ·")
-    return "ожидание старта…"
+        total = (reps.get("pressure") or {}).get(sc_col.replace("pressure:", ""), None)
+        rep = (f"повторение {act['rep'] + 1} из {total}"
+               if "rep" in act and total
+               else (f"повторение {act['rep'] + 1}" if "rep" in act else ""))
+        vic = (f" · задача №{act['victim'] + 1}"
+               if act.get("victim") is not None else "")
+        return (f"Сценарий «{esc(sc)}» · планировщик <b>{esc(arm)}</b> · "
+                f"{esc(rep)}{esc(vic)}").strip(" ·")
+    return "ожидание запуска…"
 
 
 def plan_section(plan: list[dict]) -> str:
@@ -590,13 +605,13 @@ def plan_section(plan: list[dict]) -> str:
         mark, cls = icon.get(st["state"], ("○", "dim"))
         if st["key"] == "analysis":
             # У анализа счётчик 0/1 не информативен — словами честнее.
-            count = "готов" if st["state"] == "done" else "после прогона, руками"
+            count = "готов" if st["state"] == "done" else "выполняется после прогона"
         else:
             count = f"{st['done']}/{st['expected']}"
             if st["state"] == "active" and st["expected"]:
                 count += f" · {round(100 * st['done'] / st['expected'])}%"
             elif st["state"] == "partial":
-                count += " · добрать после серии"
+                count += " · дополнить после серии (добавлены узлы)"
         rows.append(
             f"<div class='st {cls}'><span class='mark'>{mark}</span>"
             f"<span class='lbl'>{esc(st['label'])}</span>"
@@ -607,7 +622,7 @@ def plan_section(plan: list[dict]) -> str:
 
 
 def storm_cell(m: dict, is_best: bool) -> str:
-    """Ячейка «в шторм»: N/measured (pct%), цвет по величине доли."""
+    """Ячейка «на перегруженный узел»: N из измеренных (доля %), цвет по доле."""
     pct = m.get("storm_pct")
     if pct is None:
         return "<td class='dim'>—</td>"
@@ -621,12 +636,13 @@ def storm_cell(m: dict, is_best: bool) -> str:
 
 def money_section(res: dict) -> str:
     if not res.get("exists"):
-        return "<p class='dim'>результатов ещё нет — начнётся с первой жертвы pressure-фазы</p>"
+        return ("<p class='dim'>результатов ещё нет — появятся с первой "
+                "задачей основной серии</p>")
     if "error" in res:
         return f"<p class='err'>{esc(res['error'])}</p>"
     scs = res.get("scenarios") or {}
     if not scs:
-        return "<p class='dim'>pressure-строк ещё нет</p>"
+        return "<p class='dim'>строк основной серии ещё нет</p>"
     parts: list[str] = []
     for sc in sorted(scs):
         info = scs[sc]
@@ -639,15 +655,15 @@ def money_section(res: dict) -> str:
 
         prog = ""
         if info.get("expected"):
-            prog = f" · <span class='dim'>{info['done']}/{info['expected']} строк</span>"
+            prog = f" · <span class='dim'>{info['done']}/{info['expected']} измерений</span>"
         parts.append(
             f"<h3>{esc(scenario_label(sc))} "
-            f"<small class='dim'>шторм на {esc(info['storm_node'].replace('worker-', 'w-'))}"
-            f"{prog}</small></h3>"
+            f"<small class='dim'>перегружен узел "
+            f"{esc(info['storm_node'].replace('worker-', 'w-'))}{prog}</small></h3>"
         )
 
-        head = ("<tr><th>плечо</th><th>в шторм</th>"
-                "<th>makespan, с</th><th>regret</th></tr>")
+        head = ("<tr><th>планировщик</th><th>задач на перегруженный узел</th>"
+                "<th>время выполнения, с</th><th>ошибка размещения</th></tr>")
         body = []
         for a in ordered:
             m = arms[a]
@@ -662,24 +678,28 @@ def money_section(res: dict) -> str:
             )
         parts.append(f"<table class='money'>{head}{''.join(body)}</table>")
 
-        # Однострочный вывод, если есть все данные.
+        # Вывод одной строкой, когда данные по всем планировщикам уже есть.
         if best is not None and HERO_ARM in arms and arms[HERO_ARM]["storm_pct"] is not None:
             hero_pct = arms[HERO_ARM]["storm_pct"]
             others = [
-                f"{arm_label(a)} {arms[a]['storm_pct']}%"
+                f"{arm_label(a)} — {arms[a]['storm_pct']}%"
                 for a in ordered
                 if a != HERO_ARM and arms[a]["storm_pct"] is not None
             ]
-            verdict = "✓ ведёт" if hero_pct == best else "△ пока не лучший"
+            good = hero_pct == best
+            verdict = "✓ лучший результат" if good else "△ пока не лучший"
             parts.append(
-                f"<p class='takeaway'>SensitivityScore увёл в шторм "
-                f"<b>{hero_pct}%</b> жертв против {', '.join(others) or '—'} "
-                f"<span class='{'good' if hero_pct == best else 'warn'}'>{verdict}</span></p>"
+                f"<p class='takeaway'>SensitivityScore направил на перегруженный "
+                f"узел <b>{hero_pct}%</b> задач ({', '.join(others) or '—'}) "
+                f"<span class='{'good' if good else 'warn'}'>{verdict}</span></p>"
             )
     parts.append(
-        "<p class='note dim'>«в шторм» = доля жертв, севших на штормимую ноду "
-        "(меньше — лучше, это прямая метрика решения планировщика). makespan на "
-        "STAGE смещён неоднородностью нод — честная нормировка (slowdown-per-node) "
+        "<p class='note dim'>«Задач на перегруженный узел» — доля задач, "
+        "размещённых планировщиком на узел с фоновой нагрузкой (меньше — "
+        "лучше; прямой показатель качества решения). «Ошибка размещения» — "
+        "превышение интерференции выбранного узла над лучшим доступным на "
+        "момент решения, 0..1. Среднее время выполнения без нормировки "
+        "смещено неоднородностью узлов — нормированное замедление считается "
         "в секции «Анализ» после прогона.</p>"
     )
     return "".join(parts)
@@ -690,12 +710,12 @@ def baseline_section(d: dict) -> str:
         return "<p class='dim'>файла ещё нет</p>"
     if "error" in d:
         return f"<p class='err'>{esc(d['error'])}</p>"
-    head = f"<p class='dim'>{d['rows']} строк · обновлён {esc(d.get('mtime','?'))}</p>"
+    head = f"<p class='dim'>{d['rows']} измерений · обновлено {esc(d.get('mtime','?'))}</p>"
     matrix = d.get("matrix")
     if not matrix:
         return head + "<p class='dim'>— пусто —</p>"
     nodes = d["nodes"]
-    th = "<th>профиль</th>" + "".join(
+    th = "<th>профиль задачи</th>" + "".join(
         f"<th>{esc(n.replace('worker-', 'w-'))}</th>" for n in nodes
     )
     rows = []
@@ -707,7 +727,9 @@ def baseline_section(d: dict) -> str:
         rows.append(f"<tr><td><b>{esc(prof)}</b></td>{cells}</tr>")
     return (
         head
-        + "<table><caption>медианный соло-makespan, с — знаменатели slowdown</caption>"
+        + "<table><caption>медианное время изолированного выполнения, с — "
+        "нормировочная база; разброс между узлами = аппаратная "
+        "неоднородность кластера</caption>"
         + f"<tr>{th}</tr>{''.join(rows)}</table>"
     )
 
@@ -719,15 +741,16 @@ def cluster_section(d: dict) -> str:
     jobs = cl.get("jobs", [])
     active_jobs = sum(1 for j in jobs if len(j) >= 2 and j[1] not in ("", "<none>"))
     badge = (
-        f"<span class='chip {'good' if running else 'dim'}'>агрессоры: {running} Running</span> "
-        f"<span class='chip'>активных Job'ов жертв: {active_jobs}</span>"
+        f"<span class='chip {'good' if running else 'dim'}'>генераторы фоновой "
+        f"нагрузки: {running} активны</span> "
+        f"<span class='chip'>задач выполняется: {active_jobs}</span>"
     )
     aggr_rows = [[a[0], a[1].replace("worker-", "w-") if len(a) > 1 else "", a[2] if len(a) > 2 else ""] for a in aggr]
     return (
         f"<p>{badge}</p>"
-        "<details><summary class='dim'>подробнее (Job'ы жертв / агрессоры)</summary>"
-        + "<h4>Агрессоры</h4>" + table(["под", "нода", "фаза"], aggr_rows)
-        + "<h4>Job'ы жертв</h4>" + table(["job", "active"], jobs)
+        "<details><summary class='dim'>подробнее (задачи / генераторы нагрузки)</summary>"
+        + "<h4>Генераторы фоновой нагрузки</h4>" + table(["под", "узел", "состояние"], aggr_rows)
+        + "<h4>Задачи</h4>" + table(["задача", "выполняется"], jobs)
         + "</details>"
     )
 
@@ -807,8 +830,9 @@ def digest_section(dig: dict) -> str:
     scs = dig.get("scenarios") or {}
     if not scs:
         return "<p class='dim'>сравнений ещё нет</p>"
-    parts = [f"<p class='dim'>обновлён {esc(dig.get('mtime','?'))} · "
-             "✓ SensitivityScore значимо лучше (Holm p&lt;0.05), · нет разницы</p>"]
+    parts = [f"<p class='dim'>обновлено {esc(dig.get('mtime','?'))} · "
+             "✓ — преимущество SensitivityScore статистически значимо "
+             "(p&lt;0.05 с поправкой Холма); · — различие не значимо</p>"]
     for sc in sorted(scs):
         metrics = scs[sc]
         opponents = []
@@ -819,8 +843,8 @@ def digest_section(dig: dict) -> str:
         opp_order = [a for a in ARM_ORDER if a in opponents] + [
             a for a in opponents if a not in ARM_ORDER
         ]
-        head = ("<tr><th>метрика</th><th>SensitivityScore</th>"
-                + "".join(f"<th>vs {esc(arm_label(a))}</th>" for a in opp_order)
+        head = ("<tr><th>показатель</th><th>SensitivityScore</th>"
+                + "".join(f"<th>против {esc(arm_label(a))}</th>" for a in opp_order)
                 + "</tr>")
         rows = []
         for m in metrics:
@@ -875,9 +899,9 @@ def report_section(rep: dict) -> str:
 
 
 PHASE_META = {
-    "DONE": ("#22a06b", "готово"),
-    "pressure": ("#e8590c", "pressure"),
-    "baseline": ("#1c7ed6", "baseline"),
+    "DONE": ("#22a06b", "завершено"),
+    "pressure": ("#e8590c", "основная серия"),
+    "baseline": ("#1c7ed6", "эталонные прогоны"),
     "not started": ("#868e96", "ожидание"),
 }
 
@@ -891,11 +915,11 @@ def render_html(d: dict) -> str:
     bar = ""
     if pct is not None:
         eta = (
-            f"ETA ~{prog['eta']} · осталось ~{prog['eta_minutes']} мин"
+            f"ожидаемое завершение ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
             if "eta" in prog
             else ""
         )
-        phase_pct = f"фаза {phase_word}: {prog['phase_pct']}%" if "phase_pct" in prog else ""
+        phase_pct = f"этап «{phase_word}»: {prog['phase_pct']}%" if "phase_pct" in prog else ""
         meta = " · ".join(x for x in (phase_pct, eta) if x)
         bar = f"""<div class="prog">
 <div class="barbg"><div class="bar" style="background:{color};width:{pct}%"></div>
@@ -1005,32 +1029,32 @@ a{{color:#4c8dff}}
 {plan_section(d.get('plan') or [])}
 
 <div class="card">
-  <h2>Результат — куда садятся жертвы</h2>
+  <h2>Размещение задач по планировщикам</h2>
   {money_section(d['results'])}
 </div>
 
 <div class="card">
-  <h2>Кластер сейчас</h2>
+  <h2>Текущее состояние кластера</h2>
   {cluster_section(d)}
 </div>
 
 <div class="card">
-  <h2>Бейзлайны <span class='dim' style='font-weight:400;font-size:.8em'>(соло, знаменатели slowdown)</span></h2>
+  <h2>Эталонные прогоны <span class='dim' style='font-weight:400;font-size:.8em'>(каждая задача изолированно на каждом узле — база нормировки)</span></h2>
   {baseline_section(d['baselines'])}
 </div>
 
 <div class="card">
-  <h2>Анализ</h2>
+  <h2>Статистический анализ</h2>
   {report_section(d['report'])}
 </div>
 
 <details class="card" data-k="standlogs">
-  <summary>Стенд и логи</summary>
+  <summary>Стенд и журнал прогона</summary>
   <p class='dim'>{esc(st.get('server',''))}</p>
-  {table(["нода", "kubelet", "ядро", "cpu", "mem"], st.get("nodes", []))}
-  <h4>Хвост лога</h4>
+  {table(["узел", "kubelet", "ядро ОС", "CPU", "память"], st.get("nodes", []))}
+  <h4>Последние строки журнала</h4>
   <pre>{esc(chr(10).join(d['log_tail']))}</pre>
-  <h4>Ошибки в логе (последние)</h4>
+  <h4>Последние ошибки в журнале</h4>
   <pre>{esc(chr(10).join(d['log_errors']) or '—')}</pre>
 </details>
 
