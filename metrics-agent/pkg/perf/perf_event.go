@@ -237,8 +237,11 @@ func OpenPodCgroup(cgroupPath string) (*os.File, error) {
 // NOTE: this probe used to fail with EINVAL "on WSL2/Docker Desktop", which
 // was blamed on the hypervisor — that was actually the cpu == -1 bug in
 // OpenCgroupCounter (cgroup events require cpu >= 0). With that fixed the
-// cgroup-scoped probe succeeds and counts on WSL2, VMware, and bare metal
-// alike; a failure now is a real environment issue, not this artifact.
+// probe opens and counts on WSL2 (confirmed real cache-miss counts). A
+// zero/failed read now reflects the actual environment, not this bug — e.g.
+// VMware Workstation Pro opens fine but reads exactly zero (its vPMU doesn't
+// seem to virtualize cgroup-scoped cache-event counting), which is exactly
+// the "opened but zero" inconclusive case handled below.
 //
 // It also treats "opened fine but read exactly zero after real memory
 // activity" as unavailable: a hypervisor can fake syscall success without
