@@ -62,19 +62,10 @@ func newRatioSampler(cgroupPath string, open counterPair) (*RatioSampler, error)
 
 // NewLLCMissRatioSampler samples llc_misses / llc_references for the pod
 // cgroup at cgroupPath — the LLC dimension of the PressureVector (docs §3.1).
+// The pair is opened as one perf group per CPU (LLCPair) so numerator and
+// denominator are co-scheduled under multiplexing — see OpenCgroupCounterPair.
 func NewLLCMissRatioSampler(cgroupPath string) (*RatioSampler, error) {
-	return newRatioSampler(cgroupPath, func(fd int) (*Counter, *Counter, error) {
-		num, err := LLCMissesCounter(fd)
-		if err != nil {
-			return nil, nil, err
-		}
-		den, err := LLCReferencesCounter(fd)
-		if err != nil {
-			num.Close()
-			return nil, nil, err
-		}
-		return num, den, nil
-	})
+	return newRatioSampler(cgroupPath, LLCPair)
 }
 
 // NewNUMARemoteRatioSampler samples node-load-misses / node-loads — the share
@@ -84,18 +75,7 @@ func NewLLCMissRatioSampler(cgroupPath string) (*RatioSampler, error) {
 // perf_event_open error — callers should treat that as "NUMA dimension
 // unavailable on this host" (warn once, keep 0), not retry per tick.
 func NewNUMARemoteRatioSampler(cgroupPath string) (*RatioSampler, error) {
-	return newRatioSampler(cgroupPath, func(fd int) (*Counter, *Counter, error) {
-		num, err := NodeLoadMissesCounter(fd)
-		if err != nil {
-			return nil, nil, err
-		}
-		den, err := NodeLoadsCounter(fd)
-		if err != nil {
-			num.Close()
-			return nil, nil, err
-		}
-		return num, den, nil
-	})
+	return newRatioSampler(cgroupPath, NodePair)
 }
 
 // SampleDeltas returns the raw numerator/denominator deltas over the window

@@ -168,21 +168,35 @@ trimaran-deps: ## Установить metrics-server (нужен профилю
 	$(KUBECTL) rollout status deployment/metrics-server -n kube-system --timeout=120s
 
 # ---------------------------------------------------------------------------
-# PMU smoke-test (Фаза 4, шаг 0) — проверить доступность perf_event_open()
-# ДО того, как разворачивать весь metrics-agent DaemonSet. Особенно важно
-# для Docker Desktop: Kubernetes там работает внутри VM, доступ к PMU может
-# быть заблокирован гипервизором — см. metrics-agent/cmd/perfcheck/main.go.
+# PMU smoke-test (Этап 0, шаг 1а) — проверить, что cgroup-scoped
+# perf_event_open() на КОНКРЕТНОМ узле не только открывается, но и ЧЕСТНО
+# считает, ДО разворачивания metrics-agent DaemonSet. Прежний EINVAL «везде»
+# был нашим багом (cpu=-1, исправлен) — теперь perfcheck ловит не код, а
+# честность железа/гипервизора: open OK + read>0 = честно; open OK + read=0 =
+# гипервизор подделывает счётчик (наблюдалось на VMware Workstation; Timeweb-
+# KVM и bare-metal считают честно); FAILED to open = права/paranoid/политика.
+# Узлы бывают неоднородны — гоняй per-node: `make perfcheck-run NODE=<имя>`
+# (без NODE под встаёт куда придётся). См. metrics-agent/cmd/perfcheck/main.go.
 # ---------------------------------------------------------------------------
- 
+
 .PHONY: perfcheck-image
 perfcheck-image: ## Собрать образ perfcheck (изолированная PMU-проверка)
 	docker build -t andreyza/perfcheck:dev -f metrics-agent/cmd/perfcheck/Dockerfile ./metrics-agent
- 
+
+.PHONY: perfcheck-push
+perfcheck-push: ## Запушить образ perfcheck в registry (узлы тянут его с imagePullPolicy: Always)
+	docker push andreyza/perfcheck:dev
+
 .PHONY: perfcheck-run
-perfcheck-run: ## Засабмитить разовый под perfcheck
+perfcheck-run: ## Засабмитить разовый под perfcheck (NODE=<имя> — прибить к конкретному узлу)
 	$(KUBECTL) delete pod perfcheck --ignore-not-found
-	$(KUBECTL) apply -f metrics-agent/cmd/perfcheck/pod.yaml
- 
+	@if [ -n "$(NODE)" ]; then \
+		echo "perfcheck: pinning to node $(NODE)"; \
+		sed "s|__NODE__|$(NODE)|" metrics-agent/cmd/perfcheck/pod.yaml | $(KUBECTL) apply -f -; \
+	else \
+		grep -v '__NODE__' metrics-agent/cmd/perfcheck/pod.yaml | $(KUBECTL) apply -f -; \
+	fi
+
 .PHONY: perfcheck-logs
 perfcheck-logs: ## Посмотреть результат (после того, как под завершится — STATUS Completed/Error)
 	$(KUBECTL) logs pod/perfcheck
@@ -197,7 +211,9 @@ perfcheck-clean: ## Убрать под perfcheck
 # НЕ на одной ноде: same-node трафик мостится локально через veth и не
 # касается физического NIC). Даёт NET_REFERENCE_MBPS для нормировки net_bw в
 # net_pressure — см. docs/Технический план экспериментов.md §3.4.
-# Только измерительная половина: код net_pressure в агенте — пока TODO.
+# Код net_pressure в агенте реализован end-to-end (main.go:netPressure,
+# writer.go); netcheck — операционная половина: измерить референс и выставить
+# NET_REFERENCE_MBPS на DaemonSet.
 # ---------------------------------------------------------------------------
 
 .PHONY: netcheck-run

@@ -1,21 +1,25 @@
 // Command perfcheck is a minimal, standalone smoke test for whether
-// perf_event_open()-based PMU counters are actually accessible in the
-// current environment — BEFORE building/deploying the full metrics-agent
-// DaemonSet + Redis pipeline.
+// cgroup-scoped perf_event_open() PMU counters on a given node not only
+// OPEN but actually COUNT honestly — BEFORE building/deploying the full
+// metrics-agent DaemonSet + Redis pipeline.
 //
-// Why this matters specifically for local Docker Desktop testing: Docker
-// Desktop's Kubernetes runs inside a Linux VM (not on bare metal), and
-// access to hardware performance counters from within a VM guest is
-// frequently blocked or faked by the hypervisor unless PMU passthrough is
-// explicitly enabled — this is the exact same concern already documented
-// in docs/Технический_план_экспериментов.md §3.3 for KubeVirt VMs, just
-// applying here to the Docker Desktop VM itself. Better to find out with a
+// Why this matters: for a long time cgroup-scoped opens failed with EINVAL
+// "everywhere" and it was wrongly blamed on the hypervisor. That EINVAL was
+// a bug in OUR code (cgroup events are per-CPU and need cpu>=0; we passed
+// cpu=-1) — now fixed. So perfcheck no longer tests our code; it tests the
+// honesty of the specific hardware/hypervisor, which genuinely varies:
+//   - bare metal and Timeweb-cloud (KVM): open OK, reads real non-zero counts;
+//   - VMware Workstation Pro: open OK, but reads exactly 0 — its vPMU fakes
+//     syscall success without backing cgroup-scoped cache counting;
+//   - hardened kernels / missing CAP_PERFMON: open FAILS (permissions).
+//
+// Nodes on one stand can differ, so run per node. Better to find out with a
 // 10-line program than after wiring the whole agent/Redis/plugin chain.
 //
 // Usage: run as a pod with CAP_PERFMON, scoped to its own cgroup (self)
 // rather than a specific pod's cgroup — that part of the real agent
-// (cgroup path resolution) isn't being tested here, only the underlying
-// syscall's availability.
+// (cgroup path resolution) isn't being tested here, only whether the
+// underlying syscall opens AND counts.
 package main
 
 import (
@@ -39,8 +43,9 @@ func main() {
 	counter, err := perf.LLCMissesCounter(int(cgroupFile.Fd()))
 	if err != nil {
 		fmt.Printf("[perfcheck] FAILED to open perf counter: %v\n", err)
-		fmt.Println("[perfcheck] this means perf_event_open() is not usable here —")
-		fmt.Println("[perfcheck] likely blocked by the hypervisor (Docker Desktop's VM) or missing CAP_PERFMON.")
+		fmt.Println("[perfcheck] cgroup-scoped perf_event_open() could not open here —")
+		fmt.Println("[perfcheck] most likely permissions: missing CAP_PERFMON, or perf_event_paranoid")
+		fmt.Println("[perfcheck] too high / a hardened-kernel policy. (EINVAL from the old cpu=-1 bug is fixed.)")
 		os.Exit(1)
 	}
 	defer counter.Close()

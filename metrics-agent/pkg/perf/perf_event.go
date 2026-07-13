@@ -37,6 +37,12 @@ type Counter struct {
 // /sys/devices/system/cpu/online (e.g. "0-15" or "0,2-4,7"). A cgroup event
 // must target an online CPU. Falls back to 0..NumCPU-1 if the file is
 // unreadable (extremely rare — sysfs not mounted).
+//
+// The list is read once per Counter open, not tracked live: if a CPU is
+// hot-unplugged later, reads on its fd return EOF -> the sampler errors out,
+// is dropped, and the next tick's re-open picks up the new topology. Cloud
+// VMs and the target stands don't hotplug CPUs, so a churn loop here is
+// accepted rather than coded around.
 func onlineCPUs() ([]int, error) {
 	data, err := os.ReadFile("/sys/devices/system/cpu/online")
 	if err != nil {
@@ -116,15 +122,101 @@ func OpenCgroupCounter(cgroupFD int, name string, typ uint32, config uint64) (*C
 	return c, nil
 }
 
+// eventSpec identifies one hardware event for the pair opener below.
+type eventSpec struct {
+	name   string
+	typ    uint32
+	config uint64
+}
+
+// OpenCgroupCounterPair opens a numerator/denominator pair as ONE perf group
+// per CPU: the numerator is the group leader, the denominator a member opened
+// with groupFD = the leader's fd for that same CPU. The kernel then schedules
+// both onto the PMU atomically together — under counter multiplexing (many
+// monitored pods × few hardware counters, the normal state on a busy node)
+// ungrouped events land in DIFFERENT time slices, and a ratio of two events
+// measured over different windows is biased, not just noisy. Grouping is how
+// `perf stat -e a,b` keeps ratios honest, and the pair costs the same two
+// counters as before.
+//
+// Leaders are created disabled (Counter.Enable() on the numerator starts each
+// group); members are created enabled so they simply follow their leader's
+// schedule — calling Enable() on the denominator too is a harmless no-op.
+func OpenCgroupCounterPair(cgroupFD int, num, den eventSpec) (*Counter, *Counter, error) {
+	cpus, err := onlineCPUs()
+	if err != nil {
+		return nil, nil, fmt.Errorf("enumerate online CPUs for %s/%s: %w", num.name, den.name, err)
+	}
+
+	numC := &Counter{name: num.name, fds: make([]int, 0, len(cpus))}
+	denC := &Counter{name: den.name, fds: make([]int, 0, len(cpus))}
+	fail := func(cpu int, which string, err error) (*Counter, *Counter, error) {
+		numC.Close()
+		denC.Close()
+		return nil, nil, fmt.Errorf("perf_event_open(%s) cpu=%d: %w", which, cpu, err)
+	}
+	for _, cpu := range cpus {
+		leaderAttr := unix.PerfEventAttr{
+			Type:   num.typ,
+			Config: num.config,
+			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:   unix.PerfBitDisabled | unix.PerfBitInherit,
+		}
+		leaderFD, err := unix.PerfEventOpen(&leaderAttr, cgroupFD, cpu, -1, unix.PERF_FLAG_PID_CGROUP)
+		if err != nil {
+			return fail(cpu, num.name, err)
+		}
+		numC.fds = append(numC.fds, leaderFD)
+
+		memberAttr := unix.PerfEventAttr{
+			Type:   den.typ,
+			Config: den.config,
+			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:   unix.PerfBitInherit, // NOT disabled: follows the leader
+		}
+		memberFD, err := unix.PerfEventOpen(&memberAttr, cgroupFD, cpu, leaderFD, unix.PERF_FLAG_PID_CGROUP)
+		if err != nil {
+			return fail(cpu, den.name, err)
+		}
+		denC.fds = append(denC.fds, memberFD)
+	}
+	return numC, denC, nil
+}
+
+// LLCPair opens llc_misses (leader) + llc_references (member) as one group per
+// CPU — the honest way to measure llc_miss_rate = misses / references under
+// multiplexing (see OpenCgroupCounterPair).
+func LLCPair(cgroupFD int) (num, den *Counter, err error) {
+	return OpenCgroupCounterPair(cgroupFD,
+		eventSpec{"llc_misses", unix.PERF_TYPE_HARDWARE, unix.PERF_COUNT_HW_CACHE_MISSES},
+		eventSpec{"llc_references", unix.PERF_TYPE_HARDWARE, unix.PERF_COUNT_HW_CACHE_REFERENCES},
+	)
+}
+
+// NodePair opens node_load_misses (leader) + node_loads (member) as one group
+// per CPU — numerator/denominator of numa_remote_ratio (see NodeLoadsCounter /
+// NodeLoadMissesCounter for the event semantics).
+func NodePair(cgroupFD int) (num, den *Counter, err error) {
+	nodeMiss := hwCacheConfig(unix.PERF_COUNT_HW_CACHE_NODE,
+		unix.PERF_COUNT_HW_CACHE_OP_READ, unix.PERF_COUNT_HW_CACHE_RESULT_MISS)
+	nodeLoad := hwCacheConfig(unix.PERF_COUNT_HW_CACHE_NODE,
+		unix.PERF_COUNT_HW_CACHE_OP_READ, unix.PERF_COUNT_HW_CACHE_RESULT_ACCESS)
+	return OpenCgroupCounterPair(cgroupFD,
+		eventSpec{"node_load_misses", unix.PERF_TYPE_HW_CACHE, nodeMiss},
+		eventSpec{"node_loads", unix.PERF_TYPE_HW_CACHE, nodeLoad},
+	)
+}
+
 // LLCMissesCounter opens PERF_COUNT_HW_CACHE_MISSES (LL cache misses), per the
-// counter table in docs §3.1.
+// counter table in docs §3.1. Standalone (ungrouped) — used by the startup
+// probe; the sampler's ratio path uses LLCPair.
 func LLCMissesCounter(cgroupFD int) (*Counter, error) {
 	return OpenCgroupCounter(cgroupFD, "llc_misses",
 		unix.PERF_TYPE_HARDWARE, unix.PERF_COUNT_HW_CACHE_MISSES)
 }
 
-// LLCReferencesCounter opens PERF_COUNT_HW_CACHE_REFERENCES — used as the
-// normalization denominator for llc_miss_rate = misses / references.
+// LLCReferencesCounter opens PERF_COUNT_HW_CACHE_REFERENCES — kept for
+// completeness/manual checks; the sampler uses LLCPair.
 func LLCReferencesCounter(cgroupFD int) (*Counter, error) {
 	return OpenCgroupCounter(cgroupFD, "llc_references",
 		unix.PERF_TYPE_HARDWARE, unix.PERF_COUNT_HW_CACHE_REFERENCES)

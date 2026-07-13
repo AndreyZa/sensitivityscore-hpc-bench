@@ -1,14 +1,19 @@
-# Разовый под для проверки, доступны ли PMU-счётчики через perf_event_open()
-# в текущей среде — ПЕРЕД тем, как собирать и деплоить весь metrics-agent
-# DaemonSet. См. metrics-agent/cmd/perfcheck/main.go — почему это важно
-# именно для Docker Desktop (Kubernetes внутри VM, доступ к PMU может быть
-# заблокирован гипервизором).
+# Разовый под для проверки, что cgroup-scoped PMU-счётчики через
+# perf_event_open() на узле не только открываются, но и ЧЕСТНО считают —
+# ПЕРЕД тем, как собирать и деплоить весь metrics-agent DaemonSet. См.
+# metrics-agent/cmd/perfcheck/main.go: open OK + read>0 = честно, read=0 =
+# гипервизор подделывает счётчик, FAILED = права/paranoid.
+#
+# Строка nodeName ниже — плейсхолдер для `make perfcheck-run`: с NODE=<имя>
+# он подставляет узел (прибить к конкретной ноде на неоднородном стенде),
+# без NODE — эта строка вырезается (обычное планирование).
 apiVersion: v1
 kind: Pod
 metadata:
   name: perfcheck
 spec:
   restartPolicy: Never
+  nodeName: __NODE__
   containers:
     - name: perfcheck
       image: andreyza/perfcheck:dev

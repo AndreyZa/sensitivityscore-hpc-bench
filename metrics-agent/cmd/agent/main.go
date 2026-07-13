@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -32,6 +33,14 @@ func main() {
 	nodeName := mustEnv("NODE_NAME") // injected via fieldRef: spec.nodeName, see deploy/daemonset.yaml
 	redisAddr := envOr("REDIS_ADDR", "redis.sensitivityscore-system.svc.cluster.local:6379")
 	sampleInterval := sampleIntervalFromEnv()
+
+	// cgroup-scoped perf is inherently per-CPU (see pkg/perf.Counter), so a
+	// sampled pod costs (#counters × #CPUs) fds: trivial on a 2-vCPU cloud
+	// node, but ~4×128 per pod on a big bare-metal worker — on a busy node
+	// that can brush against a conservative soft RLIMIT_NOFILE. Raise soft to
+	// hard up front (same budget `perf stat --cgroup` needs) and log it, so
+	// "too many open files" never silently degrades sampling mid-series.
+	raiseNoFileLimit()
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -473,6 +482,24 @@ func envOr(key, def string) string {
 // default 5s cadence: the first tick after a pod appears only primes the
 // baseline (see podSampler.sample), so anything shorter-lived than ~2x the
 // interval is invisible to the agent regardless of how long it actually ran.
+// raiseNoFileLimit lifts the soft RLIMIT_NOFILE to the hard limit (see the
+// call site in main for why the agent needs the headroom).
+func raiseNoFileLimit() {
+	var rl unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &rl); err != nil {
+		log.Printf("getrlimit(NOFILE): %v (leaving default)", err)
+		return
+	}
+	if rl.Cur < rl.Max {
+		rl.Cur = rl.Max
+		if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &rl); err != nil {
+			log.Printf("setrlimit(NOFILE %d->%d): %v (continuing with soft=%d)", rl.Cur, rl.Max, err, rl.Cur)
+			return
+		}
+	}
+	log.Printf("RLIMIT_NOFILE: %d (per-pod perf fd cost = #counters × #CPUs)", rl.Cur)
+}
+
 // netReferenceFromEnv reads the NET_REFERENCE_MBPS calibration (see main).
 // Unset/empty means "Net dimension off" (returns 0); a malformed or negative
 // value is a config error worth failing loudly on, like SAMPLE_INTERVAL_SECONDS.

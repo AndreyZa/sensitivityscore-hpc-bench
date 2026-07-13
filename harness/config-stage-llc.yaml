@@ -1,0 +1,105 @@
+# config-stage-llc.yaml — LLC-абляция на STAGE: отдельная серия с весом
+# ТОЛЬКО llc. Не смешивается с io+net серией (config-stage.yaml) намеренно:
+#   - чистая атрибуция (llc-only score => решения планировщика объясняются
+#     одной осью; --hdd/--stream агрессоры поднимают и чужие оси);
+#   - у идущей серии свои weights.json/score_weights — этот файл можно
+#     готовить и коммитить, не трогая прогон.
+#
+# LLC на STAGE ИЗМЕРИМ: EINVAL был багом cpu=-1 (fixed 1ad7aab), perfcheck
+# намерил ~3.1M cache-misses на w5; пары счётчиков теперь perf-группы per-CPU
+# (числитель+знаменатель co-scheduled — честный ratio под мультиплексингом).
+#
+# ПЕРЕД запуском серии (после завершения io+net!):
+#   1. rollout агента (образ с PMU-фиксом + группировкой):
+#      kubectl -n sensitivityscore-system rollout restart ds/sensitivityscore-metrics-agent
+#      kubectl -n sensitivityscore-system logs ds/... | grep "RLIMIT_NOFILE"
+#   2. weights.json ConfigMap -> llc-only (СОВПАДАЕТ с score_weights ниже):
+#      kubectl -n sensitivityscore-system patch cm sensitivity-config --type merge \
+#        -p '{"data":{"weights.json":"{\"llc\": 1.0, \"numa\": 0.0, \"net\": 0.0, \"io\": 0.0}\n"}}'
+#      (обратно для io+net: {"llc":0,"numa":0,"net":1,"io":1})
+#   3. smoke LLC-сигнала: 2x stress-ng --stream на w7 ->
+#      redis-cli hget node:metrics:worker-192.168.0.7 llc_miss_rate должен
+#      подняться заметно выше w5/w6, и БЕЗ поля approximation.
+#   4. ./run-stage-llc.sh (сначала бейзлайны — high-s в общем файле нет).
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - low-s   # llc=low — контраст fingerprint (теперь с РЕАЛЬНЫМИ llc-числами)
+  - high-s  # llc=high — жертва LLC-сценария
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+# Абляция: только LLC. NUMA=0 честно (1 домен на ноду, node-события ENOENT);
+# net/io=0 — осознанный выбор серии, а не ограничение стенда.
+score_weights:
+  llc: 1.0
+  numa: 0.0
+  net: 0.0
+  io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+# LLC-шторм: stress-ng --stream (STREAM-подобный полутёр памяти) вытесняет
+# чужие данные из LLC и забивает полосу. Та же логика ловушки, что в io/net:
+# самая «пустая» нода + агрессоры-невидимки по requests.
+pressure_scenarios:
+  - name: llc
+    victim_profile: high-s
+    victim_count: 6
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    pressured_node_count: 1
+    aggressor_nodes: ["worker-192.168.0.7"]
+    stabilize_seconds: 30
+    repetitions: 10
+    aggressor_args: ["--stream", "2"]
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  # per_node (дефолт true) — знаменатели slowdown per (profile, node); у llc-
+  # серии свой файл бейзлайнов: профиля high-s в baselines-stage.parquet нет.
+  # 2 профиля x 3 ноды x 3 репы ~ 30-35 мин.
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-llc.parquet"
+  baselines_file: "baselines-stage-llc.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
