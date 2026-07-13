@@ -54,8 +54,15 @@ def worker_node_count(cfg: dict | None = None) -> int:
     return len(names - excluded) or 1
 
 
+_SNAP_CACHE: dict = {"ts": 0.0, "data": {}}
+SNAP_TTL_SECONDS = 5  # частое авто-обновление страницы не должно долбить API
+
+
 def kubectl_snapshot() -> dict:
     """Живые Job'ы и генераторы фоновой нагрузки в bench-неймспейсе."""
+    now = time.time()
+    if now - _SNAP_CACHE["ts"] < SNAP_TTL_SECONDS and _SNAP_CACHE["data"]:
+        return _SNAP_CACHE["data"]
     out: dict = {}
     for name, cmd in {
         "jobs": ["kubectl", "get", "jobs", "-n", "sensitivityscore-bench",
@@ -74,4 +81,5 @@ def kubectl_snapshot() -> dict:
             )
         except Exception as e:  # noqa: BLE001
             out[name] = [[f"({e})"]]
+    _SNAP_CACHE.update(ts=now, data=out)
     return out

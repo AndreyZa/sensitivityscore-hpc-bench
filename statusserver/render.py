@@ -364,6 +364,18 @@ def report_section(rep: dict) -> str:
     return "".join(parts)
 
 
+def phase_favicon(phase: str, color: str) -> str:
+    """Фавиконка-индикатор фазы (data-URI SVG): цветной кружок, при
+    завершении — с галочкой. Видно из панели вкладок, закончился ли прогон."""
+    c = color.replace("#", "%23")
+    check = (
+        "<path d='M4.5 8.5l2.5 2.5 4.5-5.5' stroke='white' stroke-width='2' fill='none'/>"
+        if phase == "DONE" else ""
+    )
+    return ("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
+            f"viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='{c}'/>{check}</svg>")
+
+
 def render_html(d: dict) -> str:
     phase = d["phase"]
     color, phase_word = PHASE_META.get(phase, ("#868e96", phase))
@@ -391,6 +403,7 @@ def render_html(d: dict) -> str:
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{stand_label} · {esc(phase_word)}{title_pct}</title>
+<link id="fav" rel="icon" href="{phase_favicon(phase, color)}">
 <script>
 /* Тема применяется ДО отрисовки — без вспышки не той темы при каждом обновлении.
    Режим (auto|light|dark) в localStorage; auto резолвится по системной теме. */
@@ -406,21 +419,24 @@ def render_html(d: dict) -> str:
   --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --dim:#6b7280; --line:#e5e7eb;
   --good:#1a7f52; --goodbg:#e6f6ee; --warn:#b45309; --warnbg:#fdf2e0;
   --bad:#c0392b; --badbg:#fdecea; --hero:#eef4ff; --herobd:#c9dcff;
+  color-scheme:light;
 }}
 :root[data-theme="dark"]{{
   --bg:#0f1115; --card:#181b21; --ink:#e6e8eb; --dim:#9aa4b2;
   --line:#2a2f3a; --good:#4ade80; --goodbg:#12241a; --warn:#fbbf24;
   --warnbg:#2a1f0a; --bad:#f87171; --badbg:#2a1414; --hero:#12203a; --herobd:#1e3a66;
+  color-scheme:dark;
 }}
 *{{box-sizing:border-box}}
 body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;
   background:var(--bg);color:var(--ink);line-height:1.5}}
 .wrap{{max-width:60em;margin:0 auto;padding:1.2em 1em 4em}}
 .top{{display:flex;align-items:center;gap:.7em;flex-wrap:wrap;margin-bottom:.2em}}
-.badge{{background:{color};color:#fff;font-weight:600;font-size:.8em;
+.badge{{background:var(--accent);color:#fff;font-weight:600;font-size:.8em;
   padding:.18em .7em;border-radius:999px;text-transform:uppercase;letter-spacing:.03em}}
 .top h1{{font-size:1.15em;margin:0;font-weight:600}}
 .top .upd{{margin-left:auto;color:var(--dim);font-size:.82em}}
+.top .ctl{{display:flex;gap:.35em;align-items:center}}
 .now{{font-size:1.35em;font-weight:500;margin:.35em 0 .1em}}
 .card{{background:var(--card);border:1px solid var(--line);border-radius:12px;
   padding:1em 1.2em;margin:1em 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}}
@@ -439,7 +455,7 @@ h3{{margin:1em 0 .3em;font-size:.98em}} h4{{margin:.8em 0 .3em;font-size:.9em;co
 .plan .cnt{{font-variant-numeric:tabular-nums}}
 .plan .det{{font-size:.85em}}
 .plan .st.done .mark,.plan .st.done .cnt{{color:var(--good)}}
-.plan .st.act .mark{{color:{color}}}
+.plan .st.act .mark{{color:var(--accent)}}
 .plan .st.act .cnt{{font-weight:700}}
 .plan .st.warn .mark,.plan .st.warn .cnt{{color:var(--warn)}}
 .plan .st.dim .lbl{{font-weight:500;color:var(--dim)}}
@@ -471,17 +487,30 @@ code{{background:var(--bg);padding:.1em .35em;border-radius:4px;font-size:.9em}}
 .fullmd{{font-size:.9em;opacity:.92}}
 .fullmd table{{font-size:.88em}}
 a{{color:#4c8dff}}
-.themebtn{{background:var(--card);border:1px solid var(--line);color:var(--ink);
+.pill{{background:var(--card);border:1px solid var(--line);color:var(--ink);
   border-radius:999px;padding:.2em .8em;font-size:.8em;cursor:pointer;font-family:inherit}}
-.themebtn:hover{{border-color:var(--herobd)}}
-.refreshing{{opacity:.5;transition:opacity .3s}}
-</style></head><body><div class="wrap">
+.pill:hover{{border-color:var(--herobd)}}
+select.pill{{padding:.2em .5em}}
+#conn{{color:var(--bad);font-weight:600}}
+@media (max-width:640px){{ table{{display:block;overflow-x:auto}} }}
+</style></head><body><div class="wrap" style="--accent:{color}">
 
 <div class="top">
   <span class="badge">{esc(phase_word)}</span>
   <h1>{stand_label}</h1>
-  <span class="upd">обновлено {esc(d['time'])} · авто-10с · <a href="/json">/json</a></span>
-  <button id="themebtn" class="themebtn" onclick="cycleTheme()" title="тема">🌗</button>
+  <span class="upd"><span id="conn"></span>обновлено {esc(d['time'])} · <a href="/json">/json</a></span>
+  <span class="ctl">
+    <button id="refnow" class="pill" onclick="refreshNow()" title="обновить сейчас">⟳</button>
+    <select id="refsel" class="pill" onchange="setRefresh(this.value)" title="интервал авто-обновления">
+      <option value="0">без обновления</option>
+      <option value="5">5 с</option>
+      <option value="10">10 с</option>
+      <option value="30">30 с</option>
+      <option value="60">1 мин</option>
+      <option value="300">5 мин</option>
+    </select>
+    <button id="themebtn" class="pill" onclick="cycleTheme()" title="тема">🌗</button>
+  </span>
 </div>
 <div class="now">{hero_now(d)}</div>
 {bar}
@@ -534,28 +563,77 @@ function cycleTheme(){{
   var r=document.documentElement; r.dataset.theme=dark?'dark':'light'; r.dataset.themeMode=next;
   paintThemeBtn();
 }}
-/* Мягкое авто-обновление: перезагрузка каждые 10с, но с сохранением прокрутки
-   и раскрытых <details> — иначе открытый блок «графики» схлопывался бы, а
-   страница прыгала бы вверх на каждом тике. */
-var UIK='ssStatusUI';
-history.scrollRestoration='manual';
-function saveUI(){{
-  try{{
-    var open=[].slice.call(document.querySelectorAll('details[data-k]'))
-      .filter(function(d){{return d.open}}).map(function(d){{return d.dataset.k}});
-    sessionStorage.setItem(UIK, JSON.stringify({{open:open, y:window.scrollY}}));
-  }}catch(e){{}}
+
+/* Мягкое авто-обновление вместо location.reload: страница перезапрашивается
+   fetch'ем и подменяется только содержимое .wrap — без белой вспышки, с
+   сохранением прокрутки и раскрытых <details>. Если сервер недоступен
+   (перезапуск между прогонами), остаются последние данные с пометкой
+   «нет связи» и попытки продолжаются. Интервал — как в Grafana: селектор
+   в шапке, значение в localStorage; в фоновой вкладке обновление спит и
+   навёрстывает при возвращении. */
+var REFK='ssRefresh', DETK='ssOpenDetails';
+var timer=null, lastOk=Date.now();
+function refreshSeconds(){{
+  var v=parseInt(localStorage.getItem(REFK)||'10',10);
+  return isNaN(v)?10:v;
 }}
-function restoreUI(){{
-  try{{
-    var s=JSON.parse(sessionStorage.getItem(UIK)||'{{}}');
-    (s.open||[]).forEach(function(k){{
-      var d=document.querySelector('details[data-k="'+k+'"]'); if(d) d.open=true;
-    }});
-    if(s.y) window.scrollTo(0,s.y);
-  }}catch(e){{}}
+function armTimer(){{
+  clearTimeout(timer);
+  var s=refreshSeconds();
+  if(s>0) timer=setTimeout(refreshNow, s*1000);
 }}
-paintThemeBtn(); restoreUI();
-setTimeout(function(){{ saveUI(); document.body.classList.add('refreshing'); location.reload(); }}, 10000);
+function setRefresh(v){{ localStorage.setItem(REFK, String(v)); armTimer(); }}
+function openSet(){{
+  return [].slice.call(document.querySelectorAll('details[data-k]'))
+    .filter(function(d){{return d.open}}).map(function(d){{return d.dataset.k}});
+}}
+function applyOpen(list){{
+  (list||[]).forEach(function(k){{
+    var d=document.querySelector('details[data-k="'+k+'"]'); if(d) d.open=true;
+  }});
+}}
+function setConn(lost){{
+  var c=document.getElementById('conn');
+  if(c) c.textContent=lost?'нет связи с сервером · ':'';
+}}
+function paintControls(){{
+  paintThemeBtn();
+  var sel=document.getElementById('refsel');
+  if(sel) sel.value=String(refreshSeconds());
+}}
+function refreshNow(){{
+  if(document.hidden){{ armTimer(); return; }}
+  clearTimeout(timer);
+  fetch(location.pathname+location.search, {{cache:'no-store'}})
+    .then(function(r){{ if(!r.ok) throw new Error(r.status); return r.text(); }})
+    .then(function(html){{
+      var nd=new DOMParser().parseFromString(html,'text/html');
+      var w=document.querySelector('.wrap'), nw=nd.querySelector('.wrap');
+      if(w&&nw){{
+        var open=openSet();
+        w.setAttribute('style', nw.getAttribute('style')||'');
+        w.innerHTML=nw.innerHTML;
+        applyOpen(open);
+      }}
+      document.title=nd.title;
+      var f=document.getElementById('fav'), nf=nd.getElementById('fav');
+      if(f&&nf&&f.href!==nf.href) f.href=nf.href;
+      lastOk=Date.now();
+      setConn(false); paintControls(); armTimer();
+    }})
+    .catch(function(){{ setConn(true); armTimer(); }});
+}}
+/* Фоновая вкладка не обновляется; при возвращении — сразу, если данные устарели. */
+document.addEventListener('visibilitychange', function(){{
+  if(document.hidden) return;
+  var s=refreshSeconds();
+  if(s>0 && Date.now()-lastOk>s*1000) refreshNow(); else armTimer();
+}});
+/* Раскрытые <details> переживают и жёсткую перезагрузку (F5). */
+document.addEventListener('toggle', function(){{
+  try{{ sessionStorage.setItem(DETK, JSON.stringify(openSet())); }}catch(e){{}}
+}}, true);
+try{{ applyOpen(JSON.parse(sessionStorage.getItem(DETK)||'[]')); }}catch(e){{}}
+paintControls(); armTimer();
 </script>
 </body></html>"""
