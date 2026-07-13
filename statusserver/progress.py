@@ -10,30 +10,44 @@ from .cluster import worker_node_count
 from .labels import ru, scenario_label
 
 
-def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float]]:
-    """-> (фаза, {фаза: unix-время старта}) по маркерам '=== X START HH:MM:SS ==='."""
+def _marker_ts(hms: str) -> float | None:
+    """Unix-время маркера лога. В маркере только время суток, без даты; если
+    момент вышел в будущем — событие было до полуночи: минус сутки, иначе
+    elapsed < 0 и ETA уезжает в прошлое."""
+    try:
+        ts = time.mktime(
+            time.strptime(f"{time.strftime('%Y-%m-%d')} {hms}", "%Y-%m-%d %H:%M:%S")
+        )
+    except ValueError:
+        return None
+    if ts > time.time() + 60:
+        ts -= 86400.0
+    return ts
+
+
+def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float], dict[str, float]]:
+    """-> (фаза, {фаза: старт}, {фаза: финиш}) по маркерам
+    '=== X START|DONE HH:MM:SS ==='. Финиши нужны для итоговой длительности."""
     phase = "not started"
     starts: dict[str, float] = {}
-    today = time.strftime("%Y-%m-%d")
+    ends: dict[str, float] = {}
     for l in log_lines_all:
-        m = re.search(r"=== (BASELINE|PRESSURE) START (\d\d:\d\d:\d\d)", l)
+        m = re.search(r"=== (BASELINE|PRESSURE) (START|DONE) (\d\d:\d\d:\d\d)", l)
         if m:
-            phase = m.group(1).lower()
-            try:
-                ts = time.mktime(
-                    time.strptime(f"{today} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
-                )
-                # В маркере только время суток, без даты. Если момент вышел
-                # в будущем — фаза стартовала до полуночи: минус сутки, иначе
-                # elapsed < 0 и ETA уезжает в прошлое.
-                if ts > time.time() + 60:
-                    ts -= 86400.0
-                starts[phase] = ts
-            except ValueError:
-                pass
+            ph, kind = m.group(1).lower(), m.group(2)
+            ts = _marker_ts(m.group(3))
+            if kind == "START":
+                phase = ph
+                if ts is not None:
+                    starts[ph] = ts
+            else:
+                if ts is not None:
+                    ends[ph] = ts
+                if ph == "pressure":
+                    phase = "DONE"
         elif "ALL DONE" in l or "PRESSURE DONE" in l:
             phase = "DONE"
-    return phase, starts
+    return phase, starts, ends
 
 
 def current_activity(log_lines_all: list[str], prof_map: dict[str, str]) -> dict:
@@ -85,8 +99,11 @@ def expected_rows(cfg: dict) -> dict[str, int]:
     return {"baseline": baseline_exp, "pressure": pressure_exp}
 
 
-def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> dict:
-    """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы."""
+def progress(
+    phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict
+) -> dict:
+    """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы.
+    После завершения — итоговая длительность основной серии."""
     out: dict = {}
     b_exp, p_exp = exp.get("baseline", 0), exp.get("pressure", 0)
     total_exp = b_exp + p_exp
@@ -109,6 +126,8 @@ def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> d
     if phase in ("baseline", "pressure") and cur_exp:
         out["phase_pct"] = round(100 * min(cur_done, cur_exp) / cur_exp)
         start = starts.get(phase)
+        if start and time.time() > start:
+            out["phase_elapsed_min"] = round((time.time() - start) / 60)
         if start and cur_done > 0:
             elapsed = time.time() - start
             if elapsed > 0:
@@ -128,6 +147,10 @@ def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> d
     elif phase == "DONE":
         out["overall_pct"] = 100
         out["phase_pct"] = 100
+        s, e = starts.get("pressure"), ends.get("pressure")
+        if s is not None and e is not None and e >= s:
+            out["duration_min"] = round((e - s) / 60)
+            out["finished_at"] = time.strftime("%H:%M", time.localtime(e))
     return out
 
 

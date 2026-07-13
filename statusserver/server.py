@@ -44,7 +44,7 @@ def collect() -> dict:
     log_path = Path(ARGS.log)
     all_lines = tail_lines(log_path, 4000)
     errors = [l for l in all_lines if re.search(r"ERROR|Traceback|failed", l)][-5:]
-    phase, starts = run_phase(all_lines)
+    phase, starts, ends = run_phase(all_lines)
     cfg = load_cfg(Path(ARGS.config))
     results = pressure_results(Path(ARGS.results), cfg)
     baselines = baseline_summary(Path(ARGS.baselines))
@@ -64,7 +64,7 @@ def collect() -> dict:
         "phase": phase,
         "activity": current_activity(all_lines, profile_scenario_map(cfg)),
         "progress": progress(
-            phase, starts, baselines.get("rows", 0), results.get("rows", 0), exp
+            phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0), exp
         ),
         "expected_rows": exp,
         "reps": {

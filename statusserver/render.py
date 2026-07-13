@@ -27,13 +27,24 @@ def table(headers: list[str], rows: list[list], caption: str = "") -> str:
     return f"<table>{cap}<tr>{th}</tr>{trs}</table>"
 
 
+def fmt_dur(minutes) -> str:
+    h, m = divmod(int(minutes), 60)
+    return f"{h} ч {m:02d} мин" if h else f"{m} мин"
+
+
 def hero_now(d: dict) -> str:
     """Крупная строка «что выполняется прямо сейчас»."""
     phase = d["phase"]
     act = d.get("activity") or {}
     reps = d.get("reps") or {}
     if phase == "DONE":
-        return "Прогон завершён ✓"
+        prog = d.get("progress") or {}
+        extra = ""
+        if prog.get("duration_min") is not None:
+            extra = f" · основная серия длилась ~{fmt_dur(prog['duration_min'])}"
+            if prog.get("finished_at"):
+                extra += f", закончилась в {prog['finished_at']}"
+        return "Прогон завершён ✓" + esc(extra)
     if phase == "baseline":
         total = reps.get("baseline")
         rep = (f"повторение {act['rep'] + 1} из {total}"
@@ -390,7 +401,15 @@ def render_html(d: dict) -> str:
             else ""
         )
         phase_pct = f"этап «{phase_word}»: {prog['phase_pct']}%" if "phase_pct" in prog else ""
-        meta = " · ".join(x for x in (phase_pct, eta) if x)
+        elapsed = (
+            f"идёт уже {fmt_dur(prog['phase_elapsed_min'])}"
+            if prog.get("phase_elapsed_min") else ""
+        )
+        dur = (
+            f"длилась {fmt_dur(prog['duration_min'])}"
+            if prog.get("duration_min") is not None else ""
+        )
+        meta = " · ".join(x for x in (phase_pct, elapsed, eta, dur) if x)
         bar = f"""<div class="prog">
 <div class="barbg"><div class="bar" style="background:{color};width:{pct}%"></div>
 <span class="barlabel">{pct}%</span></div>
@@ -492,13 +511,15 @@ a{{color:#4c8dff}}
 .pill:hover{{border-color:var(--herobd)}}
 select.pill{{padding:.2em .5em}}
 #conn{{color:var(--bad);font-weight:600}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+#refnow.busy{{animation:spin .8s linear infinite}}
 @media (max-width:640px){{ table{{display:block;overflow-x:auto}} }}
 </style></head><body><div class="wrap" style="--accent:{color}">
 
 <div class="top">
   <span class="badge">{esc(phase_word)}</span>
   <h1>{stand_label}</h1>
-  <span class="upd"><span id="conn"></span>обновлено {esc(d['time'])} · <a href="/json">/json</a></span>
+  <span class="upd"><span id="conn"></span>обновлено {esc(d['time'])}<span id="cd"></span> · <a href="/json">/json</a></span>
   <span class="ctl">
     <button id="refnow" class="pill" onclick="refreshNow()" title="обновить сейчас">⟳</button>
     <select id="refsel" class="pill" onchange="setRefresh(this.value)" title="интервал авто-обновления">
@@ -572,7 +593,7 @@ function cycleTheme(){{
    в шапке, значение в localStorage; в фоновой вкладке обновление спит и
    навёрстывает при возвращении. */
 var REFK='ssRefresh', DETK='ssOpenDetails';
-var timer=null, lastOk=Date.now();
+var timer=null, lastOk=Date.now(), nextAt=0;
 function refreshSeconds(){{
   var v=parseInt(localStorage.getItem(REFK)||'10',10);
   return isNaN(v)?10:v;
@@ -580,7 +601,8 @@ function refreshSeconds(){{
 function armTimer(){{
   clearTimeout(timer);
   var s=refreshSeconds();
-  if(s>0) timer=setTimeout(refreshNow, s*1000);
+  if(s>0){{ timer=setTimeout(refreshNow, s*1000); nextAt=Date.now()+s*1000; }}
+  else nextAt=0;
 }}
 function setRefresh(v){{ localStorage.setItem(REFK, String(v)); armTimer(); }}
 function openSet(){{
@@ -604,6 +626,8 @@ function paintControls(){{
 function refreshNow(){{
   if(document.hidden){{ armTimer(); return; }}
   clearTimeout(timer);
+  var btn=document.getElementById('refnow');
+  if(btn) btn.classList.add('busy');
   fetch(location.pathname+location.search, {{cache:'no-store'}})
     .then(function(r){{ if(!r.ok) throw new Error(r.status); return r.text(); }})
     .then(function(html){{
@@ -621,8 +645,21 @@ function refreshNow(){{
       lastOk=Date.now();
       setConn(false); paintControls(); armTimer();
     }})
-    .catch(function(){{ setConn(true); armTimer(); }});
+    .catch(function(){{ setConn(true); armTimer(); }})
+    .finally(function(){{
+      var b=document.getElementById('refnow');
+      if(b) b.classList.remove('busy');
+    }});
 }}
+/* Обратный отсчёт до следующего обновления — рядом со временем в шапке. */
+setInterval(function(){{
+  var c=document.getElementById('cd');
+  if(!c) return;
+  if(nextAt>0 && !document.hidden){{
+    var left=Math.max(0, Math.round((nextAt-Date.now())/1000));
+    c.textContent=' · следующее через '+left+' с';
+  }} else c.textContent='';
+}}, 1000);
 /* Фоновая вкладка не обновляется; при возвращении — сразу, если данные устарели. */
 document.addEventListener('visibilitychange', function(){{
   if(document.hidden) return;
