@@ -94,7 +94,10 @@ pressure_scenarios:
     # 2 чистые ноды (worker-5/worker-6) — их ёмкости хватает без переполнения.
     aggressor_nodes: ["worker-192.168.0.7"]
     stabilize_seconds: 30
-    repetitions: 3
+    # 10 реп для статзначимости: при n=3 Mann-Whitney физически не даёт
+    # p<0.05 (минимум 0.1) — v5-серия с Cliff's delta −1.0 по всем метрикам
+    # это показала. 10×3 плеча ~ 2.5-3 часа на STAGE.
+    repetitions: 10
     aggressor_args: ["--hdd", "2", "--hdd-bytes", "1g"]
 
 aggressor:
