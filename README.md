@@ -167,14 +167,14 @@ make nuke                   # всё вышеперечисленное + Deploy
 компилируется/проходит синтаксическую проверку, статистический пайплайн
 протестирован end-to-end на синтетических данных.
 
-Все четыре измерения S теперь измеряются агентом: LLC (miss ratio, PMU),
-NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
-(PSI `io.pressure` — в score; сырые IOPS — только для анализа), Net
-(`/proc/<pid>/net/dev`, байты/с — только для анализа: у сырой полосы нет
-честной шкалы [0,1] без калибровки под NIC, в score Net не участвует —
-план калибровки через эмпирический `iperf3 --bidir` вместо номинала NIC
-готов, см. `docs/Технический план экспериментов.md` §3.4 и
-`docs/Программа экспериментов (Geant4).md` §4/§8, реализация — TODO ниже).
+Все четыре измерения S измеряются агентом И участвуют в score: LLC (miss
+ratio, PMU), NUMA (`node-load-misses / node-loads`, generic node-события
+PMU), IO (PSI `io.pressure` — в score; сырые IOPS — только для анализа),
+Net (`net_pressure = net_bw / NET_REFERENCE_MBPS`, калибровка стенда
+эмпирическим cross-node `iperf3 --bidir`: `make netcheck-run` → env на
+DaemonSet агента; без калибровки ось честно пишется нулём, сырой `net_bw`
+остаётся для анализа — методика в `docs/Технический план экспериментов.md`
+§3.4). Абляция любой оси — вес 0 в `weights.json` ConfigMap, не код.
 
 Экспериментальная часть усилена тремя защитами H1 плюс контрольным
 бейзлайном (см. `harness/README.md`, `analysis/README.md`):
@@ -182,7 +182,8 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 - **placement regret** — прямая метрика решения планировщика (давление
   выбранной ноды − минимум доступных), почти без шума исхода;
 - **slowdown-нормировка** — `makespan / изолированный` из соло-бейзлайнов
-  (`--baseline`), делает профили разной длительности объединяемыми;
+  (`--baseline`, пин per (profile, node) — «одинаковые» облачные ноды бывают
+  в ~2x разной скорости), делает профили разной длительности объединяемыми;
 - **fingerprint** — таблица «заявленный vs измеренный S» с проверкой
   монотонности, превращает ручные аннотации в верифицированные профили;
 - **Trimaran** (`LoadVariationRiskBalancing`) — load-aware, но не
@@ -190,13 +191,10 @@ NUMA (`node-load-misses / node-loads`, generic node-события PMU), IO
 
 Осознанно оставлены как явные TODO:
 
-- Калибровка Net (`net_pressure` в score) — измерительная половина
-  **готова и автоматизирована** (`make netcheck-run/-logs/-clean` —
-  cross-node `iperf3 --bidir` между двумя worker-нодами → печатает
-  `NET_REFERENCE_MBPS`, `scripts/netcheck/`); остаётся код в агенте:
-  прочитать `NET_REFERENCE_MBPS` из env и писать нормированный
-  `net_pressure` рядом с сырым `net_bw`, а `redis_source.go` — читать его
-  так же, как сейчас читает `io_pressure`.
+- Сетевой `OUTPUT_MODE` у воркера: профиль `high-s-net` (жертва
+  net pressure-сценария) декларирует net=high, но сетевого трафика сам не
+  генерирует — fingerprint честно флагает ось. Реалистичное уточнение:
+  стрим выходных данных на sink-под (аналог fsync-burst для IO).
 - `uncore_imc_*` PMU как уточнение NUMA-метрики (истинный bandwidth
   per-socket, но node-wide и специфичен для модели CPU) — см.
   `ReadUncoreNUMABandwidth`.
