@@ -340,6 +340,82 @@ def baseline_summary(path: Path) -> dict:
         return {"exists": True, "error": str(e)}
 
 
+def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict) -> list[dict]:
+    """Краткий план всего эксперимента для шапки: этапы по порядку (бейзлайны
+    -> каждый pressure-сценарий -> анализ), у каждого — формула объёма
+    («3 плеча × 10 реп × 6 жертв»), сделано/ожидается и состояние
+    done|active|pending. Отвечает на вопросы «а что после этой фазы?» и
+    «какой вообще планчик?» без чтения config.yaml."""
+    variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
+    arms = sum(len(variants) if c in ("A", "B") else 1 for c in cfg.get("configs", []))
+
+    profiles = list(cfg.get("profiles", []))
+    for sc in cfg.get("pressure_scenarios", []):
+        v = sc.get("victim_profile", "high-s")
+        if v not in profiles:
+            profiles.append(v)
+    b_reps = cfg.get("baseline", {}).get("repetitions", 5)
+    per_node = cfg.get("baseline", {}).get("per_node", True)
+    nodes_n = max(worker_node_count(), 1) if per_node else 1
+    b_exp = len(profiles) * b_reps * nodes_n
+    b_detail = f"{len(profiles)} проф × {b_reps} реп"
+    if per_node:
+        b_detail = f"{len(profiles)} проф × {nodes_n} нод × {b_reps} реп"
+
+    stages: list[dict] = [{
+        "key": "baseline",
+        "label": "Соло-бейзлайны (пин per-node)",
+        "detail": b_detail + " — знаменатели slowdown + fingerprint",
+        "done": min(baselines.get("rows", 0), b_exp),
+        "expected": b_exp,
+    }]
+
+    res_sc = results.get("scenarios") or {}
+    for sc in cfg.get("pressure_scenarios", []):
+        col = f"pressure:{sc['name']}"
+        reps = sc.get("repetitions", cfg.get("repetitions", 10))
+        victims = sc.get("victim_count", 6)
+        intensities = len(sc.get("aggressors_per_node", [1]))
+        exp_i = arms * intensities * reps * victims
+        detail = f"{arms} плеча × {reps} реп × {victims} жертв"
+        if intensities > 1:
+            detail = f"{arms} плеча × {intensities} инт. × {reps} реп × {victims} жертв"
+        stages.append({
+            "key": col,
+            "label": scenario_label(col),
+            "detail": detail,
+            "done": min((res_sc.get(col) or {}).get("done", 0), exp_i),
+            "expected": exp_i,
+        })
+
+    stages.append({
+        "key": "analysis",
+        "label": "Анализ",
+        "detail": "analyze.py: Mann-Whitney/Holm/Cliff's δ, slowdown per-node, графики — секция ниже",
+        "done": 1 if report.get("exists") or (report.get("digest") or {}).get("exists") else 0,
+        "expected": 1,
+    })
+
+    # Состояния: всё добитое — done; первый недобитый этап — active, если
+    # прогон жив (для этапа «анализ» active не бывает — он запускается руками
+    # после прогона); остальные — pending. Особый случай: недобитые бейзлайны
+    # при уже идущей pressure-фазе — это НЕ активный этап, а долг «добрать»
+    # (например, в кластер добавили ноды посреди серии — per-node знаменатели
+    # для них появятся только после доп. прогона --baseline).
+    active_assigned = False
+    for st in stages:
+        if st["done"] >= st["expected"] and st["expected"] > 0:
+            st["state"] = "done"
+        elif st["key"] == "baseline" and phase != "baseline":
+            st["state"] = "partial"
+        elif not active_assigned and phase in ("baseline", "pressure"):
+            st["state"] = "active" if st["key"] != "analysis" else "pending"
+            active_assigned = True
+        else:
+            st["state"] = "pending"
+    return stages
+
+
 DIGEST_METRICS = [
     ("makespan_s", "makespan, с", "{:.1f}"),
     ("slowdown", "slowdown", "{:.2f}×"),
@@ -424,6 +500,14 @@ def collect() -> dict:
     baselines = baseline_summary(Path(ARGS.baselines))
     exp = expected_rows(cfg)
     report_dir = Path(ARGS.report)
+    report_info = {
+        "exists": (report_dir / "summary.md").exists(),
+        "dir": str(report_dir),
+        "plots": sorted(p.name for p in report_dir.glob("*.png"))
+        if report_dir.is_dir()
+        else [],
+        "digest": analysis_digest(report_dir),
+    }
     return {
         "time": time.strftime("%H:%M:%S"),
         "stand": stand_info(),
@@ -445,14 +529,8 @@ def collect() -> dict:
         "results": results,
         "baselines": baselines,
         "cluster": kubectl_snapshot(),
-        "report": {
-            "exists": (report_dir / "summary.md").exists(),
-            "dir": str(report_dir),
-            "plots": sorted(p.name for p in report_dir.glob("*.png"))
-            if report_dir.is_dir()
-            else [],
-            "digest": analysis_digest(report_dir),
-        },
+        "report": report_info,
+        "plan": run_plan(cfg, phase, baselines, results, report_info),
     }
 
 
@@ -498,6 +576,34 @@ def hero_now(d: dict) -> str:
         vic = f" · жертва v{act['victim']}" if act.get("victim") is not None else ""
         return f"{esc(sc)}-шторм · плечо <b>{esc(arm)}</b> · {esc(rep)}{esc(vic)}".strip(" ·")
     return "ожидание старта…"
+
+
+def plan_section(plan: list[dict]) -> str:
+    """Краткий план прогона под прогресс-баром: ✓ сделано / ▶ идёт / ○ впереди,
+    у каждого этапа — объём формулой и сделано/ожидается."""
+    if not plan:
+        return ""
+    icon = {"done": ("✓", "good"), "active": ("▶", "act"),
+            "partial": ("◐", "warn"), "pending": ("○", "dim")}
+    rows = []
+    for st in plan:
+        mark, cls = icon.get(st["state"], ("○", "dim"))
+        if st["key"] == "analysis":
+            # У анализа счётчик 0/1 не информативен — словами честнее.
+            count = "готов" if st["state"] == "done" else "после прогона, руками"
+        else:
+            count = f"{st['done']}/{st['expected']}"
+            if st["state"] == "active" and st["expected"]:
+                count += f" · {round(100 * st['done'] / st['expected'])}%"
+            elif st["state"] == "partial":
+                count += " · добрать после серии"
+        rows.append(
+            f"<div class='st {cls}'><span class='mark'>{mark}</span>"
+            f"<span class='lbl'>{esc(st['label'])}</span>"
+            f"<span class='cnt'>{esc(count)}</span>"
+            f"<span class='det dim'>{esc(st['detail'])}</span></div>"
+        )
+    return f"<div class='plan'>{''.join(rows)}</div>"
 
 
 def storm_cell(m: dict, is_best: bool) -> str:
@@ -843,6 +949,17 @@ h3{{margin:1em 0 .3em;font-size:.98em}} h4{{margin:.8em 0 .3em;font-size:.9em;co
 .barlabel{{position:absolute;top:0;left:.8em;line-height:22px;font-weight:700;
   font-size:.82em;color:var(--ink);mix-blend-mode:difference;filter:invert(1)}}
 .progmeta{{font-size:.85em;margin-top:.35em}}
+.plan{{margin:.7em 0 .3em;font-size:.9em;max-width:46em}}
+.plan .st{{display:flex;gap:.55em;align-items:baseline;padding:.14em 0;flex-wrap:wrap}}
+.plan .mark{{width:1.1em;text-align:center;flex-shrink:0}}
+.plan .lbl{{font-weight:600;min-width:13em}}
+.plan .cnt{{font-variant-numeric:tabular-nums}}
+.plan .det{{font-size:.85em}}
+.plan .st.done .mark,.plan .st.done .cnt{{color:var(--good)}}
+.plan .st.act .mark{{color:{color}}}
+.plan .st.act .cnt{{font-weight:700}}
+.plan .st.warn .mark,.plan .st.warn .cnt{{color:var(--warn)}}
+.plan .st.dim .lbl{{font-weight:500;color:var(--dim)}}
 table{{border-collapse:collapse;margin:.4em 0;font-size:.9em;width:auto}}
 caption{{text-align:left;color:var(--dim);font-size:.82em;padding-bottom:.3em}}
 th,td{{border:1px solid var(--line);padding:.34em .7em;text-align:left}}
@@ -885,6 +1002,7 @@ a{{color:#4c8dff}}
 </div>
 <div class="now">{hero_now(d)}</div>
 {bar}
+{plan_section(d.get('plan') or [])}
 
 <div class="card">
   <h2>Результат — куда садятся жертвы</h2>
