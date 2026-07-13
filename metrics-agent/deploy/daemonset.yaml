@@ -49,8 +49,8 @@ spec:
               # Пусто = Net-ось выключена (net_pressure=0, сырой net_bw
               # пишется всё равно). Значение СТЕНДО-СПЕЦИФИЧНО — задаётся при
               # деплое (kubectl -n sensitivityscore-system set env
-              # ds/metrics-agent NET_REFERENCE_MBPS=<из netcheck>), в
-              # манифесте намеренно не хардкодится.
+              # ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=<из
+              # netcheck>), в манифесте намеренно не хардкодится.
               value: ""
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the

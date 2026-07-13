@@ -44,9 +44,17 @@ Same-node pod-to-pod трафик CNI мостит локально через v
   Stdlib-only, покрывает и top-level `sum_sent/sum_received`, и per-stream
   fallback; распечатывает понятную ошибку на пустой ввод / iperf3-error.
 
-Это только измерительная половина. Код, который потребляет
-`NET_REFERENCE_MBPS` (нормировка `net_pressure` в агенте + чтение в
-`redis_source.go`), — пока TODO (см. корневой README, «Статус реализации»).
+Цикл замкнут в коде: агент (`metrics-agent/cmd/agent/main.go:netReferenceFromEnv`,
+`pkg/redisclient/writer.go`) читает `NET_REFERENCE_MBPS` из env и пишет
+`net_pressure` в Redis, `redis_source.go` подаёт его в score. Так что после
+`netcheck` остаётся один шаг — выставить измеренное число на DaemonSet:
+
+```bash
+kubectl -n sensitivityscore-system set env ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=<N>
+```
+
+Пусто/не выставлено = ось честно выключена (`net_pressure=0`), сырой `net_bw`
+всё равно пишется для анализа.
 
 ## Наблюдение со STAGE-стенда (пример вывода)
 
