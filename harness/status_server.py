@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """status_server.py — локальный HTTP-эндпойнт прогресса прогонов харнесса.
 
-Одна страница (авто-обновление каждые 10с) + /json для скриптов. Показывает:
-  - стенд: кластер (API-сервер, ноды с версиями) — из kubectl, кэшируется;
-  - шапку прогресса: % всего прогона, % фазы, ETA (ожидаемый объём считается
-    из config.yaml той же логикой, что run_experiment.py);
-  - таблицы по results/baselines parquet (строки по плечам и нодам, средний
-    makespan) — харнесс пишет инкрементально, это живой прогресс;
-  - живые Job'ы жертв и агрессоры (kubectl);
-  - секцию «Анализ», когда в --report каталоге появляется summary.md после
-    `analyze.py` — рендерит markdown и встраивает все PNG-графики оттуда
-    (сервер отдаёт их по /report/<файл>);
+Одна страница (авто-обновление 10с) + /json для скриптов. Задача — с одного
+взгляда понять, что происходит:
+  - шапка «сейчас»: фаза, сценарий (IO/Net), плечо, номер повтора, крупный
+    прогресс-бар всего прогона + ETA;
+  - главная метрика (money-таблица): по каждому сценарию, по каждому плечу —
+    сколько жертв ушло в шторм (это и есть ответ «работает ли планировщик»),
+    средний makespan и regret; строка SensitivityScore подсвечена, лучший по
+    доле-в-шторм отмечен;
+  - живой кластер: агрессоры (сколько Running, на какой ноде) и активные
+    Job'ы жертв;
+  - бейзлайны как матрица профиль × нода (сразу видно, что w7 медленнее);
+  - секция «Анализ», когда в --report появляется summary.md после analyze.py
+    (рендерит markdown + PNG-графики, сервер отдаёт их по /report/<файл>);
   - хвост лога и последние ошибки.
 
 Запуск (с хоста, рядом с идущим прогоном):
     .venv/bin/python status_server.py \
-        --log /path/to/run.log --config config-stage.yaml \
+        --log stage-pressure.log --config config-stage.yaml \
         --results results/results-stage.parquet \
         --baselines results/baselines-stage.parquet \
-        --report ../analysis/report-stage --stand STAGE
+        --report ../analysis/report-stage --stand "STAGE (Timeweb k0s)"
 Затем открыть http://localhost:8787 (из WSL2 виден и в Windows-браузере).
 
 Никакой записи, только чтение — безопасно держать запущенным всегда.
@@ -41,9 +44,36 @@ ARGS: argparse.Namespace  # заполняется в main()
 _STAND_CACHE: dict = {"ts": 0.0, "data": {}}
 STAND_TTL_SECONDS = 300  # топология кластера меняется редко
 
+# Порядок и подписи плеч. Префикс "A-" в UI не показываем — на STAGE всё
+# config A, и "A-" в каждой строке был тем самым визуальным шумом.
+ARM_ORDER = ["A-default", "A-sensitivityscore", "A-trimaran"]
+ARM_LABEL = {
+    "A-default": "default",
+    "A-sensitivityscore": "SensitivityScore",
+    "A-trimaran": "trimaran",
+}
+# Плечо, которое мы проверяем (его строку подсвечиваем).
+HERO_ARM = "A-sensitivityscore"
+
+SCENARIO_LABEL = {
+    "pressure:io": "IO — дисковый шторм",
+    "pressure:net": "Net — сетевой шторм",
+    "pressure:llc": "LLC — шторм кэша/памяти",
+}
+# Профиль жертвы -> короткое имя сценария для шапки «сейчас».
+PROFILE_SCENARIO = {"high-s-io": "IO", "high-s-net": "Net", "high-s": "LLC"}
+
 
 def esc(s) -> str:
     return html.escape(str(s))
+
+
+def arm_label(cfg_name: str) -> str:
+    return ARM_LABEL.get(cfg_name, str(cfg_name).replace("A-", ""))
+
+
+def scenario_label(s: str) -> str:
+    return SCENARIO_LABEL.get(s, str(s).replace("pressure:", ""))
 
 
 def tail_lines(path: Path, n: int = 12) -> list[str]:
@@ -52,6 +82,15 @@ def tail_lines(path: Path, n: int = 12) -> list[str]:
         return lines[-n:]
     except OSError:
         return [f"(лог {path} недоступен)"]
+
+
+def load_cfg() -> dict:
+    try:
+        import yaml
+
+        return yaml.safe_load(Path(ARGS.config).read_text()) or {}
+    except Exception:  # noqa: BLE001 — страница не должна падать из-за конфига
+        return {}
 
 
 # ---------------------------------------------------------------- стенд ----
@@ -117,40 +156,52 @@ def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float]]:
     return phase, starts
 
 
-def expected_rows(config_path: Path) -> dict[str, int]:
-    """Ожидаемое число строк по фазам из config.yaml харнесса — чтобы считать
-    процент готовности. Логика зеркалит run_experiment.py (baseline_profiles /
-    expand_configs / run_pressure_scenario)."""
-    try:
-        import yaml
+def current_activity(log_lines_all: list[str]) -> dict:
+    """Что харнесс делает прямо сейчас — из последней строки 'submit: job_id=...'
+    (в ней явные config/profile/rep, а из job_id хвоста -vN — номер жертвы)."""
+    act: dict = {}
+    for l in log_lines_all:
+        m = re.search(
+            r"submit: job_id=(\S+) config=(\S+) profile=(\S+) overcommit=\S+ rep=(\d+)",
+            l,
+        )
+        if m:
+            job_id, arm, profile, rep = m.groups()
+            act = {"job_id": job_id, "arm": arm, "profile": profile, "rep": int(rep)}
+    if act:
+        v = re.search(r"-v(\d+)$", act["job_id"])
+        act["victim"] = int(v.group(1)) if v else None
+        act["scenario"] = PROFILE_SCENARIO.get(act["profile"])
+    return act
 
-        cfg = yaml.safe_load(config_path.read_text())
-    except Exception:  # noqa: BLE001
-        return {}
 
+def expected_by_scenario(cfg: dict) -> dict[str, int]:
+    """Ожидаемое число pressure-строк по каждому сценарию (arms × интенсивности
+    × повторы × жертвы) — для per-сценарного прогресса."""
+    variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
+    arms = sum(len(variants) if c in ("A", "B") else 1 for c in cfg.get("configs", []))
+    out = {}
+    for sc in cfg.get("pressure_scenarios", []):
+        out[f"pressure:{sc['name']}"] = (
+            arms
+            * len(sc.get("aggressors_per_node", [1]))
+            * sc.get("repetitions", cfg.get("repetitions", 10))
+            * sc.get("victim_count", 6)
+        )
+    return out
+
+
+def expected_rows(cfg: dict) -> dict[str, int]:
+    """Ожидаемое число строк по фазам — зеркалит run_experiment.py."""
     profiles = list(cfg.get("profiles", []))
     for sc in cfg.get("pressure_scenarios", []):
         v = sc.get("victim_profile", "high-s")
         if v not in profiles:
             profiles.append(v)
     baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
-    # per-node бейзлайны (дефолт run_experiment): множитель = число worker-нод.
     if cfg.get("baseline", {}).get("per_node", True):
         baseline_exp *= max(worker_node_count(), 1)
-
-    variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
-    arms = 0
-    for c in cfg.get("configs", []):
-        arms += len(variants) if c in ("A", "B") else 1
-
-    pressure_exp = 0
-    for sc in cfg.get("pressure_scenarios", []):
-        pressure_exp += (
-            arms
-            * len(sc.get("aggressors_per_node", [1]))
-            * sc.get("repetitions", cfg.get("repetitions", 10))
-            * sc.get("victim_count", 6)
-        )
+    pressure_exp = sum(expected_by_scenario(cfg).values())
     return {"baseline": baseline_exp, "pressure": pressure_exp}
 
 
@@ -196,31 +247,94 @@ def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> d
 # --------------------------------------------------------------- данные ----
 
 
-def parquet_summary(path: Path) -> dict:
+def storm_nodes_by_scenario(cfg: dict) -> dict[str, set]:
+    """scenario-колонка (pressure:<name>) -> множество штормимых нод из конфига."""
+    out = {}
+    for sc in cfg.get("pressure_scenarios", []):
+        out[f"pressure:{sc['name']}"] = set(sc.get("aggressor_nodes") or [])
+    return out
+
+
+def pressure_results(path: Path, cfg: dict) -> dict:
+    """Money-метрика по results.parquet: на каждый сценарий и плечо — жертв,
+    сколько село в шторм, средний makespan и regret. Это прямой ответ «уводит
+    ли планировщик жертв от шторма» — считается инкрементально по мере
+    прогона."""
     if not path.exists():
         return {"exists": False}
     try:
         import pandas as pd
 
         df = pd.read_parquet(path)
-        out = {
+        out: dict = {
             "exists": True,
             "rows": len(df),
             "mtime": time.strftime("%H:%M:%S", time.localtime(path.stat().st_mtime)),
         }
-        if "config" in df and len(df):
-            out["by_config"] = df["config"].value_counts().to_dict()
-            if "node" in df:
-                out["by_node"] = (
-                    df.groupby(["config", "node"]).size().unstack(fill_value=0)
-                    .to_dict("index")
-                )
-            if "makespan_s" in df:
-                out["makespan_mean_by_config"] = (
-                    df.groupby("config")["makespan_s"].mean().round(1).to_dict()
-                )
-            errors = df["approximation"].astype(str).str.startswith("error:")
-            out["error_rows"] = int(errors.sum())
+        if "approximation" in df:
+            out["error_rows"] = int(
+                df["approximation"].astype(str).str.startswith("error:").sum()
+            )
+        storm = storm_nodes_by_scenario(cfg)
+        exp_sc = expected_by_scenario(cfg)
+        scenarios: dict = {}
+        if "scenario" in df and "config" in df:
+            dfp = df[df["scenario"].astype(str).str.startswith("pressure:")]
+            for sc, g in dfp.groupby("scenario"):
+                storm_nodes = storm.get(sc, set())
+                arms: dict = {}
+                for arm, ga in g.groupby("config"):
+                    ok = ga[
+                        ga["makespan_s"].notna()
+                        & ~ga["approximation"].astype(str).str.startswith("error:")
+                    ]
+                    in_storm = int(ok["node"].isin(storm_nodes).sum()) if len(ok) else 0
+                    reg = ok["placement_regret"].dropna() if "placement_regret" in ok else []
+                    arms[arm] = {
+                        "victims": int(len(ga)),
+                        "measured": int(len(ok)),
+                        "storm": in_storm,
+                        "storm_pct": round(100 * in_storm / len(ok)) if len(ok) else None,
+                        "makespan": round(float(ok["makespan_s"].mean()), 1) if len(ok) else None,
+                        "regret": round(float(reg.mean()), 3) if len(reg) else None,
+                    }
+                scenarios[sc] = {
+                    "storm_node": ", ".join(sorted(storm_nodes)) or "?",
+                    "expected": exp_sc.get(sc),
+                    "done": int(len(g)),
+                    "arms": arms,
+                }
+        out["scenarios"] = scenarios
+        return out
+    except Exception as e:  # noqa: BLE001
+        return {"exists": True, "error": str(e)}
+
+
+def baseline_summary(path: Path) -> dict:
+    """Соло-бейзлайны как матрица профиль × нода (медианный makespan) — сразу
+    видно неоднородность нод (медленная w7)."""
+    if not path.exists():
+        return {"exists": False}
+    try:
+        import pandas as pd
+
+        df = pd.read_parquet(path)
+        out: dict = {
+            "exists": True,
+            "rows": len(df),
+            "mtime": time.strftime("%H:%M:%S", time.localtime(path.stat().st_mtime)),
+        }
+        solo = df[df["scenario"] == "baseline"] if "scenario" in df else df
+        solo = solo[solo["makespan_s"].notna()]
+        if len(solo) and "node" in solo and "profile" in solo:
+            nodes = sorted(n for n in solo["node"].dropna().unique())
+            profiles = sorted(solo["profile"].dropna().unique())
+            med = solo.groupby(["profile", "node"])["makespan_s"].median()
+            out["nodes"] = nodes
+            out["matrix"] = {
+                p: {n: (round(float(med[(p, n)])) if (p, n) in med else None) for n in nodes}
+                for p in profiles
+            }
         return out
     except Exception as e:  # noqa: BLE001
         return {"exists": True, "error": str(e)}
@@ -254,18 +368,27 @@ def collect() -> dict:
     all_lines = tail_lines(log_path, 4000)
     errors = [l for l in all_lines if re.search(r"ERROR|Traceback|failed", l)][-5:]
     phase, starts = run_phase(all_lines)
-    results = parquet_summary(Path(ARGS.results))
-    baselines = parquet_summary(Path(ARGS.baselines))
-    exp = expected_rows(Path(ARGS.config))
+    cfg = load_cfg()
+    results = pressure_results(Path(ARGS.results), cfg)
+    baselines = baseline_summary(Path(ARGS.baselines))
+    exp = expected_rows(cfg)
     report_dir = Path(ARGS.report)
     return {
         "time": time.strftime("%H:%M:%S"),
         "stand": stand_info(),
         "phase": phase,
+        "activity": current_activity(all_lines),
         "progress": progress(
             phase, starts, baselines.get("rows", 0), results.get("rows", 0), exp
         ),
         "expected_rows": exp,
+        "reps": {
+            "baseline": cfg.get("baseline", {}).get("repetitions"),
+            "pressure": {
+                sc["name"]: sc.get("repetitions", cfg.get("repetitions"))
+                for sc in cfg.get("pressure_scenarios", [])
+            },
+        },
         "log_tail": tail_lines(log_path, 10),
         "log_errors": errors,
         "results": results,
@@ -295,35 +418,160 @@ def table(headers: list[str], rows: list[list], caption: str = "") -> str:
     return f"<table>{cap}<tr>{th}</tr>{trs}</table>"
 
 
-def parquet_section(d: dict) -> str:
+def hero_now(d: dict) -> str:
+    """Крупная строка «что прямо сейчас»."""
+    phase = d["phase"]
+    act = d.get("activity") or {}
+    reps = d.get("reps") or {}
+    if phase == "DONE":
+        return "Прогон завершён ✓"
+    if phase == "baseline":
+        total = reps.get("baseline")
+        rep = f"rep {act['rep'] + 1}/{total}" if "rep" in act and total else ""
+        node = ""
+        m = re.search(r"base-(worker-[\d.]+)-rep", act.get("job_id", ""))
+        if m:
+            node = f" на {m.group(1).replace('worker-', 'w-')}"
+        prof = act.get("profile", "")
+        return f"Бейзлайн · {esc(prof)}{esc(node)} · {esc(rep)}".strip(" ·")
+    if phase == "pressure":
+        sc = act.get("scenario") or "?"
+        arm = arm_label(act.get("arm", "?"))
+        total = (reps.get("pressure") or {}).get(
+            {"IO": "io", "Net": "net", "LLC": "llc"}.get(sc, ""), None
+        )
+        rep = f"rep {act['rep'] + 1}/{total}" if "rep" in act and total else (
+            f"rep {act['rep'] + 1}" if "rep" in act else ""
+        )
+        vic = f" · жертва v{act['victim']}" if act.get("victim") is not None else ""
+        return f"{esc(sc)}-шторм · плечо <b>{esc(arm)}</b> · {esc(rep)}{esc(vic)}".strip(" ·")
+    return "ожидание старта…"
+
+
+def storm_cell(m: dict, is_best: bool) -> str:
+    """Ячейка «в шторм»: N/measured (pct%), цвет по величине доли."""
+    pct = m.get("storm_pct")
+    if pct is None:
+        return "<td class='dim'>—</td>"
+    cls = "good" if pct <= 12 else ("warn" if pct <= 30 else "bad")
+    star = " ★" if is_best else ""
+    return (
+        f"<td class='{cls}'><b>{m['storm']}</b>/{m['measured']} "
+        f"<span class='pct'>({pct}%)</span>{star}</td>"
+    )
+
+
+def money_section(res: dict) -> str:
+    if not res.get("exists"):
+        return "<p class='dim'>результатов ещё нет — начнётся с первой жертвы pressure-фазы</p>"
+    if "error" in res:
+        return f"<p class='err'>{esc(res['error'])}</p>"
+    scs = res.get("scenarios") or {}
+    if not scs:
+        return "<p class='dim'>pressure-строк ещё нет</p>"
+    parts: list[str] = []
+    for sc in sorted(scs):
+        info = scs[sc]
+        arms = info["arms"]
+        ordered = [a for a in ARM_ORDER if a in arms] + [
+            a for a in arms if a not in ARM_ORDER
+        ]
+        pcts = [arms[a]["storm_pct"] for a in ordered if arms[a]["storm_pct"] is not None]
+        best = min(pcts) if pcts else None
+
+        prog = ""
+        if info.get("expected"):
+            prog = f" · <span class='dim'>{info['done']}/{info['expected']} строк</span>"
+        parts.append(
+            f"<h3>{esc(scenario_label(sc))} "
+            f"<small class='dim'>шторм на {esc(info['storm_node'].replace('worker-', 'w-'))}"
+            f"{prog}</small></h3>"
+        )
+
+        head = ("<tr><th>плечо</th><th>в шторм</th>"
+                "<th>makespan, с</th><th>regret</th></tr>")
+        body = []
+        for a in ordered:
+            m = arms[a]
+            is_best = best is not None and m.get("storm_pct") == best and len(ordered) > 1
+            row_cls = " class='hero'" if a == HERO_ARM else ""
+            mk = m["makespan"] if m["makespan"] is not None else "—"
+            rg = m["regret"] if m["regret"] is not None else "—"
+            body.append(
+                f"<tr{row_cls}><td><b>{esc(arm_label(a))}</b></td>"
+                f"{storm_cell(m, is_best)}"
+                f"<td>{esc(mk)}</td><td>{esc(rg)}</td></tr>"
+            )
+        parts.append(f"<table class='money'>{head}{''.join(body)}</table>")
+
+        # Однострочный вывод, если есть все данные.
+        if best is not None and HERO_ARM in arms and arms[HERO_ARM]["storm_pct"] is not None:
+            hero_pct = arms[HERO_ARM]["storm_pct"]
+            others = [
+                f"{arm_label(a)} {arms[a]['storm_pct']}%"
+                for a in ordered
+                if a != HERO_ARM and arms[a]["storm_pct"] is not None
+            ]
+            verdict = "✓ ведёт" if hero_pct == best else "△ пока не лучший"
+            parts.append(
+                f"<p class='takeaway'>SensitivityScore увёл в шторм "
+                f"<b>{hero_pct}%</b> жертв против {', '.join(others) or '—'} "
+                f"<span class='{'good' if hero_pct == best else 'warn'}'>{verdict}</span></p>"
+            )
+    parts.append(
+        "<p class='note dim'>«в шторм» = доля жертв, севших на штормимую ноду "
+        "(меньше — лучше, это прямая метрика решения планировщика). makespan на "
+        "STAGE смещён неоднородностью нод — честная нормировка (slowdown-per-node) "
+        "в секции «Анализ» после прогона.</p>"
+    )
+    return "".join(parts)
+
+
+def baseline_section(d: dict) -> str:
     if not d.get("exists"):
         return "<p class='dim'>файла ещё нет</p>"
     if "error" in d:
         return f"<p class='err'>{esc(d['error'])}</p>"
-    head = (
-        f"<p><b>{d['rows']}</b> строк · обновлён {esc(d.get('mtime','?'))}"
-        + (f" · <span class='err'>{d['error_rows']} error-строк</span>"
-           if d.get("error_rows") else "")
-        + "</p>"
+    head = f"<p class='dim'>{d['rows']} строк · обновлён {esc(d.get('mtime','?'))}</p>"
+    matrix = d.get("matrix")
+    if not matrix:
+        return head + "<p class='dim'>— пусто —</p>"
+    nodes = d["nodes"]
+    th = "<th>профиль</th>" + "".join(
+        f"<th>{esc(n.replace('worker-', 'w-'))}</th>" for n in nodes
     )
-    parts = [head]
-    by_node = d.get("by_node") or {}
-    if by_node:
-        nodes = sorted({n for row in by_node.values() for n in row})
-        mk = d.get("makespan_mean_by_config", {})
-        rows = [
-            [cfg] + [by_node[cfg].get(n, 0) for n in nodes] + [mk.get(cfg, "")]
-            for cfg in sorted(by_node)
-        ]
-        parts.append(table(
-            ["плечо"] + [n.replace("worker-", "w-") for n in nodes] + ["makespan, с (ср.)"],
-            rows, "строки по плечам × нодам",
-        ))
-    elif d.get("by_config"):
-        parts.append(table(
-            ["плечо", "строк"], [[k, v] for k, v in sorted(d["by_config"].items())]
-        ))
-    return "".join(parts)
+    rows = []
+    for prof in sorted(matrix):
+        cells = "".join(
+            f"<td>{matrix[prof][n] if matrix[prof][n] is not None else '—'}</td>"
+            for n in nodes
+        )
+        rows.append(f"<tr><td><b>{esc(prof)}</b></td>{cells}</tr>")
+    return (
+        head
+        + "<table><caption>медианный соло-makespan, с — знаменатели slowdown</caption>"
+        + f"<tr>{th}</tr>{''.join(rows)}</table>"
+    )
+
+
+def cluster_section(d: dict) -> str:
+    cl = d["cluster"]
+    aggr = cl.get("aggressors", [])
+    running = sum(1 for a in aggr if len(a) >= 3 and a[2] == "Running")
+    jobs = cl.get("jobs", [])
+    active_jobs = sum(1 for j in jobs if len(j) >= 2 and j[1] not in ("", "<none>"))
+    badge = (
+        f"<span class='chip {'good' if running else 'dim'}'>агрессоры: {running} Running</span> "
+        f"<span class='chip'>активных Job'ов жертв: {active_jobs}</span>"
+    )
+    aggr_rows = [[a[0], a[1].replace("worker-", "w-") if len(a) > 1 else "", a[2] if len(a) > 2 else ""] for a in aggr]
+    return (
+        f"<p>{badge}</p>"
+        "<details><summary class='dim'>подробнее (Job'ы жертв / агрессоры)</summary>"
+        + "<h4>Агрессоры</h4>" + table(["под", "нода", "фаза"], aggr_rows)
+        + "<h4>Job'ы жертв</h4>" + table(["job", "active"], jobs)
+        + "</details>"
+    )
 
 
 def md_to_html(md: str) -> str:
@@ -396,78 +644,140 @@ def report_section(rep: dict) -> str:
     return "".join(parts)
 
 
+PHASE_META = {
+    "DONE": ("#22a06b", "готово"),
+    "pressure": ("#e8590c", "pressure"),
+    "baseline": ("#1c7ed6", "baseline"),
+    "not started": ("#868e96", "ожидание"),
+}
+
+
 def render_html(d: dict) -> str:
     phase = d["phase"]
-    color = {"DONE": "#2e7d32", "pressure": "#e65100", "baseline": "#1565c0"}.get(
-        phase, "#616161"
-    )
+    color, phase_word = PHASE_META.get(phase, ("#868e96", phase))
     prog = d.get("progress", {})
     pct = prog.get("overall_pct")
+
     bar = ""
     if pct is not None:
         eta = (
-            f" · ETA ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
+            f"ETA ~{prog['eta']} · осталось ~{prog['eta_minutes']} мин"
             if "eta" in prog
             else ""
         )
-        phase_pct = f" (фаза {phase}: {prog['phase_pct']}%)" if "phase_pct" in prog else ""
+        phase_pct = f"фаза {phase_word}: {prog['phase_pct']}%" if "phase_pct" in prog else ""
+        meta = " · ".join(x for x in (phase_pct, eta) if x)
         bar = f"""<div class="prog">
-<div class="progtext"><b>{pct}%</b> всего прогона{phase_pct}{eta}</div>
-<div class="barbg"><div class="bar" style="background:{color};width:{pct}%"></div></div></div>"""
+<div class="barbg"><div class="bar" style="background:{color};width:{pct}%"></div>
+<span class="barlabel">{pct}%</span></div>
+<div class="progmeta dim">{esc(meta)}</div></div>"""
 
     st = d["stand"]
-    stand_label = f"<b>{esc(st['label'])}</b> · " if st.get("label") else ""
-    stand_html = (
-        f"<p class='stand'>{stand_label}{esc(st.get('server',''))}</p>"
-        + table(["нода", "kubelet", "ядро", "cpu", "mem"], st.get("nodes", []))
-    )
+    stand_label = esc(st.get("label") or "стенд")
 
-    cl = d["cluster"]
-    cluster_html = (
-        "<h3>Job'ы жертв</h3>" + table(["job", "active"], cl.get("jobs", []))
-        + "<h3>Агрессоры</h3>" + table(["под", "нода", "фаза"], cl.get("aggressors", []))
-    )
-
-    return f"""<!doctype html><html><head><meta charset="utf-8">
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="10">
-<title>harness · {esc(st.get('label') or 'status')}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{stand_label} · {esc(phase_word)} {pct if pct is not None else ''}%</title>
 <style>
-body{{font-family:system-ui,sans-serif;margin:2em auto;max-width:72em;padding:0 1em;color:#222}}
-h1 small{{color:#999;font-weight:normal;font-size:.55em}}
-h2{{border-bottom:2px solid #eee;padding-bottom:.2em;margin-top:1.6em}}
-table{{border-collapse:collapse;margin:.5em 0;font-size:.92em}}
-caption{{text-align:left;color:#888;font-size:.85em;padding-bottom:.2em}}
-th,td{{border:1px solid #ddd;padding:.35em .7em;text-align:left}}
-th{{background:#f7f7f7}}
-tr:nth-child(even) td{{background:#fafafa}}
-pre{{background:#f5f5f5;padding:.7em;overflow-x:auto;font-size:.85em;border-radius:6px}}
-code{{background:#f0f0f0;padding:.1em .3em;border-radius:3px}}
-.dim{{color:#999}} .err{{color:#c62828}}
-.stand{{color:#555;margin:.2em 0}}
-.prog{{margin:.6em 0 1.2em}} .progtext{{font-size:1.15em;margin-bottom:.3em}}
-.barbg{{background:#e0e0e0;height:14px;border-radius:7px;max-width:44em}}
-.bar{{height:14px;border-radius:7px;transition:width .5s}}
-figure{{margin:1em 0;border:1px solid #eee;border-radius:6px;padding:.5em;display:inline-block}}
-figure img{{max-width:100%;height:auto}}
-figcaption{{color:#888;font-size:.8em;text-align:center}}
-</style></head><body>
-<h1>Прогон харнесса — <span style="color:{color}">{phase}</span>
-<small>обновлено {d['time']} · автообновление 10с · <a href="/json">/json</a></small></h1>
-{stand_html}
+:root{{
+  --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --dim:#6b7280; --line:#e5e7eb;
+  --good:#1a7f52; --goodbg:#e6f6ee; --warn:#b45309; --warnbg:#fdf2e0;
+  --bad:#c0392b; --badbg:#fdecea; --hero:#eef4ff; --herobd:#c9dcff;
+}}
+@media (prefers-color-scheme:dark){{
+  :root{{
+    --bg:#0f1115; --card:#181b21; --ink:#e6e8eb; --dim:#9aa4b2;
+    --line:#2a2f3a; --good:#4ade80; --goodbg:#12241a; --warn:#fbbf24;
+    --warnbg:#2a1f0a; --bad:#f87171; --badbg:#2a1414; --hero:#12203a; --herobd:#1e3a66;
+  }}
+}}
+*{{box-sizing:border-box}}
+body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;
+  background:var(--bg);color:var(--ink);line-height:1.5}}
+.wrap{{max-width:60em;margin:0 auto;padding:1.2em 1em 4em}}
+.top{{display:flex;align-items:center;gap:.7em;flex-wrap:wrap;margin-bottom:.2em}}
+.badge{{background:{color};color:#fff;font-weight:600;font-size:.8em;
+  padding:.18em .7em;border-radius:999px;text-transform:uppercase;letter-spacing:.03em}}
+.top h1{{font-size:1.15em;margin:0;font-weight:600}}
+.top .upd{{margin-left:auto;color:var(--dim);font-size:.82em}}
+.now{{font-size:1.35em;font-weight:500;margin:.35em 0 .1em}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:1em 1.2em;margin:1em 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}}
+.card>h2{{margin:.1em 0 .6em;font-size:1.05em;border:none;padding:0}}
+h3{{margin:1em 0 .3em;font-size:.98em}} h4{{margin:.8em 0 .3em;font-size:.9em;color:var(--dim)}}
+.prog{{margin:.7em 0 .2em}}
+.barbg{{position:relative;background:var(--line);height:22px;border-radius:11px;overflow:hidden}}
+.bar{{height:22px;border-radius:11px;transition:width .6s}}
+.barlabel{{position:absolute;top:0;left:.8em;line-height:22px;font-weight:700;
+  font-size:.82em;color:var(--ink);mix-blend-mode:difference;filter:invert(1)}}
+.progmeta{{font-size:.85em;margin-top:.35em}}
+table{{border-collapse:collapse;margin:.4em 0;font-size:.9em;width:auto}}
+caption{{text-align:left;color:var(--dim);font-size:.82em;padding-bottom:.3em}}
+th,td{{border:1px solid var(--line);padding:.34em .7em;text-align:left}}
+th{{background:transparent;color:var(--dim);font-weight:600;font-size:.86em}}
+table.money td,table.money th{{padding:.4em .8em}}
+tr.hero td{{background:var(--hero)}}
+tr.hero td:first-child{{border-left:3px solid var(--herobd)}}
+.good{{color:var(--good)}} .warn{{color:var(--warn)}} .bad{{color:var(--bad)}}
+td.good{{background:var(--goodbg)}} td.warn{{background:var(--warnbg)}} td.bad{{background:var(--badbg)}}
+.pct{{font-size:.85em;color:var(--dim)}}
+.dim{{color:var(--dim)}} .err{{color:var(--bad)}}
+.chip{{display:inline-block;background:var(--line);border-radius:999px;
+  padding:.15em .7em;font-size:.82em;margin-right:.3em}}
+.chip.good{{background:var(--goodbg);color:var(--good)}}
+.takeaway{{margin:.3em 0 .8em;font-size:.92em}}
+.note{{font-size:.82em;margin-top:.6em}}
+details summary{{cursor:pointer;font-size:.85em;margin:.4em 0}}
+pre{{background:var(--bg);padding:.7em;overflow-x:auto;font-size:.82em;
+  border-radius:8px;border:1px solid var(--line)}}
+code{{background:var(--bg);padding:.1em .35em;border-radius:4px;font-size:.9em}}
+figure{{margin:1em 0;border:1px solid var(--line);border-radius:8px;padding:.5em;
+  display:inline-block;max-width:100%}}
+figure img{{max-width:100%;height:auto;display:block}}
+figcaption{{color:var(--dim);font-size:.78em;text-align:center;margin-top:.3em}}
+a{{color:#4c8dff}}
+</style></head><body><div class="wrap">
+
+<div class="top">
+  <span class="badge">{esc(phase_word)}</span>
+  <h1>{stand_label}</h1>
+  <span class="upd">обновлено {esc(d['time'])} · авто-10с · <a href="/json">/json</a></span>
+</div>
+<div class="now">{hero_now(d)}</div>
 {bar}
-<h2>Результаты прогона <span class='dim'>({esc(str(ARGS.results))})</span></h2>
-{parquet_section(d['results'])}
-<h2>Бейзлайны <span class='dim'>({esc(str(ARGS.baselines))})</span></h2>
-{parquet_section(d['baselines'])}
-<h2>Кластер сейчас</h2>
-{cluster_html}
-<h2>Анализ</h2>
-{report_section(d['report'])}
-<h2>Хвост лога</h2>
-<pre>{esc(chr(10).join(d['log_tail']))}</pre>
-<h2>Ошибки в логе (последние)</h2>
-<pre>{esc(chr(10).join(d['log_errors']) or '—')}</pre>
-</body></html>"""
+
+<div class="card">
+  <h2>Результат — куда садятся жертвы</h2>
+  {money_section(d['results'])}
+</div>
+
+<div class="card">
+  <h2>Кластер сейчас</h2>
+  {cluster_section(d)}
+</div>
+
+<div class="card">
+  <h2>Бейзлайны <span class='dim' style='font-weight:400;font-size:.8em'>(соло, знаменатели slowdown)</span></h2>
+  {baseline_section(d['baselines'])}
+</div>
+
+<div class="card">
+  <h2>Анализ</h2>
+  {report_section(d['report'])}
+</div>
+
+<details class="card">
+  <summary>Стенд и логи</summary>
+  <p class='dim'>{esc(st.get('server',''))}</p>
+  {table(["нода", "kubelet", "ядро", "cpu", "mem"], st.get("nodes", []))}
+  <h4>Хвост лога</h4>
+  <pre>{esc(chr(10).join(d['log_tail']))}</pre>
+  <h4>Ошибки в логе (последние)</h4>
+  <pre>{esc(chr(10).join(d['log_errors']) or '—')}</pre>
+</details>
+
+</div></body></html>"""
 
 
 # ---------------------------------------------------------------- сервер ----
@@ -520,7 +830,7 @@ def main():
         "--config",
         default="config.yaml",
         help="config.yaml харнесса — из него считается ожидаемое число строк "
-        "(для процента готовности и ETA в шапке)",
+        "(для процента готовности и ETA в шапке) и штормимые ноды сценариев",
     )
     p.add_argument(
         "--report",
