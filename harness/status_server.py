@@ -157,9 +157,15 @@ def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float]]:
         if m:
             phase = m.group(1).lower()
             try:
-                starts[phase] = time.mktime(
+                ts = time.mktime(
                     time.strptime(f"{today} {m.group(2)}", "%Y-%m-%d %H:%M:%S")
                 )
+                # В маркере только время суток, без даты. Если момент вышел
+                # в будущем — фаза стартовала до полуночи: минус сутки, иначе
+                # elapsed < 0 и ETA уезжает в прошлое.
+                if ts > time.time() + 60:
+                    ts -= 86400.0
+                starts[phase] = ts
             except ValueError:
                 pass
         elif "ALL DONE" in l or "PRESSURE DONE" in l:
