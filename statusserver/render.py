@@ -41,9 +41,12 @@ def hero_now(d: dict) -> str:
         prog = d.get("progress") or {}
         extra = ""
         if prog.get("duration_min") is not None:
-            extra = f" · основная серия длилась ~{fmt_dur(prog['duration_min'])}"
+            what = ("эталонные прогоны длились"
+                    if prog.get("duration_phase") == "baseline"
+                    else "основная серия длилась")
+            extra = f" · {what} ~{fmt_dur(prog['duration_min'])}"
             if prog.get("finished_at"):
-                extra += f", закончилась в {prog['finished_at']}"
+                extra += f", финиш в {prog['finished_at']}"
         return "Прогон завершён ✓" + esc(extra)
     if phase == "baseline":
         total = reps.get("baseline")

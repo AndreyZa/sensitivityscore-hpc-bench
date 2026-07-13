@@ -45,6 +45,11 @@ def collect() -> dict:
     all_lines = tail_lines(log_path, 4000)
     errors = [l for l in all_lines if re.search(r"ERROR|Traceback|failed", l)][-5:]
     phase, starts, ends = run_phase(all_lines)
+    # Прогон-добор (--scope baseline): маркер BASELINE DONE завершает прогон —
+    # основной серии в нём не будет, иначе страница вечно висела бы в фазе
+    # «эталонные прогоны 100%».
+    if ARGS.scope == "baseline" and phase == "baseline" and "baseline" in ends:
+        phase = "DONE"
     cfg = load_cfg(Path(ARGS.config))
     results = pressure_results(Path(ARGS.results), cfg)
     baselines = baseline_summary(Path(ARGS.baselines))
@@ -64,7 +69,8 @@ def collect() -> dict:
         "phase": phase,
         "activity": current_activity(all_lines, profile_scenario_map(cfg)),
         "progress": progress(
-            phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0), exp
+            phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0),
+            exp, ARGS.scope,
         ),
         "expected_rows": exp,
         "reps": {
@@ -145,6 +151,13 @@ def main():
         default=str(ROOT / "analysis/report"),
         help="каталог с выходом analyze.py — когда там появляется summary.md, "
         "страница показывает секцию «Анализ» с графиками",
+    )
+    p.add_argument(
+        "--scope",
+        choices=["full", "baseline"],
+        default="full",
+        help="baseline — прогон только эталонный (добор): общий процент "
+        "не включает основную серию, BASELINE DONE завершает прогон",
     )
     p.add_argument("--stand", default="", help="человекочитаемое имя стенда для шапки")
     p.add_argument("--port", type=int, default=8787)

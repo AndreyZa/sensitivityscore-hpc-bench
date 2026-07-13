@@ -17,6 +17,7 @@ CONFIG=${CONFIG:-harness/config-stage.yaml}
 RESULTS=${RESULTS:-harness/results/results-stage.parquet}
 BASELINES=${BASELINES:-harness/results/baselines-stage.parquet}
 REPORT=${REPORT:-analysis/report-stage}
+SCOPE=${SCOPE:-full}
 STAND=${STAND:-"STAGE (Timeweb k0s)"}
 PORT=${PORT:-8787}
 pkill -f "python -m statusserver" 2>/dev/null
@@ -27,6 +28,7 @@ nohup harness/.venv/bin/python -m statusserver \
     --results "$RESULTS" \
     --baselines "$BASELINES" \
     --report "$REPORT" \
+    --scope "$SCOPE" \
     --stand "$STAND" \
     --port "$PORT" > statusserver/server.out 2>&1 &
 sleep 1

@@ -100,12 +100,17 @@ def expected_rows(cfg: dict) -> dict[str, int]:
 
 
 def progress(
-    phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict
+    phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict,
+    scope: str = "full",
 ) -> dict:
     """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы.
-    После завершения — итоговая длительность основной серии."""
+    После завершения — итоговая длительность. scope="baseline" — прогон
+    только эталонный (добор): основная серия не входит в общий объём, иначе
+    бар делил бы сделанное на строки, которых в этом прогоне не будет."""
     out: dict = {}
     b_exp, p_exp = exp.get("baseline", 0), exp.get("pressure", 0)
+    if scope == "baseline":
+        p_exp = 0
     total_exp = b_exp + p_exp
     if not total_exp:
         return out
@@ -145,8 +150,10 @@ def progress(
     elif phase == "DONE":
         out["overall_pct"] = 100
         out["phase_pct"] = 100
-        s, e = starts.get("pressure"), ends.get("pressure")
+        key = "pressure" if "pressure" in starts else "baseline"
+        s, e = starts.get(key), ends.get(key)
         if s is not None and e is not None and e >= s:
+            out["duration_phase"] = key
             out["duration_min"] = round((e - s) / 60)
             out["finished_at"] = time.strftime("%H:%M", time.localtime(e))
     return out
