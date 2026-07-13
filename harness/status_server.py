@@ -161,9 +161,15 @@ def progress(phase: str, starts: dict, b_rows: int, p_rows: int, exp: dict) -> d
     total_exp = b_exp + p_exp
     if not total_exp:
         return out
-    done_overall = min(b_rows, b_exp) + min(p_rows, p_exp)
-    if phase == "pressure":  # baseline к этому моменту завершён
+    if phase == "baseline":
+        # results-файл в этот момент может содержать только СТАРУЮ серию
+        # (харнесс перепишет его с нуля на первом же pressure-плече) — не
+        # засчитывать чужие строки как прогресс будущей фазы.
+        done_overall = min(b_rows, b_exp)
+    elif phase == "pressure":  # baseline к этому моменту завершён
         done_overall = b_exp + min(p_rows, p_exp)
+    else:
+        done_overall = min(b_rows, b_exp) + min(p_rows, p_exp)
     out["overall_pct"] = round(100 * done_overall / total_exp)
 
     cur_done, cur_exp = (b_rows, b_exp) if phase == "baseline" else (p_rows, p_exp)
