@@ -131,15 +131,13 @@ def progress(
         if start and cur_done > 0:
             elapsed = time.time() - start
             if elapsed > 0:
+                # ETA только ТЕКУЩЕГО этапа. Экстраполировать следующий этап
+                # темпом этого нельзя: строки эталонов и основной серии
+                # несравнимы по длительности, а прогон может быть и
+                # baseline-only (добор эталонов) — оценка выходила кратно
+                # завышенной. Подпись на странице говорит «этап завершится».
                 rate = cur_done / elapsed  # строк/сек в текущей фазе
-                remaining_cur = max(cur_exp - cur_done, 0) / rate
-                # После baseline остаётся основная серия — грубо тем же темпом
-                # на строку (честнее занизить, чем молчать; её строки обычно
-                # дольше). Недостающие эталоны для добавленных узлов в ETA не
-                # входят — это отдельный прогон.
-                remaining = remaining_cur + (
-                    (p_exp / rate) if phase == "baseline" and p_exp else 0
-                )
+                remaining = max(cur_exp - cur_done, 0) / rate
                 out["eta"] = time.strftime(
                     "%H:%M", time.localtime(time.time() + remaining)
                 )

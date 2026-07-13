@@ -396,7 +396,7 @@ def render_html(d: dict) -> str:
     bar = ""
     if pct is not None:
         eta = (
-            f"ожидаемое завершение ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
+            f"этап завершится ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
             if "eta" in prog
             else ""
         )
