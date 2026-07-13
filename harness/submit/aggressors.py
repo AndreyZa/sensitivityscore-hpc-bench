@@ -55,7 +55,12 @@ def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
         capture_output=True,
         text=True,
     )
-    workers = sorted(result.stdout.split())
+    # Отбрасываем exclude_nodes — те же ноды, что матрица обходит через
+    # nodeAffinity (напр. worker без egress к registry): агрессор туда бы не
+    # стянул образ, а victim'ы туда всё равно не планируются, так что давить
+    # их бессмысленно. Держим согласованным с list_worker_nodes(exclude=...).
+    excluded = set(cfg.get("exclude_nodes", []))
+    workers = sorted(w for w in result.stdout.split() if w not in excluded)
     count = scenario.get("pressured_node_count", 1)
     if count >= len(workers):
         raise RuntimeError(

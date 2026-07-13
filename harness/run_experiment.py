@@ -612,7 +612,7 @@ def run_baseline_mode(cfg: dict, args) -> None:
                 config,
             )
         else:
-            nodes = list(k8s_submit.list_worker_nodes())
+            nodes = list(k8s_submit.list_worker_nodes(exclude=cfg.get("exclude_nodes", [])))
             if not nodes:
                 raise RuntimeError("baseline per_node: no worker nodes found")
             log.info("baseline mode: per-node pinning across %s", ",".join(nodes))

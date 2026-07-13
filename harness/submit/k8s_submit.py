@@ -18,6 +18,7 @@ import logging
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -75,9 +76,15 @@ def ensure_namespace(namespace: str) -> None:
 log = logging.getLogger(__name__)
 
 
-def list_worker_nodes() -> list[str]:
+def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
     """Worker-ноды кластера (без control-plane), отсортированные по имени —
-    детерминированный порядок для per-node бейзлайнов и pressure-сценариев."""
+    детерминированный порядок для per-node бейзлайнов и pressure-сценариев.
+
+    exclude отбрасывает ноды, которые матрица и так обходит стороной
+    (cfg["exclude_nodes"], nodeAffinity NotIn в шаблоне job) — иначе per-node
+    бейзлайн/агрессор запиннился бы к ноде, на которую эксперимент никогда не
+    планирует (напр. worker без egress к registry -> ImagePullBackOff, либо
+    знаменатель slowdown для ноды, которой в матрице нет)."""
     result = subprocess.run(
         [
             "kubectl",
@@ -91,7 +98,8 @@ def list_worker_nodes() -> list[str]:
         capture_output=True,
         text=True,
     )
-    return sorted(result.stdout.split())
+    excluded = set(exclude)
+    return sorted(n for n in result.stdout.split() if n not in excluded)
 
 
 class K8sJobHandle:
