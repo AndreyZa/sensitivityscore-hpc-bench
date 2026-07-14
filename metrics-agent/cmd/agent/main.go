@@ -64,6 +64,22 @@ func main() {
 			"(Net dimension off; run `make netcheck-run` and set the env on this DaemonSet)")
 	}
 
+	// LLC-калибровка узлового давления: miss RATIO (misses/references) как
+	// узловой сигнал инвертируется под потоковой нагрузкой — знаменатель
+	// (references) раздувается всеми обращениями, и нагруженный узел выглядит
+	// «чище» простаивающего (найдено на STAGE smoke 2026-07-14: 2×stress-ng
+	// --stream давали ratio 0.018 против 0.33 на пустых узлах). Абсолютные
+	// промахи в секунду монотонны по нагрузке; reference — misses/s полного
+	// шторма на узле этого стенда (поле llc_misses_per_sec в Redis под
+	// эталонным штормом). Без калибровки остаётся прежний ratio.
+	llcRefMps := llcReferenceFromEnv()
+	if llcRefMps > 0 {
+		log.Printf("llc calibration: LLC_REFERENCE_MISSES_PER_SEC=%.0f — node llc pressure = misses/s normalized", llcRefMps)
+	} else {
+		log.Printf("WARNING: LLC_REFERENCE_MISSES_PER_SEC not set — node llc_miss_rate stays a raw ratio " +
+			"(inverts under streaming load; calibrate via llc_misses_per_sec under a reference storm)")
+	}
+
 	writer := redisclient.NewWriter(redisAddr, redisTTL)
 	defer writer.Close()
 
@@ -93,8 +109,14 @@ func main() {
 	samplers := make(map[string]*podSampler)
 	nodePSI := &nodePSISampler{}
 
+	// Для misses/s нужно реальное окно между тиками: под нагрузкой тик может
+	// запаздывать, и деление на номинальный sampleInterval завышало бы rate.
+	lastTick := time.Now()
 	for range ticker.C {
-		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI, netRefMbps); err != nil {
+		now := time.Now()
+		elapsed := now.Sub(lastTick)
+		lastTick = now
+		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI, netRefMbps, llcRefMps, elapsed); err != nil {
 			log.Printf("sample error: %v", err)
 		}
 	}
@@ -319,7 +341,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 // it instead of perf_event_open() and tagged accordingly. samplers carries the
 // per-pod cross-tick state; pods that left the node are evicted (and their
 // counters closed) here.
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler, netRefMbps float64) error {
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler, netRefMbps, llcRefMps float64, elapsed time.Duration) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
@@ -440,7 +462,18 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 		nodeAgg.Approximation = "synthetic-devbox"
 	} else {
-		nodeAgg.LLCMissRate = clamp01(perf.Ratio(nodeDeltas.llcNum, nodeDeltas.llcDen))
+		// Узловое LLC-давление. Откалиброванный стенд: абсолютные промахи в
+		// секунду к reference-шторму — ratio (misses/references) как узловой
+		// сигнал инвертируется под потоковой нагрузкой (см. main). Сырой
+		// misses/s пишется всегда — по нему калибруется reference.
+		if elapsed > 0 {
+			nodeAgg.LLCMissesPerSec = float64(nodeDeltas.llcNum) / elapsed.Seconds()
+		}
+		if llcRefMps > 0 && elapsed > 0 {
+			nodeAgg.LLCMissRate = clamp01(nodeAgg.LLCMissesPerSec / llcRefMps)
+		} else {
+			nodeAgg.LLCMissRate = clamp01(perf.Ratio(nodeDeltas.llcNum, nodeDeltas.llcDen))
+		}
 		nodeAgg.NUMARemoteRatio = clamp01(perf.Ratio(nodeDeltas.numaNum, nodeDeltas.numaDen))
 	}
 	nodeAgg.IOPressure = clamp01(nodePSI.pressure())
@@ -513,6 +546,22 @@ func netReferenceFromEnv() float64 {
 		log.Fatalf("invalid NET_REFERENCE_MBPS: %q (want a positive Mbit/s figure from `make netcheck-logs`)", v)
 	}
 	return mbps
+}
+
+// llcReferenceFromEnv читает калибровку LLC_REFERENCE_MISSES_PER_SEC (см.
+// main). Пусто — узловое LLC-давление остаётся сырым ratio (0); кривое
+// значение — ошибка конфигурации, падаем громко, как с NET_REFERENCE_MBPS.
+func llcReferenceFromEnv() float64 {
+	v := os.Getenv("LLC_REFERENCE_MISSES_PER_SEC")
+	if v == "" {
+		return 0
+	}
+	mps, err := strconv.ParseFloat(v, 64)
+	if err != nil || mps <= 0 {
+		log.Fatalf("invalid LLC_REFERENCE_MISSES_PER_SEC: %q (want positive misses/s "+
+			"measured via the llc_misses_per_sec node field under a reference storm)", v)
+	}
+	return mps
 }
 
 func sampleIntervalFromEnv() time.Duration {

@@ -52,6 +52,15 @@ spec:
               # ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=<из
               # netcheck>), в манифесте намеренно не хардкодится.
               value: ""
+            - name: LLC_REFERENCE_MISSES_PER_SEC
+              # LLC-калибровка узлового давления: misses/s под эталонным
+              # штормом (поле llc_misses_per_sec узла в Redis при 2×stress-ng
+              # --stream). Пусто = узловой llc_miss_rate остаётся сырым ratio
+              # misses/references — ВНИМАНИЕ: ratio инвертируется под
+              # потоковой нагрузкой (знаменатель раздувается), для llc-серий
+              # калибровка обязательна. Стендо-специфично, задаётся kubectl
+              # set env, как NET_REFERENCE_MBPS.
+              value: ""
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the
             # container's own /proc show every host process (net.go reads

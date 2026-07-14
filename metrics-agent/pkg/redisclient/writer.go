@@ -12,7 +12,8 @@ import (
 )
 
 type Sample struct {
-	LLCMissRate     float64
+	LLCMissRate     float64 // на узле: давление LLC [0,1] — misses/s к LLC_REFERENCE_MISSES_PER_SEC (без калибровки — сырой ratio, см. main.go); на поде: ratio misses/references
+	LLCMissesPerSec float64 // сырые узловые промахи LLC в секунду — для калибровки reference и анализа
 	NUMARemoteRatio float64
 	NetBW           float64 // raw rx+tx bytes/s over the tick window — analysis-side activity metric
 	NetPressure     float64 // NetBW normalized by the stand's NET_REFERENCE_MBPS calibration, [0,1] — the scheduler's Net dimension (0 when uncalibrated)
@@ -84,13 +85,14 @@ func (w *Writer) WriteJobMetrics(ctx context.Context, jobID, nodeName string, s 
 
 func sampleToFields(s Sample) map[string]any {
 	fields := map[string]any{
-		"llc_miss_rate":     s.LLCMissRate,
-		"numa_remote_ratio": s.NUMARemoteRatio,
-		"net_bw":            s.NetBW,
-		"net_pressure":      s.NetPressure,
-		"io_iops":           s.IOIOPS,
-		"io_pressure":       s.IOPressure,
-		"ts":                time.Now().Unix(),
+		"llc_miss_rate":      s.LLCMissRate,
+		"llc_misses_per_sec": s.LLCMissesPerSec,
+		"numa_remote_ratio":  s.NUMARemoteRatio,
+		"net_bw":             s.NetBW,
+		"net_pressure":       s.NetPressure,
+		"io_iops":            s.IOIOPS,
+		"io_pressure":        s.IOPressure,
+		"ts":                 time.Now().Unix(),
 	}
 	if s.Approximation != "" {
 		fields["approximation"] = s.Approximation
