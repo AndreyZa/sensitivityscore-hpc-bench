@@ -11,10 +11,30 @@ from .progress import expected_by_scenario
 
 
 def storm_nodes_by_scenario(cfg: dict) -> dict[str, set]:
-    """scenario-колонка (pressure:<name>) -> множество перегружаемых узлов."""
+    """scenario-колонка (pressure:<name>) -> множество перегружаемых узлов
+    (легаси aggressor_nodes либо узлы storms смешанного сценария)."""
     out = {}
     for sc in cfg.get("pressure_scenarios", []):
-        out[f"pressure:{sc['name']}"] = set(sc.get("aggressor_nodes") or [])
+        if "storms" in sc:
+            out[f"pressure:{sc['name']}"] = {s["node"] for s in sc["storms"]}
+        else:
+            out[f"pressure:{sc['name']}"] = set(sc.get("aggressor_nodes") or [])
+    return out
+
+
+def toxic_map_by_scenario(cfg: dict) -> dict[str, dict[str, set]]:
+    """Для смешанных сценариев: scenario-колонка -> {профиль: множество
+    «своих токсичных» узлов} из storms[].toxic_for. В смешанном сценарии
+    перегружены ВСЕ узлы, и качество решения — не «избежал шторма вообще»,
+    а «не поставил задачу на шторм её собственной оси»."""
+    out: dict[str, dict[str, set]] = {}
+    for sc in cfg.get("pressure_scenarios", []):
+        m: dict[str, set] = {}
+        for s in sc.get("storms", []) or []:
+            for prof in s.get("toxic_for", []) or []:
+                m.setdefault(prof, set()).add(s["node"])
+        if m:
+            out[f"pressure:{sc['name']}"] = m
     return out
 
 
@@ -39,12 +59,14 @@ def pressure_results(path: Path, cfg: dict) -> dict:
                 df["approximation"].astype(str).str.startswith("error:").sum()
             )
         storm = storm_nodes_by_scenario(cfg)
+        toxic = toxic_map_by_scenario(cfg)
         exp_sc = expected_by_scenario(cfg)
         scenarios: dict = {}
         if "scenario" in df and "config" in df:
             dfp = df[df["scenario"].astype(str).str.startswith("pressure:")]
             for sc, g in dfp.groupby("scenario"):
                 storm_nodes = storm.get(sc, set())
+                tox = toxic.get(sc)
                 arms: dict = {}
                 for arm, ga in g.groupby("config"):
                     bad = (
@@ -53,7 +75,15 @@ def pressure_results(path: Path, cfg: dict) -> dict:
                         else pd.Series(False, index=ga.index)
                     )
                     ok = ga[ga["makespan_s"].notna() & ~bad]
-                    in_storm = int(ok["node"].isin(storm_nodes).sum()) if len(ok) else 0
+                    if tox:
+                        # Смешанный сценарий: «в шторм» = на узел, токсичный
+                        # именно для профиля этой задачи.
+                        in_storm = int(sum(
+                            r.node in tox.get(r.profile, set())
+                            for r in ok.itertuples()
+                        )) if len(ok) else 0
+                    else:
+                        in_storm = int(ok["node"].isin(storm_nodes).sum()) if len(ok) else 0
                     reg = ok["placement_regret"].dropna() if "placement_regret" in ok else []
                     arms[arm] = {
                         "victims": int(len(ga)),

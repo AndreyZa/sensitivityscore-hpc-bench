@@ -34,10 +34,48 @@ _env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 AGGRESSOR_LABEL = "app=ss-aggressor"
 
 
+def storm_specs(scenario: dict) -> list[dict] | None:
+    """Нормализованный список штормов смешанного сценария или None (легаси).
+
+    Новый формат — scenario["storms"]: на КАЖДОМ узле свой тип шторма
+    (кросс-осевой тест: планировщик должен не «уйти от единственного шторма»,
+    а СОПОСТАВИТЬ профиль каждой жертвы с осью шторма каждого узла):
+        storms:
+          - {node: ..., mode: stress, args: ["--stream","2"], per_node: 2,
+             toxic_for: [high-s]}
+          - {node: ..., mode: net, per_node: 2, net_bitrate_mbps: 400,
+             toxic_for: [high-s-net]}
+    toxic_for — профили, для которых узел «свой токсичный» (метрика
+    ошибочного сопоставления в анализе/статусе); на деплой не влияет."""
+    storms = scenario.get("storms")
+    if not storms:
+        return None
+    return [
+        {
+            "node": s["node"],
+            "mode": s.get("mode", "stress"),
+            "args": s.get("args"),
+            "per_node": int(s.get("per_node", 1)),
+            "net_bitrate_mbps": int(
+                s.get("net_bitrate_mbps", scenario.get("net_bitrate_mbps", 400))
+            ),
+        }
+        for s in storms
+    ]
+
+
 def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
-    """Ноды под давление: явный список из сценария, либо первые
-    pressured_node_count worker-нод (без control-plane), отсортированных по
-    имени — детерминированно от прогона к прогону."""
+    """Ноды под давление: список storms (смешанный сценарий), явный список
+    из сценария, либо первые pressured_node_count worker-нод (без
+    control-plane), отсортированных по имени — детерминированно от прогона
+    к прогону."""
+    storms = storm_specs(scenario)
+    if storms:
+        # Смешанный сценарий сознательно давит ВСЕ измерительные узлы —
+        # чистых нет by design, качество решения = сопоставление профиля
+        # жертвы с осью шторма узла, guard «нужна чистая нода» неприменим.
+        return [s["node"] for s in storms]
+
     explicit = scenario.get("aggressor_nodes") or []
     if explicit:
         return list(explicit)
@@ -73,7 +111,14 @@ def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
 
 def expected_pods(node_count: int, per_node: int, scenario: dict) -> int:
     """Сколько подов-агрессоров обязано быть Running у плеча (для
-    assert_running): net-режим добавляет к клиентам по iperf3-серверу на слот."""
+    assert_running): net-режим добавляет к клиентам по iperf3-серверу на
+    слот. Для storms счёт по каждому шторму отдельно (node_count/per_node
+    аргументы тогда не используются)."""
+    storms = storm_specs(scenario)
+    if storms:
+        return sum(
+            s["per_node"] * (2 if s["mode"] == "net" else 1) for s in storms
+        )
     if scenario.get("aggressor_mode") == "net":
         return node_count * per_node * 2
     return node_count * per_node
@@ -209,6 +254,45 @@ def deploy(
     # Агрессоры деплоятся ДО первого сабмита job (который сам создаёт
     # namespace) — после make harness-clean-full namespace не существует.
     ensure_namespace(namespace)
+
+    storms = storm_specs(scenario)
+    if storms:
+        # Смешанный сценарий: у каждого узла свой шторм. stress-штормы
+        # собираются в один apply; net-штормы деплоятся после (им нужен
+        # podIP сервера).
+        stress_manifests = []
+        for st in storms:
+            if st["mode"] == "net":
+                continue
+            args = ["--temp-path", "/scratch"] + list(st["args"] or ["--stream", "2"])
+            for slot in range(st["per_node"]):
+                stress_manifests.append(
+                    _render_pod(
+                        scenario, cfg,
+                        name=f"ss-aggressor-{st['node']}-{slot}".lower(),
+                        node_name=st["node"],
+                        args_json=json.dumps(args),
+                    )
+                )
+        if stress_manifests:
+            _apply_and_wait(stress_manifests, namespace)
+        for st in storms:
+            if st["mode"] == "net":
+                _deploy_net(
+                    [st["node"]], st["per_node"],
+                    {**scenario, "net_bitrate_mbps": st["net_bitrate_mbps"]},
+                    cfg,
+                )
+        log.info(
+            "mixed storms: %s",
+            "; ".join(
+                f"{st['node']}={st['mode']}"
+                + (f"{st['args']}" if st["args"] else "")
+                + f" x{st['per_node']}"
+                for st in storms
+            ),
+        )
+        return
 
     if scenario.get("aggressor_mode") == "net":
         _deploy_net(nodes, per_node, scenario, cfg)

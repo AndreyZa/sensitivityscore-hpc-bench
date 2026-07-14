@@ -354,11 +354,35 @@ def victim_offsets(count: int, arrival: dict, rng: random.Random) -> list[float]
     return [i * interval for i in range(count)]
 
 
+def victim_profiles_for(scenario: dict) -> list[str]:
+    """Профили жертв плеча в порядке прибытия.
+
+    Легаси-формат: victim_profile × victim_count (один профиль).
+    Смешанный сценарий: victims = [{profile, count}, ...] — профили
+    чередуются round-robin, чтобы каждый был равномерно размазан по
+    пуассоновскому окну прибытия, а не «сначала все кэш-жертвы, потом все
+    дисковые» (порядок детерминирован — оба плеча репа получают одинаковую
+    последовательность)."""
+    if "victims" in scenario:
+        groups = [
+            [v["profile"]] * int(v.get("count", 1)) for v in scenario["victims"]
+        ]
+        seq: list[str] = []
+        i = 0
+        while any(groups):
+            g = groups[i % len(groups)]
+            if g:
+                seq.append(g.pop(0))
+            i += 1
+        return seq
+    return [scenario.get("victim_profile", "high-s")] * scenario.get("victim_count", 6)
+
+
 def run_pressure_arm(
     scenario: dict,
     scenario_col: str,
     config: str,
-    profile: str,
+    profiles_seq: list[str],
     intensity: int,
     rep: int,
     offsets: list[float],
@@ -369,8 +393,15 @@ def run_pressure_arm(
     """Одно плечо pressure-точки: развернуть агрессоров -> дать давлению
     стабилизироваться -> подать поток жертв через планировщик этого плеча ->
     снести агрессоров. В колонку overcommit пишется intensity (агрессоров на
-    pressured-ноду) — это ось dose-response, по ней analysis сравнивает плечи."""
-    base_job_id = make_job_id(config, profile, float(intensity), rep)
+    pressured-ноду) — это ось dose-response, по ней analysis сравнивает плечи.
+
+    profiles_seq — профиль каждой жертвы по индексу прибытия (в смешанном
+    сценарии они разные; в job_id плеча тогда пишется «mixed», а профиль
+    конкретной жертвы — в её строке результата)."""
+    arm_profile = (
+        profiles_seq[0] if len(set(profiles_seq)) == 1 else "mixed"
+    )
+    base_job_id = make_job_id(config, arm_profile, float(intensity), rep)
     victim_count = len(offsets)
 
     log.info(
@@ -384,7 +415,8 @@ def run_pressure_arm(
         if not dry_run:
             time.sleep(offsets[index])
         row = run_one(
-            f"{base_job_id}-v{index}", config, profile, float(intensity), rep, cfg, dry_run
+            f"{base_job_id}-v{index}", config, profiles_seq[index],
+            float(intensity), rep, cfg, dry_run
         )
         row["scenario"] = scenario_col
         row["batch_size"] = victim_count
@@ -415,7 +447,7 @@ def run_pressure_arm(
                     rows.append(
                         error_row(
                             config,
-                            profile,
+                            profiles_seq[index],
                             float(intensity),
                             rep,
                             exc,
@@ -443,8 +475,9 @@ def run_pressure_scenario(scenario: dict, cfg: dict, dry_run: bool):
     """
     name = scenario["name"]
     scenario_col = f"pressure:{name}"
-    profile = scenario.get("victim_profile", "high-s")
-    victim_count = scenario.get("victim_count", 6)
+    profiles_seq = victim_profiles_for(scenario)
+    victim_count = len(profiles_seq)
+    arm_profile = profiles_seq[0] if len(set(profiles_seq)) == 1 else "mixed"
     arrival = scenario.get("victim_arrival", {})
     reps = scenario.get("repetitions", cfg["repetitions"])
 
@@ -472,7 +505,7 @@ def run_pressure_scenario(scenario: dict, cfg: dict, dry_run: bool):
                         scenario,
                         scenario_col,
                         config,
-                        profile,
+                        profiles_seq,
                         intensity,
                         rep,
                         offsets,
@@ -495,7 +528,7 @@ def run_pressure_scenario(scenario: dict, cfg: dict, dry_run: bool):
                     yield [
                         error_row(
                             config,
-                            profile,
+                            arm_profile,
                             float(intensity),
                             rep,
                             exc,
@@ -568,9 +601,9 @@ def baseline_profiles(cfg: dict) -> list[str]:
     нужен всем строкам, где встречается профиль."""
     profiles = list(cfg["profiles"])
     for scenario in cfg.get("pressure_scenarios", []):
-        victim = scenario.get("victim_profile", "high-s")
-        if victim not in profiles:
-            profiles.append(victim)
+        for victim in victim_profiles_for(scenario):
+            if victim not in profiles:
+                profiles.append(victim)
     return profiles
 
 

@@ -378,6 +378,7 @@ PLOT_SCENARIOS = {
     "pressure-io": "Диск (IO)",
     "pressure-net": "Сеть (Net)",
     "pressure-llc": "Кэш (LLC)",
+    "pressure-mixed3": "Смешанный (кэш+диск+сеть)",
 }
 PLOT_STEMS = {
     "placement_regret": ("Механизм размещения",

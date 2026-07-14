@@ -7,7 +7,7 @@ import re
 import time
 
 from .cluster import worker_node_count
-from .labels import ru, scenario_label
+from .labels import ru, scenario_label, scenario_victim_count
 
 
 def _marker_ts(hms: str) -> float | None:
@@ -80,7 +80,7 @@ def expected_by_scenario(cfg: dict) -> dict[str, int]:
             arms
             * len(sc.get("aggressors_per_node", [1]))
             * sc.get("repetitions", cfg.get("repetitions", 10))
-            * sc.get("victim_count", 6)
+            * scenario_victim_count(sc)
         )
     return out
 
@@ -89,9 +89,11 @@ def expected_rows(cfg: dict) -> dict[str, int]:
     """Ожидаемое число строк по фазам — зеркалит run_experiment.py."""
     profiles = list(cfg.get("profiles", []))
     for sc in cfg.get("pressure_scenarios", []):
-        v = sc.get("victim_profile", "high-s")
-        if v not in profiles:
-            profiles.append(v)
+        victims = ([v["profile"] for v in sc["victims"]] if "victims" in sc
+                   else [sc.get("victim_profile", "high-s")])
+        for v in victims:
+            if v not in profiles:
+                profiles.append(v)
     baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
     if cfg.get("baseline", {}).get("per_node", True):
         baseline_exp *= max(worker_node_count(cfg), 1)
@@ -170,9 +172,11 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
 
     profiles = list(cfg.get("profiles", []))
     for sc in cfg.get("pressure_scenarios", []):
-        v = sc.get("victim_profile", "high-s")
-        if v not in profiles:
-            profiles.append(v)
+        vs = ([v["profile"] for v in sc["victims"]] if "victims" in sc
+              else [sc.get("victim_profile", "high-s")])
+        for v in vs:
+            if v not in profiles:
+                profiles.append(v)
     b_reps = cfg.get("baseline", {}).get("repetitions", 5)
     per_node = cfg.get("baseline", {}).get("per_node", True)
     nodes_n = max(worker_node_count(cfg), 1) if per_node else 1
@@ -195,7 +199,7 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
     for sc in cfg.get("pressure_scenarios", []):
         col = f"pressure:{sc['name']}"
         reps = sc.get("repetitions", cfg.get("repetitions", 10))
-        victims = sc.get("victim_count", 6)
+        victims = scenario_victim_count(sc)
         intensities = len(sc.get("aggressors_per_node", [1]))
         exp_i = arms * intensities * reps * victims
         parts = [ru(arms, "планировщик", "планировщика", "планировщиков")]

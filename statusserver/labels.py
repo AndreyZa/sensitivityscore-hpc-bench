@@ -21,6 +21,7 @@ SCENARIO_LABEL = {
     "pressure:io": "Диск (IO): фоновая дисковая нагрузка",
     "pressure:net": "Сеть (Net): фоновая сетевая нагрузка",
     "pressure:llc": "Кэш (LLC): фоновая нагрузка на кэш и память",
+    "pressure:mixed3": "Смешанный: три шторма (кэш+диск+сеть) одновременно",
 }
 
 # Профиль задачи -> сценарий: запасной словарь для строк лога, снятых с
@@ -37,8 +38,21 @@ def profile_scenario_map(cfg: dict) -> dict[str, str]:
     статический PROFILE_SCENARIO остаётся запасным."""
     out = dict(PROFILE_SCENARIO)
     for sc in cfg.get("pressure_scenarios", []):
-        out[sc.get("victim_profile", "high-s")] = f"pressure:{sc['name']}"
+        col = f"pressure:{sc['name']}"
+        if "victims" in sc:  # смешанный сценарий: несколько профилей жертв
+            for v in sc["victims"]:
+                out[v["profile"]] = col
+        else:
+            out[sc.get("victim_profile", "high-s")] = col
     return out
+
+
+def scenario_victim_count(sc: dict) -> int:
+    """Число жертв на плечо: сумма по victims (смешанный сценарий) или
+    victim_count (легаси)."""
+    if "victims" in sc:
+        return sum(int(v.get("count", 1)) for v in sc["victims"])
+    return sc.get("victim_count", 6)
 
 
 def esc(s) -> str:

@@ -1,0 +1,72 @@
+"""Тесты смешанного (трёхвекторного) сценария: чередование профилей жертв
+и нормализация штормов — чистые функции, кластера не требуют."""
+
+from run_experiment import victim_profiles_for
+from submit.aggressors import expected_pods, resolve_pressured_nodes, storm_specs
+
+MIXED = {
+    "name": "mixed3",
+    "victims": [
+        {"profile": "high-s", "count": 2},
+        {"profile": "high-s-io", "count": 2},
+        {"profile": "high-s-net", "count": 2},
+    ],
+    "storms": [
+        {"node": "w8", "mode": "stress", "args": ["--stream", "2"], "per_node": 2,
+         "toxic_for": ["high-s"]},
+        {"node": "w9", "mode": "stress", "args": ["--hdd", "2"], "per_node": 2,
+         "toxic_for": ["high-s-io"]},
+        {"node": "w10", "mode": "net", "per_node": 2, "net_bitrate_mbps": 400,
+         "toxic_for": ["high-s-net"]},
+    ],
+}
+
+LEGACY = {"name": "io", "victim_profile": "high-s-io", "victim_count": 6,
+          "aggressor_nodes": ["w10"], "aggressor_mode": None}
+
+
+def test_victim_profiles_round_robin():
+    # Профили чередуются, а не идут блоками — каждый равномерно размазан
+    # по пуассоновскому окну прибытия.
+    assert victim_profiles_for(MIXED) == [
+        "high-s", "high-s-io", "high-s-net",
+        "high-s", "high-s-io", "high-s-net",
+    ]
+
+
+def test_victim_profiles_uneven_counts():
+    sc = {"victims": [{"profile": "a", "count": 3}, {"profile": "b", "count": 1}]}
+    seq = victim_profiles_for(sc)
+    assert sorted(seq) == ["a", "a", "a", "b"]
+    assert seq[1] == "b"  # b не откладывается в хвост
+
+
+def test_victim_profiles_legacy():
+    assert victim_profiles_for(LEGACY) == ["high-s-io"] * 6
+
+
+def test_storm_specs_none_for_legacy():
+    assert storm_specs(LEGACY) is None
+
+
+def test_storm_specs_normalized():
+    specs = storm_specs(MIXED)
+    assert [s["node"] for s in specs] == ["w8", "w9", "w10"]
+    assert specs[2]["mode"] == "net" and specs[2]["net_bitrate_mbps"] == 400
+    assert specs[0]["per_node"] == 2
+
+
+def test_expected_pods_mixed():
+    # 2 stress-шторма по 2 пода + net-шторм 2 пары (клиент+сервер) = 8.
+    assert expected_pods(0, 0, MIXED) == 8
+
+
+def test_expected_pods_legacy_net():
+    assert expected_pods(1, 2, {"aggressor_mode": "net"}) == 4
+    assert expected_pods(2, 3, {}) == 6
+
+
+def test_resolve_pressured_nodes_mixed_all_stormed():
+    # Смешанный сценарий давит все узлы — guard «нужна чистая нода»
+    # не применяется, kubectl не дёргается.
+    assert resolve_pressured_nodes(MIXED, {}) == ["w8", "w9", "w10"]
