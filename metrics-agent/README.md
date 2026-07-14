@@ -15,8 +15,12 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 
 ## Реализовано
 
-- LLC miss rate через честные PMU-счётчики (`PERF_COUNT_HW_CACHE_MISSES` /
-  `_REFERENCES`, cgroup-scoped, по счётчику на online-CPU).
+- LLC-давление узла через честные PMU-счётчики (`PERF_COUNT_HW_CACHE_MISSES`,
+  cgroup-scoped, по счётчику на online-CPU): `llc_miss_rate = misses/s /
+  LLC_REFERENCE_MISSES_PER_SEC` при калибровке стенда. Без калибровки — сырой
+  ratio misses/references, но он инвертируется под потоковой нагрузкой (шторм
+  выглядит «чище» простоя), поэтому эталон меряется в misses/s под 2×stress-ng
+  --stream; сырой `llc_misses_per_sec` пишется всегда. На поде — ratio.
 - Disk I/O через cgroup v2 `io.stat` + PSI `io.pressure`.
 - Network bytes (`net.go: ReadNetStats` из `/proc/<pid>/net/dev`, rx+tx) →
   `net_pressure = net_bw / NET_REFERENCE_MBPS` при калибровке стенда (иначе

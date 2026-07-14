@@ -12,7 +12,7 @@ Docker Hub — по официальному рецепту
 ## Сборка
 
 ```bash
-docker build -t sensitivityscore-bench/geant4:11.2 ./workload
+make image-workload      # -> andreyza/geant4:11.2 (см. WORKLOAD_IMAGE в Makefile)
 ```
 
 ## Профили
@@ -50,7 +50,7 @@ docker build -t sensitivityscore-bench/geant4:11.2 ./workload
 ```bash
 docker run --rm \
   -e G4_THREADS=1 -e PHYSICS_LIST=QGSP_BERT -e N_PRIMARIES=10000 -e OUTPUT_MODE=none \
-  sensitivityscore-bench/geant4:11.2
+  andreyza/geant4:11.2
 ```
 
 Готовые k8s-манифесты с уже выставленными профилями и аннотациями `scheduling.phd/*` —
