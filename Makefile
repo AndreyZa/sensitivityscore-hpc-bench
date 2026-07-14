@@ -451,6 +451,40 @@ report: analyze ## analyze + сразу открыть summary.md (macOS/Linux `
 		|| cat $(REPORT_DIR)/summary.md
 
 # ---------------------------------------------------------------------------
+# ClickHouse — центральная агрегация результатов (batch-load parquet).
+# CH_HOST/CH_PORT/... — адрес ПК-агрегатора; STAND/RUN_LABEL — провенанс.
+# См. db/clickhouse/README.md.
+# ---------------------------------------------------------------------------
+
+CH_VENV     ?= db/clickhouse/.venv
+CH_HOST     ?= localhost
+CH_PORT     ?= 8123
+CH_USER     ?= default
+CH_PASSWORD ?=
+CH_DATABASE ?= sensitivityscore
+
+$(CH_VENV)/bin/activate: db/clickhouse/requirements.txt
+	$(PYTHON) -m venv $(CH_VENV)
+	$(CH_VENV)/bin/pip install --quiet --upgrade pip
+	$(CH_VENV)/bin/pip install --quiet -r db/clickhouse/requirements.txt
+	touch $(CH_VENV)/bin/activate
+
+.PHONY: venv-clickhouse
+venv-clickhouse: $(CH_VENV)/bin/activate ## Создать/обновить venv для загрузчика ClickHouse
+
+.PHONY: ch-schema
+ch-schema: ## Применить schema.sql на ПК-агрегаторе (нужен clickhouse-client; CH_HOST=<PC>)
+	clickhouse-client --host $(CH_HOST) --multiquery < db/clickhouse/schema.sql
+
+.PHONY: ch-load
+ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make ch-load CH_HOST=<PC> STAND=<s> RUN_LABEL=<l>
+	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии>"; exit 1; }
+	$(CH_VENV)/bin/python db/clickhouse/load_parquet.py \
+		--host $(CH_HOST) --port $(CH_PORT) --user $(CH_USER) --password "$(CH_PASSWORD)" \
+		--database $(CH_DATABASE) --stand $(STAND) --run-label $(RUN_LABEL) \
+		--results $(RESULTS_FILE) --baselines $(BASELINES_FILE)
+
+# ---------------------------------------------------------------------------
 # Сквозной прогон: от пилота до отчёта одной командой
 # ---------------------------------------------------------------------------
 
@@ -463,7 +497,7 @@ smoke: setup-cluster pilot analyze ## Полный sanity-check пайплайн
 
 .PHONY: clean
 clean: ## Убрать venv-ы, __pycache__, Go build-кэш, отчёты анализа (образ плагина чистится в форке отдельно)
-	rm -rf $(HARNESS_VENV) $(ANALYSIS_VENV) $(REPORT_DIR)
+	rm -rf $(HARNESS_VENV) $(ANALYSIS_VENV) $(CH_VENV) $(REPORT_DIR)
 	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	cd metrics-agent && go clean ./... 2>/dev/null || true
 
