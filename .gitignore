@@ -21,6 +21,7 @@ harness/*.log
 harness/*.out
 statusserver/*.out
 analysis/report/
+analysis/report-stage*/
 
 # --- OS / editor ---
 .DS_Store
