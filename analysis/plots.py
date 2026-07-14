@@ -51,6 +51,18 @@ def _scenario_ru(df: pd.DataFrame) -> str:
     return SCENARIO_RU.get(scs[0], str(scs[0])) if len(scs) == 1 else ""
 
 
+def _intensity_label(df: pd.DataFrame, value) -> str:
+    """Колонка overcommit двузначна: в пакетных сценариях это переподписка
+    (поток задач / ёмкость), в сценариях фоновой нагрузки — интенсивность
+    (генераторов нагрузки на узел). Подпись выбирается по сценарию, иначе
+    «переподписка 2.0» на графике врёт читателю."""
+    scs = df["scenario"].dropna().unique() if "scenario" in df else []
+    if len(scs) and all(str(s).startswith("pressure:") for s in scs):
+        n = int(value) if float(value) == int(value) else value
+        return f"генераторов нагрузки на узел: {n}"
+    return f"переподписка {value}"
+
+
 def plot_makespan_boxplot(
     df: pd.DataFrame, overcommit: float = 2.0, output_path: str | Path | None = None
 ):
@@ -66,7 +78,7 @@ def plot_makespan_boxplot(
         data=subset, x="планировщик", y="makespan_s", hue="profile",
         order=_arm_order(subset["планировщик"]), ax=ax,
     )
-    ax.set_title(f"Время выполнения по планировщикам (переподписка {overcommit})")
+    ax.set_title(f"Время выполнения по планировщикам ({_intensity_label(subset, overcommit)})")
     ax.set_xlabel("")
     ax.set_ylabel("Время выполнения, с")
     ax.legend(title="профиль задачи")
@@ -193,7 +205,7 @@ def plot_regret_by_config(df: pd.DataFrame, output_path: str | Path | None = Non
     ax.set_xlabel("")
     ax.set_ylabel("Ошибка размещения (интерференция выбранного узла − лучшего)")
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
-    ax.legend(title="агрессоров на узел")
+    ax.legend(title="генераторов нагрузки на узел")
     fig.tight_layout()
 
     if output_path:
@@ -208,7 +220,7 @@ def plot_cv_comparison(cv_summary: pd.DataFrame, output_path: str | Path | None 
     планировщиков из сравнения, а не служебными cv_a/cv_b."""
     rows = []
     for r in cv_summary.itertuples():
-        point = f"{r.profile} / переподписка {r.overcommit}"
+        point = f"{r.profile} / {_intensity_label(cv_summary, r.overcommit)}"
         rows.append({"точка плана": point,
                      "планировщик": arm_label(r.config_a), "CV, %": 100 * r.cv_a})
         rows.append({"точка плана": point,
