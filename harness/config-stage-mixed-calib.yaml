@@ -1,0 +1,134 @@
+# config-stage-mixed-calib.yaml — ПОВТОР смешанного трёхвекторного сценария
+# с КАЛИБРОВАННЫМ скорингом (базовая цена оси). Отличия от config-stage-mixed:
+#
+#   1. score_weights в новом формате {base, sensitivity} — из калибровки
+#      analysis/calibrate_axis_costs.py по сериям llc+mixed3: цена дисковой
+#      оси базовая (+24% замедления любой задаче узла, β=0 на всех осях),
+#      кэш при квотах 500m бесплатен, сеть почти бесплатна. Требует образ
+#      планировщика с parseWeights (форк 3fdea84d+) и weights.json в CM в
+#      том же формате.
+#   2. Эталоны гоняются ЗАНОВО В ТУ ЖЕ СЕССИЮ (фаза baseline перед серией):
+#      посерийный интерсепт калибровки показал дрейф +13..23% замедления
+#      между ночными эталонами и дневной серией (суточный steal облачных
+#      vCPU) — межсессионные эталоны непригодны для честного замедления.
+#   3. Выходные файлы -calib: прежняя серия results-stage-mixed.parquet —
+#      контроль (плечи default/trimaran от весов не зависят и служат
+#      детектором дрейфа стенда между сериями).
+#
+# Сценарий, шторма, жертвы и пуассоновские сиды НЕ тронуты (имя mixed3 ->
+# те же моменты прибытия, парное сравнение с прежней серией).
+#
+# ПЕРЕД запуском:
+#   1. weights.json -> калиброванный формат (СОВПАДАЕТ со score_weights ниже):
+#      kubectl -n sensitivityscore-system patch cm sensitivity-config --type merge \
+#        -p '{"data":{"weights.json":"{\"base\": {\"llc\": 0.0, \"numa\": 0.0, \"net\": 0.09, \"io\": 1.0}, \"sensitivity\": {\"llc\": 0.0, \"numa\": 0.0, \"net\": 0.0, \"io\": 0.0}}\n"}}'
+#   2. Образ планировщика с parseWeights + rollout restart; в логе должна
+#      появиться строка "sensitivity weights loaded" с base/sensitivity.
+#   3. ./run-stage-mixed-calib.sh (baseline + pressure одной сессией).
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - low-s      # контраст fingerprint; в pressure-потоке не участвует
+  - high-s
+  - high-s-io
+  - high-s-net
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+# Калибровка STAGE (analysis/report-stage-mixed/axis_costs.json): вся цена
+# в base (β=0 — на этом стенде задачи compute-bound и деклараций «не видно»
+# в замедлении), нормировано на io=1. NUMA=0 честно (один домен на узел).
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.09
+    io: 1.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: mixed3
+    # Жертвы трёх профилей одним потоком (чередование round-robin по
+    # прибытию); идеальное размещение по калибровке — НЕ дисковый узел
+    # для всех (кэш-шторм бесплатен, дисковый бьёт всех).
+    victims:
+      - { profile: high-s, count: 2 }      # кэш-шторм (w8) номинально токсичен
+      - { profile: high-s-io, count: 2 }   # дисковый шторм (w9) токсичен
+      - { profile: high-s-net, count: 2 }  # сетевой шторм (w10) номинально токсичен
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    # intensity-ось (колонка overcommit в результатах) — агрессоров на узел.
+    aggressors_per_node: [2]
+    # Свой шторм на каждом узле; toxic_for — номинальная (декларационная)
+    # разметка для метрики сопоставления в статусе/анализе.
+    storms:
+      - node: worker-192.168.0.8
+        mode: stress
+        args: ["--stream", "2"]
+        per_node: 2
+        toxic_for: [high-s]
+      - node: worker-192.168.0.9
+        mode: stress
+        args: ["--hdd", "2", "--hdd-bytes", "1g"]
+        per_node: 2
+        toxic_for: [high-s-io]
+      - node: worker-192.168.0.10
+        mode: net
+        per_node: 2
+        net_bitrate_mbps: 400
+        toxic_for: [high-s-net]
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  # Та же сессия, что и серия — см. шапку (дрейф +13..23% между сессиями).
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-mixed-calib.parquet"
+  baselines_file: "baselines-stage-mixed-calib.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
