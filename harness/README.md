@@ -83,7 +83,7 @@ namespace `sensitivityscore-bench`, плюс узкий `ClusterRole`
 ### Альтернатива: запуск с хоста (порт-форвард вручную)
 
 Если по какой-то причине нужно запускать харнесс с хоста напрямую (например,
-на партнёрском стенде запуск идёт с bastion-машины без прямого доступа в
+на прод-стенде запуск идёт с bastion-машины без прямого доступа в
 кластерную сеть) — `REDIS_ADDR` по-прежнему перекрывает `config.yaml` (см.
 `submit/redis_metrics.py`), тот же env var, что уже использует metrics-agent и
 scheduler-плагин:
@@ -103,7 +103,7 @@ python run_experiment.py --pilot
 ## Полная матрица
 
 Внутри кластера: `make harness-run-config-a-incluster` (только config A —
-B/C/D нужна инфраструктура партнёрского стенда). С хоста:
+B/C/D нужна инфраструктура прод-стенда). С хоста:
 
 ```bash
 python run_experiment.py --config config.yaml   # все конфигурации из config.yaml

@@ -22,5 +22,5 @@ kubectl get pod -l scheduling.phd/job-id=D-highs-oc1.0-rep00 \
 sacct -j <slurm_job_id> --format=Elapsed,Start,End
 ```
 
-Это не часть H1–H4 напрямую, но полезно для раздела про оверхед в обсуждении с партнёрами
+Это не часть H1–H4 напрямую, но полезно для раздела про оверхед
 (см. план §4, ветка submit_job для D).

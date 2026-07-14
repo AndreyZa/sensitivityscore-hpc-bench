@@ -4,7 +4,7 @@
 run against a real Slurm before — only reviewed by reading the code. This is
 a single-container Slurm cluster (munge + mariadb + slurmdbd + slurmctld +
 slurmd, all one node, real accounting) purpose-built to close that gap
-locally, before a partner stand is available. Local dev/test tooling only —
+locally, before the prod stand is available. Local dev/test tooling only —
 not part of the `andreyza/*` image set pushed for the actual experiment
 stand, no CLAUDE.md image-rebuild rule applies here.
 
@@ -18,8 +18,8 @@ fallback — against a genuine `slurmctld`/`slurmd`/`slurmdbd`, not just
 plausible-looking code.
 
 Does **not** validate: Pyxis/enroot (`srun --container-image=...`) — not
-installed here, that's the container-runtime question already open to
-partners (docs §8). See "Known gaps found" below for what this surfaced.
+installed here, that's the container-runtime question still open for the
+prod stand (docs §8). See "Known gaps found" below for what this surfaced.
 
 ## Usage
 
@@ -80,5 +80,5 @@ confirmed the FAILED-state → `RuntimeError` path fires correctly, and for
 the expected reason — the job's own stdout shows `srun: unrecognized option
 '--container-image=...'`, i.e. Pyxis/enroot genuinely absent, not some other
 masked failure. That part (getting a real container payload to run under
-Slurm) is out of scope for this local test — it's the partner stand's
+Slurm) is out of scope for this local test — it's the prod stand's
 container-runtime question already tracked in docs §8.

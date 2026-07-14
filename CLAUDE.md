@@ -38,4 +38,4 @@
     territory), not an image rebuild.
   - A commit touching only `docs/`, `analysis/`, or other non-image paths →
     git push only, no image rebuild, no docker push.
-- This repo's cluster uses `imagePullPolicy: Always`, so a local rebuild is enough for the local dev cluster to pick it up — the Docker Hub push is for durability/sharing (e.g. a partner stand pulling the same tag), not a local-dev requirement.
+- This repo's cluster uses `imagePullPolicy: Always`, so a local rebuild is enough for the local dev cluster to pick it up — the Docker Hub push is for durability/sharing (e.g. a prod stand pulling the same tag), not a local-dev requirement.
