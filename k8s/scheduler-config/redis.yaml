@@ -24,8 +24,12 @@ spec:
         app: redis
     spec:
       nodeSelector:
-        node: ss-system
+        node-role.kubernetes.io/ss-system: ""
       tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+        # Легаси-taint первой разметки STAGE — убрать после перевода на роль.
         - key: ss-system
           operator: Exists
           effect: NoSchedule

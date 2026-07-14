@@ -31,14 +31,20 @@ spec:
         component: scheduler
     spec:
       serviceAccountName: sensitivityscore-scheduler
-      # Системные компоненты живут на выделенном узле node=ss-system (с
-      # taint'ом ss-system:NoSchedule): (1) не загрязняют LLC/IO/Net-метрики
-      # измерительных узлов, (2) переживают пересборку экспериментальных нод.
-      # Урок 14.07.2026: планировщик был прибит nodeSelector'ом к позже
-      # удалённому узлу и висел Pending всю ночную серию.
+      # Системные компоненты живут на выделенном узле с ролью ss-system
+      # (node-role.kubernetes.io/ss-system, ставится scripts/bootstrap-cluster.sh
+      # вместе с taint'ом): (1) не загрязняют LLC/IO/Net-метрики измерительных
+      # узлов, (2) переживают пересборку экспериментальных нод. Урок
+      # 14.07.2026: планировщик был прибит nodeSelector'ом к позже удалённому
+      # узлу и висел Pending всю ночную серию.
       nodeSelector:
-        node: ss-system
+        node-role.kubernetes.io/ss-system: ""
       tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+        # Легаси-taint первой разметки STAGE (14.07.2026) — убрать после
+        # перевода стенда целиком на роль.
         - key: ss-system
           operator: Exists
           effect: NoSchedule
@@ -53,6 +59,16 @@ spec:
           env:
             - name: REDIS_ADDR
               value: "redis.sensitivityscore-system.svc.cluster.local:6379"
+          # На системном узле рядом redis и metrics-server — без requests
+          # планировщик сам стал бы noisy neighbor'ом. Для кластера из
+          # нескольких узлов запаса хватает с большим запасом.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           livenessProbe:
             httpGet:
               path: /healthz
