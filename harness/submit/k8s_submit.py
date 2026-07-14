@@ -82,11 +82,12 @@ def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
     для per-node бейзлайнов и pressure-сценариев.
 
     Узел с ролью ss-system (node-role.kubernetes.io/ss-system, ставится
-    scripts/bootstrap-cluster.sh; легаси-лейбл node=ss-system поддерживается
-    там же) исключается всегда: он выделен под инфраструктуру (redis,
-    планировщик, metrics-server), защищён taint'ом от экспериментальных
-    подов и не должен попадать ни в эталоны, ни в выбор штормовой ноды,
-    ни в ожидания матрицы — без ручного exclude в каждом конфиге.
+    scripts/bootstrap-cluster.sh) исключается всегда: он выделен под
+    инфраструктуру (redis, планировщик, metrics-server), защищён taint'ом
+    от экспериментальных подов и не должен попадать ни в эталоны, ни в
+    выбор штормовой ноды, ни в ожидания матрицы — без ручного exclude в
+    каждом конфиге. Роль — единственный критерий; ad-hoc лейблов на
+    прод-стенде нет.
 
     exclude отбрасывает ноды, которые матрица и так обходит стороной
     (cfg["exclude_nodes"], nodeAffinity NotIn в шаблоне job) — иначе per-node
@@ -99,7 +100,7 @@ def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
             "get",
             "nodes",
             "--selector=!node-role.kubernetes.io/control-plane,"
-            "!node-role.kubernetes.io/ss-system,node!=ss-system",
+            "!node-role.kubernetes.io/ss-system",
             "-o",
             "jsonpath={.items[*].metadata.name}",
         ],

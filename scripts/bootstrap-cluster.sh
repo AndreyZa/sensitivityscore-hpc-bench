@@ -12,9 +12,9 @@
 #   - измерительные узлы (роль bench): только задачи Geant4 и агрессоры.
 #
 # Роли — штатный механизм node-role.kubernetes.io/*: видны в колонке ROLES
-# `kubectl get nodes`, понятны админу прод-стенда. Дополнительно ставится
-# легаси-лейбл node=ss-system — на него завязаны statusserver и старые
-# селекторы; убирать только вместе с ними.
+# `kubectl get nodes`, понятны админу прод-стенда, и это ЕДИНСТВЕННЫЙ
+# критерий разметки (харнесс и statusserver селектят только по ролям,
+# ad-hoc лейблы вроде node=ss-system не используются).
 #
 # Использование:
 #   ./scripts/bootstrap-cluster.sh <ss-system-узел> [<ещё-узел>...]
@@ -37,7 +37,6 @@ SS_NODES=("$@")
 echo "[bootstrap] роли узлов: ss-system = ${SS_NODES[*]}"
 for n in "${SS_NODES[@]}"; do
     $KUBECTL label node "$n" node-role.kubernetes.io/ss-system= --overwrite
-    $KUBECTL label node "$n" node=ss-system --overwrite
     $KUBECTL label node "$n" node-role.kubernetes.io/bench- >/dev/null 2>&1 || true
     if [ -z "${SKIP_TAINT:-}" ]; then
         $KUBECTL taint node "$n" node-role.kubernetes.io/ss-system=:NoSchedule --overwrite
