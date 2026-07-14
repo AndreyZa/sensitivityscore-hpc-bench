@@ -31,6 +31,17 @@ spec:
         component: scheduler
     spec:
       serviceAccountName: sensitivityscore-scheduler
+      # Системные компоненты живут на выделенном узле node=ss-system (с
+      # taint'ом ss-system:NoSchedule): (1) не загрязняют LLC/IO/Net-метрики
+      # измерительных узлов, (2) переживают пересборку экспериментальных нод.
+      # Урок 14.07.2026: планировщик был прибит nodeSelector'ом к позже
+      # удалённому узлу и висел Pending всю ночную серию.
+      nodeSelector:
+        node: ss-system
+      tolerations:
+        - key: ss-system
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: sensitivityscore-scheduler
           image: REPLACE_ME_IMAGE # подставляется через `make scheduler-deploy` (переменная SCHEDULER_IMAGE)

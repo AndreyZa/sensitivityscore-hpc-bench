@@ -28,7 +28,8 @@ def stand_info(label: str = "") -> dict:
             data["server"] = r.stdout.strip() or "(kubectl недоступен)"
             r = subprocess.run(
                 ["kubectl", "get", "nodes", "--no-headers", "-o",
-                 "custom-columns=N:.metadata.name,V:.status.nodeInfo.kubeletVersion,"
+                 "custom-columns=N:.metadata.name,ROLE:.metadata.labels.node,"
+                 "V:.status.nodeInfo.kubeletVersion,"
                  "K:.status.nodeInfo.kernelVersion,CPU:.status.allocatable.cpu,"
                  "MEM:.status.allocatable.memory"],
                 capture_output=True, text=True, timeout=6,
@@ -47,9 +48,14 @@ def stand_info(label: str = "") -> dict:
 def worker_node_count(cfg: dict | None = None) -> int:
     """Число worker-узлов, участвующих в прогоне, для расчёта ожидаемых
     per-node эталонных прогонов: все узлы кластера минус exclude_nodes
-    конфига (исключённые узлы харнесс обходит и в эталонах, и в матрице).
+    конфига (исключённые узлы харнесс обходит и в эталонах, и в матрице)
+    минус системный узел node=ss-system (инфраструктура: redis, планировщик;
+    харнесс исключает его так же — см. k8s_submit.list_worker_nodes).
     Managed control-plane (STAGE) в списке узлов и так не отображается."""
-    names = {row[0] for row in stand_info().get("nodes", []) if row}
+    names = {
+        row[0] for row in stand_info().get("nodes", [])
+        if row and not (len(row) > 1 and row[1] == "ss-system")
+    }
     excluded = set((cfg or {}).get("exclude_nodes", []))
     return len(names - excluded) or 1
 

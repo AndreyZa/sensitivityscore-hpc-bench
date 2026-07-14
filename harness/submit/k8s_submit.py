@@ -77,8 +77,15 @@ log = logging.getLogger(__name__)
 
 
 def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
-    """Worker-ноды кластера (без control-plane), отсортированные по имени —
-    детерминированный порядок для per-node бейзлайнов и pressure-сценариев.
+    """Worker-ноды кластера (без control-plane и без системного узла
+    node=ss-system), отсортированные по имени — детерминированный порядок
+    для per-node бейзлайнов и pressure-сценариев.
+
+    Узел с лейблом node=ss-system исключается всегда: он выделен под
+    инфраструктуру (redis, планировщик, metrics-server), защищён taint'ом
+    от экспериментальных подов и не должен попадать ни в эталоны, ни в
+    выбор штормовой ноды, ни в ожидания матрицы — без ручного exclude в
+    каждом конфиге.
 
     exclude отбрасывает ноды, которые матрица и так обходит стороной
     (cfg["exclude_nodes"], nodeAffinity NotIn в шаблоне job) — иначе per-node
@@ -90,7 +97,7 @@ def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
             "kubectl",
             "get",
             "nodes",
-            "--selector=!node-role.kubernetes.io/control-plane",
+            "--selector=!node-role.kubernetes.io/control-plane,node!=ss-system",
             "-o",
             "jsonpath={.items[*].metadata.name}",
         ],

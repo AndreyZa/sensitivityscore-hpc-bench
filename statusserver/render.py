@@ -652,7 +652,7 @@ select.pill{{padding:.2em .5em}}
 <details class="card" data-k="standlogs">
   <summary>Стенд и журнал прогона</summary>
   <p class='dim'>{esc(st.get('server',''))}</p>
-  {table(["узел", "kubelet", "ядро ОС", "CPU", "память"], st.get("nodes", []))}
+  {table(["узел", "группа", "kubelet", "ядро ОС", "CPU", "память"], st.get("nodes", []))}
   <h4>Последние строки журнала</h4>
   <pre>{esc(chr(10).join(d['log_tail']))}</pre>
   <h4>Последние ошибки в журнале</h4>
