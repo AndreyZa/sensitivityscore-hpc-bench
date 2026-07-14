@@ -20,7 +20,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Только рантайм run_experiment.py — НЕ «COPY . .»: tests/, deploy/, README,
+# run-stage-*.sh и прочее хост-хозяйство образу не нужны, а их правки не
+# должны инвалидировать слой и требовать пересборки. Этот список — и есть
+# условие «когда пересобирать harness-образ» (см. CLAUDE.md).
+COPY run_experiment.py profiles.py ./
+COPY submit/ submit/
+COPY templates/ templates/
+COPY config*.yaml ./
 
 ENTRYPOINT ["python", "run_experiment.py"]
 CMD ["--pilot"]

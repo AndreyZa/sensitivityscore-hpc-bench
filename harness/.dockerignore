@@ -1,5 +1,14 @@
-.venv
-__pycache__
+# Dockerfile копирует явный список файлов, но контекст сборки всё равно
+# передаётся демону целиком — держим его худым (.venv — сотни МБ).
+.venv/
+__pycache__/
+.pytest_cache/
 *.pyc
 results/
 *.log
+*.out
+tests/
+deploy/
+README.md
+Dockerfile
+run-stage-*.sh

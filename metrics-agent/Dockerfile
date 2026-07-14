@@ -2,7 +2,10 @@ FROM golang:1.22-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
-COPY . .
+# Только исходники сборки — правки deploy/-манифестов и README не должны
+# инвалидировать слой и требовать пересборки бинаря.
+COPY cmd/ cmd/
+COPY pkg/ pkg/
 RUN CGO_ENABLED=0 go build -o /out/metrics-agent ./cmd/agent
 
 # Not distroless: virsh capabilities (vpmu healthcheck, config B) shells out to a

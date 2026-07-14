@@ -1,0 +1,7 @@
+# Dockerfile копирует только go.mod/go.sum + cmd/ + pkg/; остальное держим
+# вне контекста сборки.
+deploy/
+README.md
+Dockerfile
+*.exe
+bin/
