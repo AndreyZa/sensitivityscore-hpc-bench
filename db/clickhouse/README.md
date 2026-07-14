@@ -21,23 +21,25 @@ ClickHouse на отдельном ПК-агрегаторе: результат
    ```bash
    clickhouse-client --multiquery < schema.sql
    ```
-3. Если заливать будем не с самого ПК, а с харнесс-хоста по сети — открыть
-   HTTP-порт 8123 наружу (`listen_host` в конфиге + firewall) и завести
-   пользователя с паролем; localhost-заливка на самом ПК ничего этого не
-   требует.
+ClickHouse слушает только localhost ПК — из WSL2/харнесс-хоста ходим через
+SSH-туннель (нулевая экспозиция, без firewall/пароля, поверх уже настроенного
+SSH). Альтернатива — открыть 8123 на LAN (`listen_host` + firewall + пароль
+default-юзеру); localhost-заливка на самом ПК ничего этого не требует.
 
 ## Заливка (после каждой серии)
 
-Через Makefile (из корня репозитория):
+Через Makefile (из корня репозитория), поверх SSH-туннеля:
 ```bash
-make ch-load CH_HOST=192.168.1.50 STAND=stage RUN_LABEL=2026-07-14-io
-# по умолчанию берёт harness/results/results.parquet + baselines.parquet;
-# переопределить: RESULTS_FILE=... BASELINES_FILE=...
+make ch-tunnel                       # localhost:8123 -> ПК:8123 (CH_SSH=user@host)
+make ch-load STAND=stage RUN_LABEL=2026-07-14-io
+make ch-tunnel-close                 # когда закончил
+# ch-load по умолчанию берёт harness/results/results.parquet + baselines.parquet
+# (CH_HOST=localhost по умолчанию); переопределить: RESULTS_FILE=... BASELINES_FILE=...
 ```
 
 Напрямую (или локально на ПК, скопировав parquet):
 ```bash
-python load_parquet.py --host <PC> --stand stage --run-label 2026-07-14-io \
+python load_parquet.py --host localhost --stand stage --run-label 2026-07-14-io \
     --results ../../harness/results/results.parquet \
     --baselines ../../harness/results/baselines.parquet
 ```

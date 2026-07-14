@@ -462,6 +462,25 @@ CH_PORT     ?= 8123
 CH_USER     ?= default
 CH_PASSWORD ?=
 CH_DATABASE ?= sensitivityscore
+# ПК-агрегатор слушает только localhost; доступ из WSL2 — через SSH-туннель.
+# Управляем им через ControlMaster-сокет (-O check/exit), а не pgrep/pkill:
+# рецепт сам содержит ssh-строку, из-за чего pkill -f матчил бы свой же shell.
+CH_SSH         ?= andrey@192.168.1.72
+CH_TUNNEL_PORT ?= 8123
+CH_SOCK        ?= /tmp/ch-tunnel-$(CH_TUNNEL_PORT).sock
+
+.PHONY: ch-tunnel
+ch-tunnel: ## Поднять SSH-туннель к ПК-агрегатору (CH_SSH=user@host); дальше ch-load CH_HOST=localhost
+	@if ssh -S $(CH_SOCK) -O check $(CH_SSH) 2>/dev/null; then \
+		echo "туннель уже поднят"; \
+	else \
+		ssh -M -S $(CH_SOCK) -f -N -L $(CH_TUNNEL_PORT):localhost:8123 $(CH_SSH) && \
+		echo "туннель localhost:$(CH_TUNNEL_PORT) -> $(CH_SSH):8123 поднят"; \
+	fi
+
+.PHONY: ch-tunnel-close
+ch-tunnel-close: ## Закрыть SSH-туннель к ПК-агрегатору
+	@ssh -S $(CH_SOCK) -O exit $(CH_SSH) 2>/dev/null && echo "туннель закрыт" || echo "туннель не найден"
 
 $(CH_VENV)/bin/activate: db/clickhouse/requirements.txt
 	$(PYTHON) -m venv $(CH_VENV)
