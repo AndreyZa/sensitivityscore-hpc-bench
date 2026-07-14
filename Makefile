@@ -511,6 +511,27 @@ ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse
 		--ch-user $(CH_USER) --ch-password "$(CH_PASSWORD)" \
 		--stand $(STAND) --run-label $(RUN_LABEL) --outdir report
 
+# --- In-cluster ClickHouse (StatefulSet на системной ноде; см. k8s/clickhouse) ---
+CH_INCLUSTER_NS ?= sensitivityscore-system
+CH_KUSTOMIZE    ?= k8s/clickhouse/base   # прод: k8s/clickhouse/overlays/prod
+
+.PHONY: ch-incluster-deploy
+ch-incluster-deploy: ## Развернуть in-cluster ClickHouse (CH_KUSTOMIZE=base|k8s/clickhouse/overlays/prod)
+	$(KUBECTL) create namespace $(CH_INCLUSTER_NS) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) create configmap clickhouse-schema \
+		--from-file=schema.sql=db/clickhouse/schema.sql --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -k $(CH_KUSTOMIZE)
+
+.PHONY: ch-incluster-status
+ch-incluster-status: ## Статус in-cluster ClickHouse (под, PVC, schema-Job)
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) get statefulset,pod,pvc,svc,job -l app=clickhouse
+
+.PHONY: ch-incluster-clean
+ch-incluster-clean: ## Снести in-cluster ClickHouse — ВНИМАНИЕ: удаляет PVC с данными
+	$(KUBECTL) delete -k $(CH_KUSTOMIZE) --ignore-not-found
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) delete configmap clickhouse-schema --ignore-not-found
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) delete pvc -l app=clickhouse --ignore-not-found
+
 # ---------------------------------------------------------------------------
 # Сквозной прогон: от пилота до отчёта одной командой
 # ---------------------------------------------------------------------------

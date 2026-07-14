@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Прод: прибить StatefulSet к системной ноде (ss-system, taint NoSchedule) —
+# CH не должен стоять на измерительных узлах (пункт про загрязнение метрик).
+patches:
+  - path: placement-patch.yaml
+    target:
+      kind: StatefulSet
+      name: clickhouse

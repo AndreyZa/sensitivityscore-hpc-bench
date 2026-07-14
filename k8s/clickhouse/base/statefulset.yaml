@@ -1,0 +1,69 @@
+# In-cluster ClickHouse — агрегатор результатов прод-прогонов (StatefulSet + PVC).
+# База без placement — годится для теста на docker-desktop. Прод-overlay
+# добавляет nodeSelector/toleration: CH ОБЯЗАН жить на системной ноде
+# (ss-system), НЕ на измерительных — иначе его инсерты/мержи загрязнят
+# LLC/IO/Net-метрики, которые меряет эксперимент.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  labels:
+    app: clickhouse
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      securityContext:
+        fsGroup: 101 # uid/gid clickhouse в официальном образе — чтобы PVC был писабелен
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.3
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: users
+              mountPath: /etc/clickhouse-server/users.d/access.xml
+              subPath: access.xml # добавляем файл, не затирая штатные users.d
+      volumes:
+        - name: users
+          configMap:
+            name: clickhouse-users
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

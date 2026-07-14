@@ -1,0 +1,38 @@
+# Одноразовый Job: дождаться готовности ClickHouse и применить schema.sql
+# (таблицы results + baselines). ConfigMap clickhouse-schema создаётся из
+# ЕДИНОГО источника db/clickhouse/schema.sql (см. Makefile ch-incluster-deploy),
+# чтобы схема не расходилась с загрузчиком. Job может встать на любой узел —
+# он лишь коннектится к сервису clickhouse (placement ss-system нужен только
+# самому StatefulSet).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-schema
+  labels:
+    app: clickhouse
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: clickhouse-schema # НЕ app: clickhouse — иначе под попадёт в эндпоинты сервиса clickhouse
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: apply-schema
+          image: clickhouse/clickhouse-server:25.3
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              until clickhouse-client --host clickhouse -q "SELECT 1" >/dev/null 2>&1; do
+                echo "waiting for clickhouse service..."; sleep 3;
+              done
+              clickhouse-client --host clickhouse --multiquery < /schema/schema.sql
+              echo "schema applied:"; clickhouse-client --host clickhouse -q "SHOW TABLES FROM sensitivityscore"
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+      volumes:
+        - name: schema
+          configMap:
+            name: clickhouse-schema

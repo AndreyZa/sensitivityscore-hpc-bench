@@ -1,0 +1,26 @@
+# Оверрайд доступа default-юзера. Официальный образ пускает default только с
+# localhost (<networks>::1,127.0.0.1</networks>) — из других подов коннект
+# отбивается как "Authentication failed". Открываем default на кластерную сеть.
+#
+# Passwordless осознанно: граница безопасности — сеть кластера (сервис
+# headless/ClusterIP, снаружи только через port-forward). Это тот же принцип
+# «доверенный localhost», что у домашнего ПК, уровнем кластера.
+# ПРОД-хардненинг: заменить на <password_sha256_hex> + Secret и прокинуть
+# CH_PASSWORD в ch-load/ch-analyze.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-users
+  labels:
+    app: clickhouse
+data:
+  access.xml: |
+    <clickhouse>
+      <users>
+        <default>
+          <networks>
+            <ip>::/0</ip>
+          </networks>
+        </default>
+      </users>
+    </clickhouse>

@@ -1,0 +1,19 @@
+# Headless-сервис: клиенты (харнесс/анализ) ходят по DNS
+# clickhouse.sensitivityscore-system.svc:8123 (HTTP) / :9000 (native).
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  labels:
+    app: clickhouse
+spec:
+  clusterIP: None
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000

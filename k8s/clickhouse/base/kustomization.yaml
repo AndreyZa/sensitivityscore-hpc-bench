@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Всё в тот же namespace, где Redis/scheduler/agent.
+namespace: sensitivityscore-system
+
+resources:
+  - service.yaml
+  - users.yaml
+  - statefulset.yaml
+  - schema-job.yaml
+
+# ConfigMap clickhouse-schema НЕ генерируется здесь: он создаётся из
+# db/clickhouse/schema.sql (единый источник) в таргете ch-incluster-deploy,
+# иначе kustomize упёрся бы в load-restrictor на путь вне своего каталога.
