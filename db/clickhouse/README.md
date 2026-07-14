@@ -47,6 +47,20 @@ python load_parquet.py --host localhost --stand stage --run-label 2026-07-14-io 
 `--dry-run` читает и приводит типы, ничего не заливая — проверить парсинг без
 ClickHouse.
 
+## Отчёты из ClickHouse
+
+Анализ (H1–H4) строится из CH так же, как из parquet — источник взаимозаменяем
+(проверено: отчёт байт-идентичен). Поверх туннеля:
+```bash
+make ch-tunnel
+make ch-analyze STAND=stage RUN_LABEL=stage-llc     # -> analysis/report/
+make ch-tunnel-close
+```
+Или напрямую: `python analysis/analyze.py --clickhouse --stand stage --run-label <l>`.
+**Обязательно фильтруй `--run-label`** (можно несколько раз) — без фильтра
+смешаются разные серии. results и baselines берутся по одной метке, поэтому
+серия должна иметь одинаковый `run_label` в обеих таблицах.
+
 ## Дедупликация
 
 Таблицы — `ReplacingMergeTree(ingested_at)`: повторная заливка того же прогона

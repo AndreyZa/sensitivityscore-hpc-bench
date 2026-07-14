@@ -33,6 +33,7 @@ from pathlib import Path
 import pandas as pd
 
 from fingerprint import fingerprint_table, to_markdown as fingerprint_md
+from clickhouse_source import load_from_clickhouse
 from load import attach_slowdown, filter_valid, load_results
 from plots import (
     plot_cv_comparison,
@@ -143,6 +144,26 @@ def main():
         "exists, slowdown comparisons and the fingerprint table are added",
     )
     parser.add_argument("--outdir", default="report")
+    # Источник данных: по умолчанию parquet (--results/--baselines); с
+    # --clickhouse читаем из ПК-агрегатора (см. make ch-tunnel). Пишем в 2
+    # места, отчёт можно строить из любого.
+    parser.add_argument(
+        "--clickhouse", action="store_true",
+        help="Читать results/baselines из ClickHouse вместо parquet "
+        "(через SSH-туннель, make ch-tunnel). Фильтруй --stand/--run-label — "
+        "иначе смешаются РАЗНЫЕ серии.",
+    )
+    parser.add_argument("--ch-host", default="localhost")
+    parser.add_argument("--ch-port", type=int, default=8123)
+    parser.add_argument("--ch-database", default="sensitivityscore")
+    parser.add_argument("--ch-user", default="default")
+    parser.add_argument("--ch-password", default="")
+    parser.add_argument("--stand", help="фильтр CH: stand (напр. stage)")
+    parser.add_argument(
+        "--run-label", action="append",
+        help="фильтр CH: run_label (можно несколько раз); без него — все серии "
+        "стенда (обычно НЕ то, что нужно)",
+    )
     parser.add_argument(
         "--allow-synthetic",
         action="store_true",
@@ -161,7 +182,21 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    df = load_results(args.results)
+    def _load(kind: str, parquet_path: str):
+        """results|baselines из CH (с фильтром stand/run_label) либо из parquet."""
+        if args.clickhouse:
+            d = load_from_clickhouse(
+                kind, host=args.ch_host, port=args.ch_port,
+                database=args.ch_database, user=args.ch_user,
+                password=args.ch_password, stand=args.stand,
+                run_labels=args.run_label,
+            )
+            print(f"[analyze] {len(d)} {kind} rows из ClickHouse "
+                  f"(stand={args.stand or 'ANY'}, run_label={args.run_label or 'ALL'})")
+            return d
+        return load_results(parquet_path)
+
+    df = _load("results", args.results)
     valid = filter_valid(
         df,
         allow_synthetic=args.allow_synthetic,
@@ -171,18 +206,25 @@ def main():
     # Бейзлайны опциональны: без них пайплайн работает как раньше (makespan +
     # regret), с ними добавляются slowdown-сравнения и fingerprint-таблица.
     baselines_valid = None
-    baselines_path = Path(args.baselines)
-    if baselines_path.exists():
+    if args.clickhouse:
+        baselines_df = _load("baselines", args.baselines)
+        has_baselines = len(baselines_df) > 0
+    else:
+        baselines_df = None
+        has_baselines = Path(args.baselines).exists()
+
+    if has_baselines:
         baselines_valid = filter_valid(
-            load_results(baselines_path),
+            baselines_df if baselines_df is not None else load_results(args.baselines),
             allow_synthetic=args.allow_synthetic,
             pmu_less_stand=args.pmu_less_stand,
         )
         valid = attach_slowdown(valid, baselines_valid)
     else:
         print(
-            f"[analyze] no baselines file at {baselines_path} — skipping "
-            "slowdown and fingerprint (run harness --baseline to produce it)."
+            "[analyze] нет бейзлайнов "
+            f"({'CH: пусто для фильтра' if args.clickhouse else args.baselines}) "
+            "— slowdown и fingerprint пропущены."
         )
 
     # Full comparison sweep (§5.2) across every config pair used by H1-H4 —

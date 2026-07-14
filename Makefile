@@ -503,6 +503,14 @@ ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make c
 		--database $(CH_DATABASE) --stand $(STAND) --run-label $(RUN_LABEL) \
 		--results $(RESULTS_FILE) --baselines $(BASELINES_FILE)
 
+.PHONY: ch-analyze
+ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)
+	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии> (поверх make ch-tunnel)"; exit 1; }
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python analyze.py --clickhouse \
+		--ch-host $(CH_HOST) --ch-port $(CH_PORT) --ch-database $(CH_DATABASE) \
+		--ch-user $(CH_USER) --ch-password "$(CH_PASSWORD)" \
+		--stand $(STAND) --run-label $(RUN_LABEL) --outdir report
+
 # ---------------------------------------------------------------------------
 # Сквозной прогон: от пилота до отчёта одной командой
 # ---------------------------------------------------------------------------

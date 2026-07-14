@@ -74,12 +74,32 @@ def _int(x, default: int) -> int:
     return default if _is_missing(x) else int(x)
 
 
+# Дефолты для колонок, добавленных в схему позже (старые parquet их не имеют).
+# Backfill вместо ошибки — чтобы залить весь исторический бэклог разных поколений
+# схемы. float('nan') -> в coerce станет NULL; '' для строковых меток.
+_BACKFILL_DEFAULTS = {
+    "net_pressure": float("nan"),
+    "interference_chosen": float("nan"),
+    "placement_regret": float("nan"),
+    "sensitivity_llc": "", "sensitivity_numa": "", "sensitivity_net": "", "sensitivity_io": "",
+    "scenario": "",
+    "batch_size": 1, "batch_index": 0,
+}
+
+
 def coerce_rows(df: pd.DataFrame, stand: str, run_label: str, source_file: str) -> list[list]:
     """DataFrame харнесса -> список строк в порядке INSERT_COLUMNS, с
-    приведением типов и NaN->None для nullable-метрик."""
+    приведением типов и NaN->None для nullable-метрик. Недостающие колонки
+    старых поколений схемы добираются дефолтами (backfill)."""
     missing = REQUIRED_PARQUET_COLUMNS - set(df.columns)
     if missing:
-        raise ValueError(f"{source_file}: в parquet нет колонок: {sorted(missing)}")
+        unfillable = missing - _BACKFILL_DEFAULTS.keys()
+        if unfillable:
+            raise ValueError(f"{source_file}: нет колонок без дефолта: {sorted(unfillable)}")
+        df = df.copy()
+        for col in missing:
+            df[col] = _BACKFILL_DEFAULTS[col]
+        print(f"  backfill старой схемы: {sorted(missing)}")
 
     rows: list[list] = []
     for r in df.to_dict("records"):
