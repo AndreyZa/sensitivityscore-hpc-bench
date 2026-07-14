@@ -25,17 +25,15 @@ make image-workload      # -> andreyza/geant4:11.2 (см. WORKLOAD_IMAGE в Make
 | `OUTPUT_MODE` | `none` | `burst` (реальная запись с fsync; `ntuple` — TODO, см. ниже) |
 | `RNG_SEED` | фикс. на повтор | фикс. на повтор |
 
-## Как реально передаются параметры (важно)
+## Как передаются параметры
 
 `TestEm5`, как и все стандартные примеры Geant4, принимает **только один
-позиционный аргумент — файл макроса**. Никаких `-t`/`-p` флагов не
-существует (это было неверным предположением в первой версии образа):
+позиционный аргумент — файл макроса** (флагов `-t`/`-p` нет):
 
 - **Число потоков** — через `/run/numberOfThreads N` внутри макроса,
   обязательно **до** `/run/initialize` (PreInit-state команда).
 - **Physics list** — через переменную окружения `PHYSLIST`, которую
-  `G4PhysListFactory::ReferencePhysList()` читает напрямую (это
-  подтверждённый механизм в исходниках Geant4, не выдумка).
+  `G4PhysListFactory::ReferencePhysList()` читает напрямую.
 - **Disk I/O** — реализовано через `OUTPUT_MODE=burst`: параллельно с compute
   каждые `IO_INTERVAL_SECONDS` пишется `IO_BURST_MB` МБ с `fsync` (fsync
   принципиален — иначе запись оседает в page cache и io.pressure не растёт).
