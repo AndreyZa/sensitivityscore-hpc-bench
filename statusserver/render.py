@@ -214,6 +214,34 @@ def baseline_section(d: dict) -> str:
     )
 
 
+def method_section() -> str:
+    """Краткая методика: кто создаёт нагрузку, что измеряется и в какой фазе.
+    Полная версия — docs/Методика измерений.md."""
+    return """<details class="card" data-k="method">
+<summary>Методика: что и на чём измеряется</summary>
+<ul class="method">
+<li><b>Эталонная задача Geant4</b> (симуляция частиц) — единственное, что
+измеряется: время выполнения, узел размещения, замедление, ошибка
+размещения. Профили задают чувствительность: high-s-io — к диску,
+high-s-net — к сети, high-s — к кэшу, low-s — контрольный.</li>
+<li><b>Генераторы фоновой нагрузки</b> — по одному на ось: диск —
+stress-ng (запись), сеть — пары iperf3 (~400 Мбит/с), кэш — stress-ng
+(потоковый проход по памяти). Создают «перегруженный узел» и
+<b>не измеряются</b>; ресурсов запрашивают минимум, поэтому для
+планировщиков без учёта интерференции узел выглядит свободным.</li>
+<li><b>Эталонные прогоны</b>: кластер пуст, без генераторов; каждый профиль
+изолированно на каждом узле — база замедления и сверка чувствительности.</li>
+<li><b>Основная серия</b>: генераторы на одном узле → 30 с стабилизации →
+6 задач Geant4 пуассоновским потоком; куда ставить — решает испытуемый
+планировщик; измеряются только задачи Geant4.</li>
+<li><b>Давление узла</b> измеряет агент на каждом узле (промахи кэша/сек,
+ожидание диска PSI, сетевой трафик — нормированные калибровкой стенда),
+безотносительно источника нагрузки.</li>
+</ul>
+<p class="dim">Полная версия — «Методика измерений.md» в docs репозитория.</p>
+</details>"""
+
+
 def cluster_section(d: dict) -> str:
     cl = d["cluster"]
     aggr = cl.get("aggressors", [])
@@ -544,6 +572,7 @@ td.good{{background:var(--goodbg)}} td.warn{{background:var(--warnbg)}} td.bad{{
   padding:.15em .7em;font-size:.82em;margin-right:.3em}}
 .chip.good{{background:var(--goodbg);color:var(--good)}}
 .takeaway{{margin:.3em 0 .8em;font-size:.92em}}
+.method{{font-size:.9em;padding-left:1.2em}} .method li{{margin:.35em 0}}
 .note{{font-size:.82em;margin-top:.6em}}
 details summary{{cursor:pointer;font-size:.85em;margin:.4em 0}}
 pre{{background:var(--bg);padding:.7em;overflow-x:auto;font-size:.82em;
@@ -602,6 +631,8 @@ select.pill{{padding:.2em .5em}}
   <h2>Размещение задач по планировщикам</h2>
   {money_section(d['results'])}
 </div>
+
+{method_section()}
 
 <div class="card">
   <h2>Текущее состояние кластера</h2>

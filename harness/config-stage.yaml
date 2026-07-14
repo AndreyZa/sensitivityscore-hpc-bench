@@ -98,13 +98,12 @@ pressure_scenarios:
       interval_seconds: 25
     aggressors_per_node: [2]
     pressured_node_count: 1
-    # Давим worker-7 — ноду с НАИМЕНЬШИМ числом чужих подов (самую «пустую»),
-    # т.е. ту, которую LeastAllocated default-планировщика предпочитает больше
-    # всех. Агрессор невидим по ресурсам (cpu 10m / mem 32Mi), так что default
-    # продолжает считать worker-7 лучшей и заводит туда жертв — прямо в шторм.
-    # sensitivityscore видит высокий io_pressure worker-7 и уводит жертв на
-    # 2 чистые ноды (worker-5/worker-6) — их ёмкости хватает без переполнения.
-    aggressor_nodes: ["worker-192.168.0.7"]
+    # Давим одну ноду; после сжатия кластера до PMU-тройки (w5/w6/w7 удалены
+    # 14.07.2026, серия io+net уже собрана на прежнем составе) шторм — на
+    # worker-10, чистые — worker-8/worker-9. Агрессор невидим по ресурсам
+    # (cpu 10m / mem 32Mi), так что планировщик без учёта интерференции
+    # продолжает считать штормовую ноду лучшей и заводит туда жертв.
+    aggressor_nodes: ["worker-192.168.0.10"]
     stabilize_seconds: 30
     # 10 реп для статзначимости: при n=3 Mann-Whitney физически не даёт
     # p<0.05 (минимум 0.1) — v5-серия с Cliff's delta −1.0 по всем метрикам
@@ -128,7 +127,7 @@ pressure_scenarios:
     pressured_node_count: 1
     # Та же логика выбора ноды, что у io-сценария: самая «пустая» нода —
     # любимица LeastAllocated, агрессоры по requests невидимы.
-    aggressor_nodes: ["worker-192.168.0.7"]
+    aggressor_nodes: ["worker-192.168.0.10"]
     aggressor_mode: net
     # Битрейт одного UDP-клиента (Mbit/s). Итоговое node-давление ~
     # 2 пары * (tx клиента + rx сервера) = 4x битрейт против калибровки
