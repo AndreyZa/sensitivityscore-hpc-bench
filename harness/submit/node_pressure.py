@@ -40,6 +40,23 @@ SENSITIVITY_VALUE = {"high": 1.0, "medium": 0.5}
 # не по той скор-функции, которой реально пользуется плагин.
 DEFAULT_WEIGHTS = {"llc": 1.0, "numa": 1.0, "net": 1.0, "io": 1.0}
 
+
+def split_weights(weights: dict) -> tuple[dict[str, float], dict[str, float]]:
+    """-> (base, sensitivity) по осям — зеркало parseWeights плагина.
+
+    Два формата weights.json/score_weights (см. scoreWeights в
+    pkg/sensitivityscore/sensitivityscore.go форка): новый
+    {"base": {...}, "sensitivity": {...}} — вклад оси (base + sens*s)*p,
+    базовую цену платит любая задача узла (калибровка STAGE: β=0, дисковый
+    шторм замедляет все задачи); легаси-плоский {"llc": 1.0, ...} — это
+    sensitivity с base=0, прежнее поведение."""
+    if "base" in weights or "sensitivity" in weights:
+        base, sens = weights.get("base", {}), weights.get("sensitivity", {})
+    else:
+        base, sens = {}, weights
+    return ({a: float(base.get(a, 0.0)) for a in AXES},
+            {a: float(sens.get(a, 0.0)) for a in AXES})
+
 # Оси скор-функции — порядок и состав зеркалят nodePressure плагина.
 AXES = ("llc", "numa", "net", "io")
 
@@ -82,20 +99,24 @@ def snapshot_node_pressure(redis_addr: str) -> dict[str, dict[str, float]]:
 
 
 def interference(
-    sensitivity: Sensitivity, pressure: dict[str, float], weights: dict[str, float]
+    sensitivity: Sensitivity, pressure: dict[str, float], weights: dict
 ) -> float:
-    """Нормированное взвешенное скалярное произведение S_job x Pressure_node,
-    в [0,1] — та же формула, что Score() плагина (у него pressure в шкале
-    0-100 и знаменатель * 100; здесь обе части в [0,1], результат идентичен)."""
-    w = {axis: weights.get(axis, 1.0) for axis in AXES}
-    denom = sum(w.values())
+    """Нормированная интерференция S_job x Pressure_node в [0,1] — та же
+    формула, что interferenceScore() плагина (у него pressure в шкале 0-100 и
+    знаменатель * 100; здесь обе части в [0,1], результат идентичен): вклад
+    оси = (base + sensitivity*s) * p, знаменатель Σ(base + sensitivity)."""
+    base, sens = split_weights(weights)
+    denom = sum(base.values()) + sum(sens.values())
     if denom <= 0:
         return 0.0
     s = {
         axis: SENSITIVITY_VALUE.get(getattr(sensitivity, axis), 0.0)
         for axis in AXES
     }
-    dot = sum(s[axis] * pressure.get(axis, 0.0) * w[axis] for axis in AXES)
+    dot = sum(
+        (base[axis] + sens[axis] * s[axis]) * pressure.get(axis, 0.0)
+        for axis in AXES
+    )
     return dot / denom
 
 

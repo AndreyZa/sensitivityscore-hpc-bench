@@ -20,6 +20,7 @@ from submit.node_pressure import (
     DEFAULT_WEIGHTS,
     interference,
     placement_regret,
+    split_weights,
 )
 
 HIGH_ALL = Sensitivity(llc="high", numa="high", net="high", io="high")
@@ -166,6 +167,58 @@ class TestPlacementRegret(unittest.TestCase):
             self.LLC_ONLY, self.SNAPSHOT, None, DEFAULT_WEIGHTS
         )
         self.assertTrue(math.isnan(chosen) and math.isnan(regret))
+
+
+class TestBasePlusSensitivityWeights(unittest.TestCase):
+    """Формат весов {"base", "sensitivity"} — зеркало parseWeights и
+    interferenceScore форка: базовую цену оси платит любая задача узла
+    (калибровка STAGE: у дисковой оси β=0, страдают все)."""
+
+    def test_split_legacy_flat(self):
+        base, sens = split_weights({"llc": 1.0, "numa": 0.0, "net": 1.0, "io": 1.0})
+        self.assertEqual(base, {"llc": 0.0, "numa": 0.0, "net": 0.0, "io": 0.0})
+        self.assertEqual(sens["llc"], 1.0)
+        self.assertEqual(sens["numa"], 0.0)
+
+    def test_split_nested_missing_keys_are_zero(self):
+        base, sens = split_weights({"base": {"io": 1.0, "net": 0.09}})
+        self.assertEqual(base["io"], 1.0)
+        self.assertEqual(base["llc"], 0.0)
+        self.assertEqual(sens, {"llc": 0.0, "numa": 0.0, "net": 0.0, "io": 0.0})
+
+    def test_base_charges_insensitive_task(self):
+        # Суть изменения: io-давление платит и задача с io=low — прежний
+        # sensitivity-скоринг здесь был слеп при любых весах.
+        w = {"base": {"io": 1.0}, "sensitivity": {}}
+        storm = {"llc": 0, "numa": 0, "net": 0, "io": 1.0}
+        clean = {"llc": 0, "numa": 0, "net": 0, "io": 0.0}
+        self.assertGreater(
+            interference(LOW_ALL, storm, w), interference(LOW_ALL, clean, w)
+        )
+        w_old = {"llc": 0.0, "numa": 0.0, "net": 0.0, "io": 1.0}
+        self.assertEqual(
+            interference(LOW_ALL, storm, w_old), interference(LOW_ALL, clean, w_old)
+        )
+
+    def test_base_and_sensitivity_sum(self):
+        # (base + sens*s)*p / Σ(base+sens): io: (1 + 1*1)*0.5, llc: (0+1*1)*1
+        w = {"base": {"io": 1.0}, "sensitivity": {"io": 1.0, "llc": 1.0}}
+        s = Sensitivity(llc="high", numa="low", net="low", io="high")
+        got = interference(s, {"llc": 1.0, "numa": 0, "net": 0, "io": 0.5}, w)
+        self.assertAlmostEqual(got, (1.0 + 2.0 * 0.5) / 3.0)
+
+    def test_calibrated_stage_weights_regret(self):
+        # Калиброванные веса STAGE: base={io:1, net:0.09}. Для НЕчувствительной
+        # задачи выбор дискового узла — переплата, чистый w8 — ноль.
+        snapshot = {
+            "w8": {"llc": 1.0, "numa": 0.0, "net": 0.0, "io": 0.0},
+            "w9": {"llc": 0.3, "numa": 0.0, "net": 0.0, "io": 1.0},
+        }
+        w = {"base": {"io": 1.0, "net": 0.09}, "sensitivity": {}}
+        _, regret = placement_regret(LOW_ALL, snapshot, "w9", w)
+        self.assertAlmostEqual(regret, 1.0 / 1.09)
+        _, regret = placement_regret(LOW_ALL, snapshot, "w8", w)
+        self.assertEqual(regret, 0.0)
 
 
 if __name__ == "__main__":
