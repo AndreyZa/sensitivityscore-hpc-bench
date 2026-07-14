@@ -98,6 +98,11 @@ def pressure_results(path: Path, cfg: dict) -> dict:
                     "expected": exp_sc.get(sc),
                     "done": int(len(g)),
                     "arms": arms,
+                    # Смешанный сценарий: счётчик «в шторм» — НОМИНАЛЬНОЕ
+                    # совпадение с декларированной осью; при калиброванных
+                    # ценах осей узел дешёвой оси — намеренный выбор, судить
+                    # качество надо по ошибке размещения (см. render).
+                    "nominal": bool(tox),
                 }
         out["scenarios"] = scenarios
         return out

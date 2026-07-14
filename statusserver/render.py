@@ -101,11 +101,19 @@ def plan_section(plan: list[dict]) -> str:
     return f"<div class='plan'>{''.join(rows)}</div>"
 
 
-def storm_cell(m: dict, is_best: bool) -> str:
-    """Ячейка «на перегруженный узел»: N из измеренных (доля %), цвет по доле."""
+def storm_cell(m: dict, is_best: bool, nominal: bool = False) -> str:
+    """Ячейка «на перегруженный узел»: N из измеренных (доля %), цвет по доле.
+    В смешанном сценарии (nominal) счётчик справочный — совпадение с
+    декларированной осью задачи; узел дешёвой оси может быть намеренным
+    выбором, поэтому ни расцветки «хуже/лучше», ни звёздочки."""
     pct = m.get("storm_pct")
     if pct is None:
         return "<td class='dim'>—</td>"
+    if nominal:
+        return (
+            f"<td class='dim'><b>{m['storm']}</b>/{m['measured']} "
+            f"<span class='pct'>({pct}%)</span></td>"
+        )
     cls = "good" if pct <= 12 else ("warn" if pct <= 30 else "bad")
     star = " ★" if is_best else ""
     return (
@@ -130,8 +138,11 @@ def money_section(res: dict) -> str:
         ordered = [a for a in ARM_ORDER if a in arms] + [
             a for a in arms if a not in ARM_ORDER
         ]
+        nominal = bool(info.get("nominal"))
         pcts = [arms[a]["storm_pct"] for a in ordered if arms[a]["storm_pct"] is not None]
         best = min(pcts) if pcts else None
+        regs = [arms[a]["regret"] for a in ordered if arms[a]["regret"] is not None]
+        best_reg = min(regs) if regs else None
 
         prog = ""
         if info.get("expected"):
@@ -142,24 +153,47 @@ def money_section(res: dict) -> str:
             f"{esc(info['storm_node'].replace('worker-', 'w-'))}{prog}</small></h3>"
         )
 
-        head = ("<tr><th>планировщик</th><th>задач на перегруженный узел</th>"
+        storm_col = ("задач на узел своей оси¹" if nominal
+                     else "задач на перегруженный узел")
+        head = (f"<tr><th>планировщик</th><th>{storm_col}</th>"
                 "<th>время выполнения, с</th><th>ошибка размещения</th></tr>")
         body = []
         for a in ordered:
             m = arms[a]
-            is_best = best is not None and m.get("storm_pct") == best and len(ordered) > 1
+            is_best = (not nominal and best is not None
+                       and m.get("storm_pct") == best and len(ordered) > 1)
+            reg_best = (nominal and best_reg is not None
+                        and m.get("regret") == best_reg and len(ordered) > 1)
             row_cls = " class='hero'" if a == HERO_ARM else ""
             mk = m["makespan"] if m["makespan"] is not None else "—"
             rg = m["regret"] if m["regret"] is not None else "—"
+            rg_html = f"{esc(rg)}{' ★' if reg_best else ''}"
             body.append(
                 f"<tr{row_cls}><td><b>{esc(arm_label(a))}</b></td>"
-                f"{storm_cell(m, is_best)}"
-                f"<td>{esc(mk)}</td><td>{esc(rg)}</td></tr>"
+                f"{storm_cell(m, is_best, nominal)}"
+                f"<td>{esc(mk)}</td><td>{rg_html}</td></tr>"
             )
         parts.append(f"<table class='money'>{head}{''.join(body)}</table>")
 
         # Вывод одной строкой, когда данные по всем планировщикам уже есть.
-        if best is not None and HERO_ARM in arms and arms[HERO_ARM]["storm_pct"] is not None:
+        # В смешанном сценарии вердикт по ошибке размещения (номинальный
+        # счётчик оси решением не является), в одноосевых — по доле в шторм.
+        if nominal:
+            if best_reg is not None and arms.get(HERO_ARM, {}).get("regret") is not None:
+                hero_reg = arms[HERO_ARM]["regret"]
+                others = [
+                    f"{arm_label(a)} — {arms[a]['regret']}"
+                    for a in ordered
+                    if a != HERO_ARM and arms[a]["regret"] is not None
+                ]
+                good = hero_reg == best_reg
+                verdict = "✓ лучший результат" if good else "△ пока не лучший"
+                parts.append(
+                    f"<p class='takeaway'>Ошибка размещения SensitivityScore — "
+                    f"<b>{hero_reg}</b> ({', '.join(others) or '—'}) "
+                    f"<span class='{'good' if good else 'warn'}'>{verdict}</span></p>"
+                )
+        elif best is not None and HERO_ARM in arms and arms[HERO_ARM]["storm_pct"] is not None:
             hero_pct = arms[HERO_ARM]["storm_pct"]
             others = [
                 f"{arm_label(a)} — {arms[a]['storm_pct']}%"
@@ -174,13 +208,17 @@ def money_section(res: dict) -> str:
                 f"<span class='{'good' if good else 'warn'}'>{verdict}</span></p>"
             )
     parts.append(
-        "<p class='note dim'>«Задач на перегруженный узел» — доля задач, "
-        "размещённых планировщиком на узел с фоновой нагрузкой (меньше — "
-        "лучше; прямой показатель качества решения). «Ошибка размещения» — "
-        "превышение интерференции выбранного узла над лучшим доступным на "
-        "момент решения, 0..1. Среднее время выполнения без нормировки "
-        "смещено неоднородностью узлов — нормированное замедление считается "
-        "в секции «Анализ» после прогона.</p>"
+        "<p class='note dim'>«Ошибка размещения» — превышение интерференции "
+        "выбранного узла над лучшим доступным на момент решения (0..1, по "
+        "ценам осей из конфигурации серии; меньше — лучше). "
+        "¹ В смешанном сценарии счётчик «на узел своей оси» — номинальное "
+        "совпадение с декларированной осью задачи, справочный: если ось "
+        "по калибровке дешёвая (например, кэш при малых CPU-квотах), "
+        "размещение на её узел — намеренный и правильный выбор; качество "
+        "решения показывают время выполнения и ошибка размещения. "
+        "Среднее время выполнения без нормировки смещено неоднородностью "
+        "узлов — нормированное замедление считается в секции «Анализ» "
+        "после прогона.</p>"
     )
     return "".join(parts)
 
