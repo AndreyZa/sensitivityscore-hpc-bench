@@ -373,6 +373,28 @@ run-config-a: venv-harness ## Полная матрица только для к
 run-all: venv-harness ## Полная матрица по всем конфигурациям из harness/config.yaml
 	cd harness && ../$(HARNESS_VENV)/bin/python run_experiment.py
 
+# ---------------------------------------------------------------------------
+# Кнопка «прогнать серию» — preflight + запуск фоном + статус-страница +
+# вотчдог одной командой (scripts/run-series.sh). Конвенция имён:
+# SERIES=placebo -> harness/config-stage-placebo.yaml + run-stage-placebo.sh.
+# FORCE=1 превращает проваленные проверки preflight в предупреждения.
+# ---------------------------------------------------------------------------
+
+.PHONY: series
+series: venv-harness ## Прогнать серию под ключ: make series SERIES=<имя> (preflight+запуск+вотчдог)
+	@test -n "$(SERIES)" || { echo "укажи серию: make series SERIES=<имя> (config-stage-<имя>.yaml)"; exit 1; }
+	./scripts/run-series.sh start $(SERIES)
+
+.PHONY: series-status
+series-status: ## Состояние серии: фазы, ошибки, строки результатов: make series-status SERIES=<имя>
+	@test -n "$(SERIES)" || { echo "укажи серию: make series-status SERIES=<имя>"; exit 1; }
+	@./scripts/run-series.sh status $(SERIES)
+
+.PHONY: series-stop
+series-stop: ## Остановить серию и прибрать кластер (агрессоры, job'ы): make series-stop SERIES=<имя>
+	@test -n "$(SERIES)" || { echo "укажи серию: make series-stop SERIES=<имя>"; exit 1; }
+	./scripts/run-series.sh stop $(SERIES)
+
 .PHONY: harness-clean-jobs
 harness-clean-jobs: ## Удалить все Job харнесса (namespace HARNESS_NAMESPACE, после make pilot/run-all/run-config-a)
 	$(KUBECTL) delete jobs -l app=geant4-bench -n $(HARNESS_NAMESPACE) --ignore-not-found

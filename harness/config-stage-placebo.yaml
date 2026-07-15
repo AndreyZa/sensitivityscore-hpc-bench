@@ -1,0 +1,109 @@
+# config-stage-placebo.yaml — ПЛАЦЕБО-серия (отрицательный контроль).
+#
+# Тот же пуассоновский поток смеси трёх профилей, те же три плеча и та же
+# методика (эталоны той же сессией), но ФОНОВОЙ НАГРУЗКИ НЕТ ВООБЩЕ:
+# aggressors_per_node=[0], штормов нет, pressured_node_count=0. Это нулевая
+# точка оси «доза давления».
+#
+# Что проверяем (объявлено ДО данных, 15.07.2026):
+#   1. На чистом кластере различий между планировщиками НЕТ: время всех трёх
+#      плеч статистически неразличимо (Манн-Уитни/Холм, |δ| мал).
+#   2. Ошибка размещения ~0 у всех плеч (давление всюду фоновое, превышать
+#      нечего).
+#   3. Замедления к эталонам той же сессии ~1.0 — остаток = самоинтерференция
+#      пуассоновского потока (γ~0.026/соседа) + внутрисессионный дрейф.
+# Закрывает возражения «SensitivityScore просто выбирает быстрые узлы» и
+# «выигрыш — артефакт методики»: без давления преимущество обязано исчезнуть.
+#
+# Веса скоринга — калиброванные (как в проверочной серии и в ConfigMap):
+# без давления все узлы равноценны при любых весах, но регрет в строках
+# должен считаться теми же весами, что реально планируют.
+#
+# Запуск: make series SERIES=placebo  (preflight сверит ConfigMap с весами ниже)
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - low-s
+  - high-s
+  - high-s-io
+  - high-s-net
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.09
+    io: 1.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: placebo
+    # Жертвы и поток идентичны mixed3 (2+2+2, пуассон 25 с); сиды прибытия
+    # свои (seed = имя/интенсивность/повтор) — с mixed3 серия не парная,
+    # плечи ВНУТРИ повтора парны как обычно.
+    victims:
+      - { profile: high-s, count: 2 }
+      - { profile: high-s-io, count: 2 }
+      - { profile: high-s-net, count: 2 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    # Нулевая доза: агрессоры не деплоятся, давить некого.
+    aggressors_per_node: [0]
+    pressured_node_count: 0
+    stabilize_seconds: 5
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  # Та же сессия, что и серия — дрейф между сессиями +13..23%.
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-placebo.parquet"
+  baselines_file: "baselines-stage-placebo.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

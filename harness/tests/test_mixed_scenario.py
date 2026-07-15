@@ -70,3 +70,33 @@ def test_resolve_pressured_nodes_mixed_all_stormed():
     # Смешанный сценарий давит все узлы — guard «нужна чистая нода»
     # не применяется, kubectl не дёргается.
     assert resolve_pressured_nodes(MIXED, {}) == ["w8", "w9", "w10"]
+
+
+# --- Плацебо-сценарий: тот же поток жертв, ноль агрессоров -----------------
+
+PLACEBO = {
+    "name": "placebo",
+    "victims": MIXED["victims"],
+    "aggressors_per_node": [0],
+    "pressured_node_count": 0,
+}
+
+
+def test_expected_pods_placebo_zero():
+    assert expected_pods(0, 0, PLACEBO) == 0
+
+
+def test_deploy_placebo_skips_kubectl(monkeypatch):
+    # Нулевое давление: deploy обязан выйти ДО kubectl apply — пустой ввод
+    # уронил бы плечо ('no objects passed to apply').
+    import submit.aggressors as agg
+    import submit.k8s_submit as k8s_submit
+
+    monkeypatch.setattr(k8s_submit, "ensure_namespace", lambda ns: None)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("_apply_and_wait не должен вызываться без агрессоров")
+
+    monkeypatch.setattr(agg, "_apply_and_wait", _boom)
+    agg.deploy([], 0, PLACEBO, {"kubernetes": {"namespace": "bench"},
+                                "images": {"aggressor": "img"}})

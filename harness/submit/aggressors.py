@@ -314,6 +314,11 @@ def deploy(
                     args_json=json.dumps(args),
                 )
             )
+    if not manifests:
+        # Плацебо-сценарий (intensity 0 / pressured_node_count 0): фонового
+        # давления нет by design, «kubectl apply» с пустым вводом упал бы.
+        log.info("aggressors: none to deploy (placebo arm — zero pressure)")
+        return
     _apply_and_wait(manifests, namespace)
     log.info(
         "aggressors: %d pods on nodes %s (x%d per node) Ready",
