@@ -1,0 +1,114 @@
+# config-stage-io-sensitivity.yaml — СЕРИЯ ПРОВЕРКИ cˢ_io > 0 (различение
+# задач по чувствительности к диску) на STAGE.
+#
+# Мотивация. Прежний high-s-io писал фоновым процессом, который умирал с
+# контейнером: makespan жертвы от диска не зависел, и калибровка давала
+# cˢ_io = 0 (базовая цена c⁰_io = 0.24 — платят все). Новый workload
+# (OUTPUT_MODE=blocking) сбрасывает вывод на диск ПОСЛЕ compute на критическом
+# пути: диск-шторм режет запись ×~23 (замерено голым dd: 2.5ГБ 6с чисто ->
+# 138с под штормом). Смоук профиля: high-s-io 51с->176с (×3.45) под штормом,
+# low-s 46с->45с (×0.98). То есть теперь диск-чувствительная задача реально
+# страдает, а нечувствительная — нет: cˢ_io > 0 измерим.
+#
+# Дизайн. Диск-шторм на ОДНОМ узле (w9), два узла чистые. Жертвы — смесь
+# high-s-io (io=high, реальный вывод) и low-s (io=low, без вывода), поровну.
+# Что показываем:
+#   1. cˢ_io > 0 (физика): на штормовом узле slowdown(high-s-io) >>
+#      slowdown(low-s) — различение по чувствительности к диску. Данные — с
+#      тех размещений, куда default/trimaran ставят жертвы на w9.
+#   2. Ценность планировщика: SensitivityScore уводит жертвы от io-давления
+#      (базовая цена io=1 в весах) -> high-s-io на w9 почти не попадает ->
+#      защищён; trimaran видит w9 «свободным» по CPU и грузит туда.
+#
+# Веса — ТЕКУЩИЕ калиброванные (base io=1); preflight make series сверит их с
+# ConfigMap. Веса на ФИЗИКУ (slowdown) не влияют, только на размещения.
+# Следующий шаг после серии: перекалибровать (cˢ_io теперь > 0) и показать
+# дифференциацию (low-s можно ставить на дешёвый для него штормовой узел).
+#
+# Запуск: make series SERIES=io-sensitivity
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - low-s
+  - high-s-io
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.09
+    io: 1.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: io-sensitivity
+    # 3 чувствительных к диску + 3 нечувствительных, один поток (чередование).
+    victims:
+      - { profile: high-s-io, count: 3 }
+      - { profile: low-s, count: 3 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    # Один диск-шторм на w9; w8/w10 чистые (планировщику есть куда уводить).
+    storms:
+      - node: worker-192.168.0.9
+        mode: stress
+        args: ["--hdd", "2", "--hdd-bytes", "1g"]
+        per_node: 2
+        toxic_for: [high-s-io]
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-io-sensitivity.parquet"
+  baselines_file: "baselines-stage-io-sensitivity.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
