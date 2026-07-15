@@ -118,6 +118,16 @@ image-metrics-agent: build-go ## Собрать образ metrics-agent
 image-aggressor: ## Собрать образ LLC/membw-агрессора (stress-ng) для pressure-сценариев
 	docker build -t $(AGGRESSOR_IMAGE) ./aggressor
 
+.PHONY: images
+images: image-workload image-metrics-agent image-harness image-aggressor ## Собрать ВСЕ образы стенда (кроме плагина — он в форке, см. scheduler-plugin-image)
+
+.PHONY: images-push
+images-push: ## Запушить ВСЕ образы стенда в registry (теги — переменные *_IMAGE выше)
+	docker push $(WORKLOAD_IMAGE)
+	docker push $(METRICS_AGENT_IMAGE)
+	docker push $(HARNESS_IMAGE)
+	docker push $(AGGRESSOR_IMAGE)
+
 # ---------------------------------------------------------------------------
 # Кластер: bootstrap (namespace + Redis), деплой планировщика, деплой агента
 # ---------------------------------------------------------------------------

@@ -42,9 +42,10 @@ metrics-agent/           — Go: DaemonSet-агент, perf_event_open() → Red
 aggressor/               — LLC/membw stress-под для pressure-сценариев
 harness/                 — Python: оркестрация серии экспериментов (run_experiment.py),
                            запускается как Job внутри кластера (harness/deploy/)
+statusserver/            — Python: live-страница прогресса серии (make series поднимает её сам)
 analysis/                — Python: статистика (Mann-Whitney, Cliff's delta) + графики
 db/clickhouse/           — схема + загрузчик parquet→ClickHouse (агрегатор результатов)
-scripts/                 — bootstrap-скрипты для кластера
+scripts/                 — bootstrap + run-series.sh («кнопка» прогона серии)
 ```
 
 Сам плагин SensitivityScore (Score extension point) живёт в отдельном форке
@@ -72,13 +73,13 @@ make perfcheck-clean
 
 ### 1. Образы
 
-Сборка локальная; на многоузловом стенде обязателен push (`imagePullPolicy: Always`):
+Сборка локальная; на многоузловом стенде обязателен push (`imagePullPolicy: Always`).
+Теги — переменные `*_IMAGE` в `Makefile`, не хардкод:
 
 ```bash
-make image-workload      && docker push andreyza/geant4:11.2
-make image-metrics-agent && docker push andreyza/metrics-agent:dev
-make image-harness       && docker push andreyza/harness:dev
-make scheduler-plugin-image && make -C ../scheduler-plugins -f sensitivityscore.mk ss-push
+make images && make images-push                                   # workload, metrics-agent, harness, aggressor
+make scheduler-plugin-image                                       # плагин — в форке
+make -C ../scheduler-plugins -f sensitivityscore.mk ss-push
 ```
 
 ### 2. Кластер
@@ -97,35 +98,30 @@ make netcheck-logs                           # → NET_REFERENCE_MBPS
 make netcheck-apply NET_REFERENCE_MBPS=<N>   # env на DaemonSet; без калибровки ось честно = 0
 ```
 
-### 4. Прогоны (in-cluster Job, без port-forward)
+### 4. Прогоны — «кнопка» серии
+
+Одна команда: preflight → эталоны → серия → live-статус-страница → вотчдог
+(`scripts/run-series.sh`, `SERIES=<имя>` → `harness/config-stage-<имя>.yaml`):
 
 ```bash
-make harness-rbac                              # namespace/SA/RBAC/PVC — один раз
-
-make harness-run-baseline-incluster            # соло-бейзлайны на ПУСТОМ кластере (slowdown/fingerprint)
-make harness-fetch-baselines
-
-make harness-run-pilot-incluster               # пилот: 1 точка плана, 3 повтора
-make harness-logs-incluster JOB=harness-pilot
-make harness-fetch-results
-
-make harness-run-config-a-incluster            # полная матрица config A (B/C/D — нужна прод-инфра, docs §0)
-make harness-fetch-results
-
-make image-aggressor && docker push andreyza/aggressor:dev
-make harness-run-pressure-incluster            # pressure: агрессоры + поток жертв
-make harness-fetch-results
-
-make harness-clean-reader                      # убрать read-only под выгрузки
+make series SERIES=<имя>          # имя ∈ placebo | llc | mixed | mixed-calib
+make series-status SERIES=<имя>   # фазы, ошибки, строки результатов (live)
+make series-stop SERIES=<имя>     # остановить и прибрать (агрессоры, job'ы)
 ```
 
-Опц. контрольный бейзлайн Trimaran (H1-trimaran): раскомментировать `trimaran`
-в `scheduler_variants` (`harness/config.yaml`), `make trimaran-deps`,
-пересобрать образ харнесса — добавляет плечо `A-trimaran` ко всем прогонам.
+Результаты пишутся в `harness/results/` (секция `output` конфига). Trimaran
+(`scheduler_variants`) и pressure-агрессоры уже вписаны в stage-конфиги —
+отдельных ручных шагов нет; `make trimaran-deps` (metrics-server) нужен раз на
+стенд, если плечо trimaran включено.
+
+Ниже уровнем, для ad-hoc/пилота, — точечные in-cluster Job-таргеты
+(`make harness-rbac` один раз, затем `harness-run-{pilot,config-a,baseline,pressure}-incluster`
++ `harness-fetch-results`/`-baselines`); см. `make help`.
 
 ### 5. Анализ H1–H4
 
-Локальный parquet (`harness/results/{results,baselines}.parquet` после fetch):
+Локальный parquet (`harness/results/{results,baselines}.parquet` — `make series`
+кладёт туда сам; для in-cluster Job-пути — после `harness-fetch-*`):
 
 ```bash
 make analyze   # report/: summary.md, comparisons.csv, fingerprint.csv + графики
