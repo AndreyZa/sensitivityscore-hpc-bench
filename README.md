@@ -237,7 +237,7 @@ make nuke                 # всё перечисленное, Deployment пла
 | Ось | Метрика агента | Примечание |
 |-----|----------------|------------|
 | LLC | промахи/сек ÷ `LLC_REFERENCE_MISSES_PER_SEC` | отношение промахов инвертируется под потоковой нагрузкой (см. Методику) |
-| NUMA | `node-load-misses ÷ node-loads` (PMU) | на STAGE ось нулевая (один NUMA-домен на узел); активируется на многосокетном железе |
+| NUMA | `node-load-misses ÷ node-loads` (PMU) | на STAGE ось нулевая (один NUMA-домен на узел); на прод-стенде активна (2 сокета/узел, Xeon 8462Y+) |
 | IO | PSI `io.pressure` | сырые IOPS сохраняются только для анализа |
 | Net | `net_bw ÷ NET_REFERENCE_MBPS` | калибровка `make netcheck-run` (iperf3 `--bidir`); без калибровки ось равна 0 |
 
