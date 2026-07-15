@@ -1,0 +1,116 @@
+# config-stage-differentiation.yaml — СЕРИЯ DIFFERENTIATION: изолирует
+# преимущество интерференционно-осведомлённого планировщика над профиль-
+# слепым, которое серия io-sensitivity показать не смогла.
+#
+# Проблема io-sensitivity. Там default тоже не поставил чувствительные задачи
+# на штормовой узел — но не из-за учёта интерференции (default профиль-слеп), а
+# из-за РАЗНЫХ ресурсных заявок профилей (low-s просил 1Gi памяти, high-s-io
+# 384Mi): упаковка развела их по узлам случайно относительно интерференции.
+# Артефакт, а не ум.
+#
+# Дизайн differentiation. Две жертвы с ИДЕНТИЧНЫМИ ресурсами и compute,
+# различающиеся ТОЛЬКО чувствительностью к диску и реальным выводом:
+#   high-s-io      — io=high, вывод на диск (blocking);
+#   io-insensitive — io=low, тот же compute, без вывода.
+# Тогда профиль-слепой default кладёт их ОДИНАКОВО (~поровну на все узлы,
+# включая штормовой), а SensitivityScore с cˢ_io>0 уводит чувствительную
+# high-s-io от штормового узла СИЛЬНЕЕ, чем нечувствительную. Любое различие
+# размещения между профилями у SS — и есть учёт чувствительности; у default
+# его быть не должно.
+#
+# Веса — ПЕРЕКАЛИБРОВАННЫЕ по серии io-sensitivity: base io=0.23 (c⁰_io,
+# платят все), sensitivity io=0.63 (cˢ_io, надбавка чувствительной). Preflight
+# make series сверит их с ConfigMap (патч уже применён).
+#
+# Ожидание (объявлено до данных):
+#   1. У SS high-s-io попадает на штормовой узел РЕЖЕ, чем io-insensitive
+#      (различение по чувствительности);
+#   2. У default оба профиля попадают на штормовой узел ОДИНАКОВО (нет
+#      различения — контроль, что дизайн честный);
+#   3. Время/регрет high-s-io у SS лучше, чем у default и trimaran.
+#
+# Запуск: make series SERIES=differentiation
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - io-insensitive
+  - high-s-io
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.09
+    io: 0.23
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.63
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: differentiation
+    victims:
+      - { profile: high-s-io, count: 3 }
+      - { profile: io-insensitive, count: 3 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    storms:
+      - node: worker-192.168.0.9
+        mode: stress
+        args: ["--hdd", "2", "--hdd-bytes", "1g"]
+        per_node: 2
+        toxic_for: [high-s-io]
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-differentiation.parquet"
+  baselines_file: "baselines-stage-differentiation.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

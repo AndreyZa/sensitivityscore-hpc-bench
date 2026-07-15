@@ -108,6 +108,28 @@ PROFILES: dict[str, ProfileSpec] = {
     # штраф (на простое диска писатель спрятан за compute, под штормом —
     # обнажается). NB: high-s-io и низкочувствительный контраст low-s под тем
     # же штормом дают разность slowdown = вклад cˢ_io.
+    # Двойник high-s-io для серии differentiation: ТОТ ЖЕ compute и ТЕ ЖЕ
+    # ресурсы, но без дискового вывода (OUTPUT_MODE=none) и с io=low. Нужен,
+    # чтобы профиль-слепой планировщик (default) не мог развести профили по
+    # ресурсным заявкам (как в io-sensitivity, где low-s просил 1Gi против
+    # 384Mi у high-s-io) — тогда любое различие размещения принадлежит учёту
+    # чувствительности. Под диск-штормом платит только базовую цену c⁰_io
+    # (через iowait на compute), надбавку cˢ_io — нет.
+    "io-insensitive": ProfileSpec(
+        env={
+            "G4_THREADS": _ov("io-insensitive", "THREADS", "8"),
+            "PHYSICS_LIST": "FTFP_BERT_HP",
+            "N_PRIMARIES": _ov("io-insensitive", "PRIMARIES", "1000000"),
+            "OUTPUT_MODE": "none",
+            "RNG_SEED": "42",
+        },
+        sensitivity=Sensitivity(llc="high", numa="high", net="low", io="low"),
+        resources={
+            "cpu": _ov("io-insensitive", "CPU", "8"),
+            "memory_request": _ov("io-insensitive", "MEM_REQ", "4Gi"),
+            "memory_limit": _ov("io-insensitive", "MEM_LIM", "6Gi"),
+        },
+    ),
     "high-s-io": ProfileSpec(
         env={
             "G4_THREADS": _ov("high-s-io", "THREADS", "8"),
