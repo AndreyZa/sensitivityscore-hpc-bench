@@ -22,9 +22,9 @@
 Планировщики: default, SensitivityScore, trimaran
 (`LoadVariationRiskBalancing` — утилизация CPU/памяти, без модели
 интерференции). Статистика: Манн-Уитни по повторениям, поправка Холма,
-Cliff's δ. Данные всех серий — в ClickHouse с провенансом; отчёт
-воспроизводится: `make ch-tunnel && make ch-analyze STAND=stage
-RUN_LABEL=<серия>`.
+Cliff's δ. Данные всех серий — в ClickHouse, каждая запись помечена
+стендом и серией (провенанс); отчёт воспроизводится: `make ch-tunnel &&
+make ch-analyze STAND=stage RUN_LABEL=<серия>`.
 
 ## Пять серий — итоговая таблица
 
