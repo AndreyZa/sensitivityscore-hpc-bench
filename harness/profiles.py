@@ -97,19 +97,26 @@ PROFILES: dict[str, ProfileSpec] = {
             "memory_limit": _ov("high-s-net", "MEM_LIM", "2Gi"),
         },
     ),
-    # high-s + реальный дисковый вывод (burst-писатель entrypoint.sh) — жертва
-    # для IO pressure-сценария: декларирует io=high И действительно страдает
-    # от дисковой контенции (fsync-записи стоят в очереди к придавленному
-    # устройству). Без реального IO у жертвы сценарий с диск-агрессором
-    # мерил бы честный, но бесполезный ноль.
+    # high-s + реальный дисковый вывод на КРИТИЧЕСКОМ ПУТИ (blocking-писатель
+    # entrypoint.sh) — жертва IO pressure-сценария: декларирует io=high И
+    # реально страдает от дисковой контенции. OUTPUT_MODE=blocking: job не
+    # завершается, пока вывод не сброшен на диск (gate exit на fsync-хвост),
+    # поэтому под штормом makespan жертвы РАСТЁТ — это делает cˢ_io > 0
+    # измеримым (в отличие от burst, где писатель фоновый и makespan от диска
+    # не зависит: тот режим мерил детекцию/уклонение, а не деградацию).
+    # IO_TOTAL_BURSTS×IO_BURST_MB — доза вывода; калибруется smoke под целевой
+    # штраф (на простое диска писатель спрятан за compute, под штормом —
+    # обнажается). NB: high-s-io и низкочувствительный контраст low-s под тем
+    # же штормом дают разность slowdown = вклад cˢ_io.
     "high-s-io": ProfileSpec(
         env={
             "G4_THREADS": _ov("high-s-io", "THREADS", "8"),
             "PHYSICS_LIST": "FTFP_BERT_HP",
             "N_PRIMARIES": _ov("high-s-io", "PRIMARIES", "1000000"),
-            "OUTPUT_MODE": "burst",
-            "IO_BURST_MB": _ov("high-s-io", "IO_BURST_MB", "64"),
-            "IO_INTERVAL_SECONDS": _ov("high-s-io", "IO_INTERVAL_SECONDS", "5"),
+            "OUTPUT_MODE": _ov("high-s-io", "OUTPUT_MODE", "blocking"),
+            "IO_BURST_MB": _ov("high-s-io", "IO_BURST_MB", "32"),
+            "IO_INTERVAL_SECONDS": _ov("high-s-io", "IO_INTERVAL_SECONDS", "1"),
+            "IO_TOTAL_BURSTS": _ov("high-s-io", "IO_TOTAL_BURSTS", "40"),
             "RNG_SEED": "42",
         },
         sensitivity=Sensitivity(llc="high", numa="high", net="low", io="high"),

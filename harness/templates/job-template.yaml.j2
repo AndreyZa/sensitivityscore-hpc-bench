@@ -59,7 +59,12 @@ spec:
       containers:
         - name: geant4
           image: {{ image | default("sensitivityscore-bench/geant4:11.2") }}
-          imagePullPolicy: IfNotPresent
+          {# Always (как одиночные манифесты k8s/config-a-baremetal и README):
+             при пересборке образа под тем же тегом узел тянет новый digest, а
+             не молча гоняет старый закешированный entrypoint. Базовые слои
+             (компиляция Geant4) на узле уже есть — докачивается только слой
+             entrypoint. #}
+          imagePullPolicy: Always
           env:
             {# Весь env профиля (profiles.py) как есть — профили различаются
                набором переменных (например, IO_BURST_MB только у high-s-io),
@@ -75,3 +80,15 @@ spec:
             limits:
               cpu: "{{ resources.cpu }}"
               memory: "{{ resources.memory_limit }}"
+          volumeMounts:
+            {# /scratch — реальный диск узла для дискового писателя профиля
+               (OUTPUT_MODE=burst/blocking, entrypoint.sh IO_SCRATCH_DIR).
+               emptyDir БЕЗ medium:Memory: тот же физический девайс, что
+               насыщает диск-агрессор (он тоже пишет в /scratch), поэтому
+               fsync жертвы честно стоит в очереди к придавленному устройству.
+               Для профилей без вывода том безвреден (никто в него не пишет). #}
+            - name: scratch
+              mountPath: /scratch
+      volumes:
+        - name: scratch
+          emptyDir: {}

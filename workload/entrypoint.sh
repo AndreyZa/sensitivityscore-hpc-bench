@@ -8,7 +8,7 @@
 #   G4_THREADS    1 (low-S) .. N physical cores per NUMA domain (high-S)  -> NUMA pressure
 #   PHYSICS_LIST  QGSP_BERT (low-S) .. FTFP_BERT_HP (high-S)              -> LLC working set
 #   N_PRIMARIES   1e4 (low-S) .. 1e6-1e7 (high-S)                        -> job duration
-#   OUTPUT_MODE   none (low-S) .. per-event ntuple (high-S)              -> Disk I/O
+#   OUTPUT_MODE   none (low-S) .. burst / blocking (high-S)              -> Disk I/O
 #   RNG_SEED      fixed per repetition                                   -> reproducibility
 #
 # IMPORTANT (fixed after an earlier wrong assumption): TestEm5 — like every
@@ -31,6 +31,18 @@ N_PRIMARIES="${N_PRIMARIES:-10000}"
 OUTPUT_MODE="${OUTPUT_MODE:-none}"
 RNG_SEED="${RNG_SEED:-42}"
 MACRO="${MACRO:-/macros/run.mac}"
+# Бинарь Geant4 — переопределяем для локального smoke entrypoint без полного
+# образа (stub вместо geant4-app); в проде остаётся дефолт.
+G4_BIN="${G4_BIN:-geant4-app}"
+
+# Куда пишет дисковый писатель. Дефолт /scratch (emptyDir из шаблона Job,
+# см. job-template.yaml.j2) — реальный диск узла, тот же физический девайс,
+# что насыщает диск-агрессор (он тоже пишет в /scratch), поэтому fsync
+# писателя честно стоит в очереди к придавленному устройству. На прод-стенде
+# с отдельным NVMe это тем более важно: писать надо на тот же диск, что и
+# шторм, а не в overlay-слой контейнера. Fallback /tmp — для локального smoke.
+IO_SCRATCH_DIR="${IO_SCRATCH_DIR:-/scratch}"
+[ -d "${IO_SCRATCH_DIR}" ] && [ -w "${IO_SCRATCH_DIR}" ] || IO_SCRATCH_DIR=/tmp
 
 echo "[entrypoint] sensitivity profile:" >&2
 echo "[entrypoint]   threads=${G4_THREADS} physics_list=${PHYSICS_LIST} \
@@ -45,39 +57,76 @@ sed \
   -e "s|__RNG_SEED__|${RNG_SEED}|g" \
   "${MACRO}" > "${RENDERED_MACRO}"
 
-# OUTPUT_MODE — Disk-I/O измерение профиля S (docs §1.2):
-#   none  — без вывода (по умолчанию);
-#   burst — эмуляция периодической записи выходных данных (checkpoint/
-#           ntuple-style): каждые IO_INTERVAL_SECONDS секунд пишется
-#           IO_BURST_MB МБ с fsync (fsync принципиален: без него запись
-#           оседает в page cache и реального дискового I/O — и PSI-стоек
-#           у job под IO-контенцией — не возникает).
-# burst-писатель выбран вместо настоящего per-event ntuple через
-# AnalysisManager TestEm5: даёт ровно то, что нужно измерению — управляемую
-# дозируемую IO-нагрузку, привязанную к живому compute-job, — без
-# зависимости от деталей analysis-кода конкретного примера Geant4.
-# Настоящий ntuple-вывод остаётся возможным уточнением методики.
-IO_BURST_MB="${IO_BURST_MB:-64}"
-IO_INTERVAL_SECONDS="${IO_INTERVAL_SECONDS:-5}"
-case "${OUTPUT_MODE}" in
-  none) ;;
-  burst)
-    echo "[entrypoint] burst writer: ${IO_BURST_MB}MB fsync every ${IO_INTERVAL_SECONDS}s" >&2
-    (
-      while true; do
-        dd if=/dev/zero of=/tmp/output-burst.dat bs=1M \
-          count="${IO_BURST_MB}" conv=fsync 2>/dev/null
-        sleep "${IO_INTERVAL_SECONDS}"
-      done
-    ) &
-    # Писатель — фоновый процесс контейнера: умирает вместе с ним, когда
-    # geant4-app (PID 1 после exec ниже) завершается.
-    ;;
-  *)
-    echo "[entrypoint] warning: unknown OUTPUT_MODE=${OUTPUT_MODE} — running without output" >&2
-    ;;
-esac
+# --- Дисковый писатель профиля S (docs §1.2) --------------------------------
+#
+# OUTPUT_MODE управляет дисковой нагрузкой профиля:
+#   none     — без вывода (low-S, кэш/сеть-профили);
+#   burst    — БЕСКОНЕЧНЫЙ фоновый писатель, умирает вместе с контейнером.
+#              Создаёт живое io.pressure на узле (агент его видит, планировщик
+#              уводит жертв) — но makespan самой жертвы от дисковой латентности
+#              НЕ зависит (писатель не на критическом пути). Измеряет ДЕТЕКЦИЮ
+#              и УКЛОНЕНИЕ, а не деградацию. Оставлен для совместимости.
+#   blocking — КОНЕЧНЫЙ писатель (IO_TOTAL_BURSTS порций) + gate выхода: job
+#              не завершается, пока вывод не сброшен на диск (wait ниже).
+#              На простое диска писатель успевает за время compute и спрятан
+#              (makespan ≈ compute); под штормом fsync-хвост стоит в очереди,
+#              писатель финиширует ПОСЛЕ compute и удлиняет makespan — это и
+#              делает диск-чувствительную задачу реально МЕДЛЕННЕЕ под штормом
+#              (cˢ_io > 0), а не просто обнаружимой. Моделирует HPC-job,
+#              который «не готов», пока результаты не персистентны на диске.
+#
+# fsync принципиален в обоих режимах: без него запись оседает в page cache,
+# реального дискового I/O (и стояния жертвы в очереди к устройству) не
+# возникает.
+IO_BURST_MB="${IO_BURST_MB:-32}"
+IO_INTERVAL_SECONDS="${IO_INTERVAL_SECONDS:-1}"
+IO_TOTAL_BURSTS="${IO_TOTAL_BURSTS:-40}"
+
+# Записывает порцию IO_BURST_MB МБ с fsync; повторяет.
+#   $1 = число порций (0 => бесконечно, для burst).
+run_disk_writer() {
+  local total="${1:-0}" n=0
+  local out="${IO_SCRATCH_DIR}/output-burst.$$.dat"
+  while :; do
+    dd if=/dev/zero of="${out}" bs=1M count="${IO_BURST_MB}" conv=fsync 2>/dev/null
+    n=$((n + 1))
+    if [ "${total}" -gt 0 ] && [ "${n}" -ge "${total}" ]; then
+      break
+    fi
+    sleep "${IO_INTERVAL_SECONDS}"
+  done
+  rm -f "${out}" 2>/dev/null || true
+}
 
 export PHYSLIST="${PHYSICS_LIST}"
 
-exec geant4-app "${RENDERED_MACRO}"
+case "${OUTPUT_MODE}" in
+  none)
+    exec "${G4_BIN}" "${RENDERED_MACRO}"
+    ;;
+  burst)
+    echo "[entrypoint] burst writer (infinite bg): ${IO_BURST_MB}MB fsync every ${IO_INTERVAL_SECONDS}s -> ${IO_SCRATCH_DIR}" >&2
+    run_disk_writer 0 &
+    # Писатель — фоновый процесс контейнера: умирает вместе с ним, когда
+    # geant4-app (PID 1 после exec) завершается.
+    exec "${G4_BIN}" "${RENDERED_MACRO}"
+    ;;
+  blocking)
+    echo "[entrypoint] blocking writer: ${IO_TOTAL_BURSTS}×${IO_BURST_MB}MB fsync (interval ${IO_INTERVAL_SECONDS}s) -> ${IO_SCRATCH_DIR}, gate exit on flush" >&2
+    run_disk_writer "${IO_TOTAL_BURSTS}" &
+    WRITER_PID=$!
+    # compute — на переднем плане (НЕ exec: после него нужно дождаться диска).
+    set +e
+    "${G4_BIN}" "${RENDERED_MACRO}"
+    G4_RC=$?
+    set -e
+    # Gate makespan на персистентность вывода: пока fsync-хвост не слит,
+    # job не «готов». Под дисковым штормом этот wait и есть цена cˢ_io.
+    wait "${WRITER_PID}" 2>/dev/null || true
+    exit "${G4_RC}"
+    ;;
+  *)
+    echo "[entrypoint] warning: unknown OUTPUT_MODE=${OUTPUT_MODE} — running without output" >&2
+    exec "${G4_BIN}" "${RENDERED_MACRO}"
+    ;;
+esac
