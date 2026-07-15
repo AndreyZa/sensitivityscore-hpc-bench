@@ -36,11 +36,14 @@ k8s/
   config-b-kubevirt/     — VMI-манифесты для KubeVirt
   config-d-slinky/       — Job-манифест для Slinky/slurm-bridge
   scheduler-config/      — KubeSchedulerConfiguration + веса score-функции
+  clickhouse/            — in-cluster ClickHouse (StatefulSet) для прод-прогонов
 slurm/config-c/          — sbatch-скрипты для классического Slurm
 metrics-agent/           — Go: DaemonSet-агент, perf_event_open() → Redis
+aggressor/               — LLC/membw stress-под для pressure-сценариев
 harness/                 — Python: оркестрация серии экспериментов (run_experiment.py),
                            запускается как Job внутри кластера (harness/deploy/)
 analysis/                — Python: статистика (Mann-Whitney, Cliff's delta) + графики
+db/clickhouse/           — схема + загрузчик parquet→ClickHouse (агрегатор результатов)
 scripts/                 — bootstrap-скрипты для кластера
 ```
 
@@ -49,113 +52,107 @@ scripts/                 — bootstrap-скрипты для кластера
 репозиторием) — здесь только манифесты деплоя (`k8s/scheduler-config/`) и
 Makefile-обёртка над его сборкой.
 
-## Прогон на боевом стенде
+## Разворачивание стенда
 
-`make help` — полный список команд. Порядок ниже — то, что реально нужно
-выполнить на новом прод-стенде, от нуля до H1–H4.
+`make help` — все команды. Порядок ниже — от нуля до H1–H4 на новом
+прод-стенде. Предпосылки: рабочий kubeconfig на стенд, доступ к registry
+(`andreyza/*` на Docker Hub), форк `../scheduler-plugins` рядом.
 
-### 0. PMU health-check (до разворачивания DaemonSet)
+### 0. PMU health-check (до DaemonSet)
 
-`perf_event_open()` в cgroup-scoped режиме — не то же самое, что просто
-CAP_PERFMON на под (см. `docs/Программа экспериментов (Geant4).md` §8) —
-проверить это стоит ДО того, как разворачивать весь `metrics-agent`:
+cgroup-scoped `perf_event_open()` ≠ CAP_PERFMON на под — проверить ДО
+разворачивания `metrics-agent`:
 
 ```bash
-make perfcheck-image                       # локальная сборка образа
-make perfcheck-push                        # ноды стенда — отдельные машины, тянут образ из registry
-make perfcheck-run NODE=<имя-узла>         # на неоднородном стенде — по каждому узлу; без NODE встаёт куда придётся
-make perfcheck-logs                        # ждём Completed; SUCCESS с НЕнулевым числом = PMU честный (read=0 = гипервизор подделывает)
+make perfcheck-image && make perfcheck-push
+make perfcheck-run NODE=<узел>   # по каждому узлу неоднородного стенда; без NODE встаёт куда придётся
+make perfcheck-logs              # SUCCESS + ненулевой счётчик = PMU честный (read=0 = гипервизор врёт)
 make perfcheck-clean
 ```
 
-### 1. Собрать и запушить образы
+### 1. Образы
 
-Каждый `make image-*` только собирает образ ЛОКАЛЬНО — на реальном
-многоузловом стенде worker-ноды не разделяют Docker-демон с машиной сборки,
-поэтому после каждой сборки нужен `docker push` (кластер сам подтянет по
-`imagePullPolicy: Always`):
+Сборка локальная; на многоузловом стенде обязателен push (`imagePullPolicy: Always`):
 
 ```bash
 make image-workload      && docker push andreyza/geant4:11.2
 make image-metrics-agent && docker push andreyza/metrics-agent:dev
 make image-harness       && docker push andreyza/harness:dev
-
-# Плагин планировщика собирается в форке; тег — переменная SCHEDULER_RELEASE_VER в этом Makefile
-make scheduler-plugin-image
-make -C ../scheduler-plugins -f sensitivityscore.mk ss-push
+make scheduler-plugin-image && make -C ../scheduler-plugins -f sensitivityscore.mk ss-push
 ```
 
-### 2. Развернуть кластер
+### 2. Кластер
 
 ```bash
-make setup-cluster   # namespace+Redis (bootstrap) + scheduler-deploy + deploy-metrics-agent
-make scheduler-status                 # под планировщика, ConfigMap-ы, последние scheduling events
-make scheduler-logs                   # логи SensitivityScore.Score (Ctrl+C для выхода)
+make setup-cluster    # namespace+Redis, планировщик, DaemonSet-агент
+make scheduler-status # под планировщика, ConfigMap-ы, scheduling events
+make test-pod-highs && make test-pod-lows && make test-pod-clean  # smoke: score high-S vs low-S
 ```
 
-Быстрый smoke-test без Geant4 (сравнить score high-S vs low-S пода на живых нодах):
+### 3. Калибровка Net-оси (опц., между сериями — перезапускает агент)
 
 ```bash
-make test-pod-highs
-make test-pod-lows
-make test-pod-clean
+make netcheck-run                            # cross-node iperf3 --bidir
+make netcheck-logs                           # → NET_REFERENCE_MBPS
+make netcheck-apply NET_REFERENCE_MBPS=<N>   # env на DaemonSet; без калибровки ось честно = 0
 ```
 
-### 3. Harness — запуск ВНУТРИ кластера (без port-forward)
+### 4. Прогоны (in-cluster Job, без port-forward)
 
 ```bash
-make harness-rbac                                  # namespace/ServiceAccount/RBAC/PVC — один раз
+make harness-rbac                              # namespace/SA/RBAC/PVC — один раз
 
-make harness-run-pilot-incluster                    # пилот: 1 точка плана, 3 повтора, config A
-make harness-logs-incluster JOB=harness-pilot       # следить за прогоном
-make harness-fetch-results                          # забрать results.parquet на хост
-
-# Соло-бейзлайны на ПУСТОМ кластере (нужны для slowdown-нормировки и
-# fingerprint-таблицы в анализе) — один раз на стенд, до боевой матрицы:
-make harness-run-baseline-incluster
+make harness-run-baseline-incluster            # соло-бейзлайны на ПУСТОМ кластере (slowdown/fingerprint)
 make harness-fetch-baselines
 
-# если пилот чистый — полная матрица (пока только config A: B/C/D нужна
-# инфраструктура прод-стенда, см. docs §0)
-make harness-run-config-a-incluster
-make harness-logs-incluster JOB=harness-config-a
+make harness-run-pilot-incluster               # пилот: 1 точка плана, 3 повтора
+make harness-logs-incluster JOB=harness-pilot
 make harness-fetch-results
 
-# «money experiment» — pressure-сценарии (агрессоры + поток жертв):
+make harness-run-config-a-incluster            # полная матрица config A (B/C/D — нужна прод-инфра, docs §0)
+make harness-fetch-results
+
 make image-aggressor && docker push andreyza/aggressor:dev
-make harness-run-pressure-incluster
+make harness-run-pressure-incluster            # pressure: агрессоры + поток жертв
 make harness-fetch-results
 
-make harness-clean-reader                           # убрать read-only под, поднятый для выгрузки
+make harness-clean-reader                      # убрать read-only под выгрузки
 ```
 
-Опционально — контрольный бейзлайн Trimaran (H1-trimaran): раскомментировать
-`trimaran` в `scheduler_variants` (`harness/config.yaml`), поставить
-metrics-server (`make trimaran-deps`), пересобрать образ харнесса. Добавляет
-третье плечо `A-trimaran` ко всем прогонам выше.
+Опц. контрольный бейзлайн Trimaran (H1-trimaran): раскомментировать `trimaran`
+в `scheduler_variants` (`harness/config.yaml`), `make trimaran-deps`,
+пересобрать образ харнесса — добавляет плечо `A-trimaran` ко всем прогонам.
 
-### 4. Анализ и проверка H1–H4
+### 5. Анализ H1–H4
 
-Читает локальные `harness/results/{results,baselines}.parquet` (после
-`harness-fetch-results` / `harness-fetch-baselines` выше):
+Локальный parquet (`harness/results/{results,baselines}.parquet` после fetch):
 
 ```bash
 make analyze   # report/: summary.md, comparisons.csv, fingerprint.csv + графики
-make report    # analyze + сразу открыть summary.md
+make report    # analyze + открыть summary.md
 ```
 
-Сравнения идут по трём метрикам (`makespan_s`, `slowdown` при наличии
-бейзлайнов, `placement_regret`), каждая — своя Holm-семья. `placement_regret` и
-fingerprint-таблица закрывают типовые вопросы к H1 («разница случайна» —
-regret показывает механизм; «аннотации подогнаны» — fingerprint сверяет
-заявленный S с измеренным).
+Метрики: `makespan_s`, `slowdown` (при бейзлайнах), `placement_regret` —
+каждая своя Holm-семья.
+
+Дубль в ClickHouse (агрегатор нескольких стендов; пишем в 2 места — локальный
+parquet и CH):
+
+```bash
+make ch-tunnel  CH_SSH=user@pc                            # SSH-туннель к ПК-агрегатору
+make ch-load    CH_HOST=localhost STAND=<s> RUN_LABEL=<l> # залить results+baselines
+make ch-analyze STAND=<s> RUN_LABEL=<l>                   # тот же отчёт из CH
+make ch-tunnel-close
+```
+
+In-cluster ClickHouse (прод: лить сразу из кластера) — `k8s/clickhouse/README.md`.
 
 ### Уборка
 
 ```bash
-make harness-clean-jobs     # Job'ы харнесса (после ручных прогонов)
-make harness-clean-full     # + весь namespace sensitivityscore-bench (включая PVC с результатами!)
-make nuke                   # всё вышеперечисленное + Deployment планировщика + venv-ы
+make harness-clean-jobs   # Job'ы харнесса
+make harness-clean-full   # + namespace харнесса (PVC с результатами!)
+make nuke                 # всё + Deployment планировщика + venv-ы
 ```
 
 ## Гипотезы
