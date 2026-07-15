@@ -87,7 +87,15 @@ PROFILES: dict[str, ProfileSpec] = {
             "G4_THREADS": _ov("high-s-net", "THREADS", "1"),
             "PHYSICS_LIST": "QGSP_BERT",
             "N_PRIMARIES": _ov("high-s-net", "PRIMARIES", "300000"),
-            "OUTPUT_MODE": "none",
+            # По умолчанию none (детекция/уклонение). Режим stream (реальный
+            # сетевой вывод на sink, крит. путь для cˢ_net) включается
+            # оверрайдом HARNESS_OVERRIDE_HIGH_S_NET_OUTPUT_MODE=stream в серии
+            # — ПОСЛЕ smoke-проверки, что сетевой шторм тормозит стрим (по
+            # аналогии с диском). NET_* — ручки стрима (sink и объём).
+            "OUTPUT_MODE": _ov("high-s-net", "OUTPUT_MODE", "none"),
+            "NET_SINK_HOST": _ov("high-s-net", "NET_SINK_HOST", "ss-sink"),
+            "NET_SINK_PORT": _ov("high-s-net", "NET_SINK_PORT", "9000"),
+            "NET_TOTAL_MB": _ov("high-s-net", "NET_TOTAL_MB", "512"),
             "RNG_SEED": "42",
         },
         sensitivity=Sensitivity(llc="low", numa="low", net="high", io="low"),

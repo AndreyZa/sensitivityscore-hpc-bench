@@ -9,7 +9,9 @@ compute, не параллельно) — иначе dd конкурировал
 
 import os
 import signal
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -121,6 +123,85 @@ def test_unknown_mode_still_runs_binary(stub_env):
     p, _ = _run(env)
     assert p.returncode == 0
     assert "unknown OUTPUT_MODE" in p.stderr
+
+
+# --- Сетевой режим stream (ось Net, зеркало disk-blocking) -----------------
+
+@pytest.fixture
+def tcp_sink():
+    """Локальный TCP-sink, сливающий поток в никуда — стенд-ин для ss-sink."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(16)
+    port = srv.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        srv.settimeout(0.5)
+        conns = []
+        while not stop.is_set():
+            try:
+                c, _ = srv.accept()
+            except socket.timeout:
+                continue
+            conns.append(c)
+            threading.Thread(target=_drain, args=(c, stop), daemon=True).start()
+        srv.close()
+
+    def _drain(c, stop):
+        c.settimeout(0.5)
+        while not stop.is_set():
+            try:
+                if not c.recv(1 << 20):
+                    break
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+        c.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    yield port
+    stop.set()
+    t.join(timeout=2)
+
+
+def test_stream_gates_on_send(stub_env, tcp_sink):
+    """stream: makespan >= compute + отправки; сетевой вывод на критическом
+    пути (job не готов, пока не отправлен)."""
+    env, _ = stub_env
+    env.update(OUTPUT_MODE="stream", COMPUTE_SECONDS="0.3",
+               NET_SINK_HOST="127.0.0.1", NET_SINK_PORT=str(tcp_sink),
+               NET_TOTAL_MB="64", NET_TIMEOUT="30")
+    p, wall = _run(env)
+    assert p.returncode == 0
+    # 64МБ на localhost быстро, но фаза реально исполнилась (compute+отправка).
+    assert wall >= 0.3
+
+
+def test_stream_unreachable_sink_does_not_hang(stub_env):
+    """Недоступный sink: job не висит вечно и не падает — timeout + rc compute
+    (сеть не должна ронять расчёт)."""
+    env, _ = stub_env
+    # порт 1 — гарантированно closed; timeout 3с страхует.
+    env.update(OUTPUT_MODE="stream", COMPUTE_SECONDS="0.2",
+               NET_SINK_HOST="127.0.0.1", NET_SINK_PORT="1",
+               NET_TOTAL_MB="8", NET_TIMEOUT="3")
+    p, wall = _run(env, timeout=30)
+    assert p.returncode == 0
+    assert wall < 12, f"stream завис на недоступном sink: {wall:.1f}s"
+
+
+def test_stream_skips_on_compute_failure(stub_env, tcp_sink):
+    """compute упал -> сетевой вывод пропускается, код compute сохраняется."""
+    env, _ = stub_env
+    env.update(OUTPUT_MODE="stream", COMPUTE_SECONDS="0.2", COMPUTE_RC="5",
+               NET_SINK_HOST="127.0.0.1", NET_SINK_PORT=str(tcp_sink),
+               NET_TOTAL_MB="64")
+    p, _ = _run(env)
+    assert p.returncode == 5
 
 
 def test_burst_does_not_gate_on_infinite_writer(stub_env):

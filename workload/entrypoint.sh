@@ -102,6 +102,37 @@ run_disk_writer() {
   rm -f "${out}" 2>/dev/null || true
 }
 
+# --- Сетевой вывод профиля (ось Net, зеркало blocking для диска) -------------
+#
+# OUTPUT_MODE=stream: compute, ПОТОМ отправка NET_TOTAL_MB на sink-под по TCP
+# (bash /dev/tcp). Под насыщением сетевого тракта узла TCP flow control тормозит
+# отправку, и фаза стрима (V/пропускная) растёт — цена cˢ_net на критическом
+# пути, как V/пропускная-диска для cˢ_io. Sink (NET_SINK_HOST:NET_SINK_PORT) —
+# отдельный под, просто сливающий поток в /dev/null (k8s/net-sink).
+#
+# ВАЖНО про топологию (проверять smoke, как disk_probe для диска): чтобы
+# трафик стрима шёл через ФИЗИЧЕСКИЙ NIC (а не мостился локально через veth),
+# sink должен жить на ДРУГОМ узле, чем жертва. Иначе same-node-стрим не
+# конкурирует за uplink с сетевым штормом. Аналогично сам шторм для честной
+# конкуренции должен быть cross-node (см. netcheck в Makefile: same-node iperf3
+# не касается NIC). Пока смоук не подтвердил связь «шторм → throttle стрима»,
+# режим stream остаётся не подключённым к серии (high-s-net = детекция/уклонение).
+NET_SINK_HOST="${NET_SINK_HOST:-ss-sink}"
+NET_SINK_PORT="${NET_SINK_PORT:-9000}"
+NET_TOTAL_MB="${NET_TOTAL_MB:-512}"
+NET_TIMEOUT="${NET_TIMEOUT:-600}"
+
+run_net_stream() {
+  # Отправить NET_TOTAL_MB нулей на sink по TCP. timeout — страховка от
+  # зависшего/недоступного sink: сеть не должна вешать job навсегда.
+  if timeout "${NET_TIMEOUT}" bash -c \
+      "dd if=/dev/zero bs=1M count=${NET_TOTAL_MB} 2>/dev/null > /dev/tcp/${NET_SINK_HOST}/${NET_SINK_PORT}"; then
+    return 0
+  fi
+  echo "[entrypoint] net stream to ${NET_SINK_HOST}:${NET_SINK_PORT} failed/timed out — sink up? (job не роняем)" >&2
+  return 0
+}
+
 export PHYSLIST="${PHYSICS_LIST}"
 
 case "${OUTPUT_MODE}" in
@@ -127,6 +158,18 @@ case "${OUTPUT_MODE}" in
     # geant4 уже вышел, за CPU-квоту никто не конкурирует.
     if [ "${G4_RC}" -eq 0 ]; then
       run_disk_writer "${IO_TOTAL_BURSTS}"
+    fi
+    exit "${G4_RC}"
+    ;;
+  stream)
+    echo "[entrypoint] stream: compute, затем ${NET_TOTAL_MB}MB -> ${NET_SINK_HOST}:${NET_SINK_PORT}" >&2
+    # compute на переднем плане, затем сетевой вывод на sink (крит. путь).
+    set +e
+    "${G4_BIN}" "${RENDERED_MACRO}"
+    G4_RC=$?
+    set -e
+    if [ "${G4_RC}" -eq 0 ]; then
+      run_net_stream
     fi
     exit "${G4_RC}"
     ;;

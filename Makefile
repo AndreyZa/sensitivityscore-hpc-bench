@@ -165,6 +165,15 @@ scheduler-undeploy: ## Убрать Deployment планировщика и ег�
 deploy-metrics-agent: ## Развернуть DaemonSet metrics-agent
 	$(KUBECTL) apply -f metrics-agent/deploy/daemonset.yaml
 
+.PHONY: net-sink-deploy
+net-sink-deploy: ## Развернуть sink-приёмник сетевого вывода high-s-net (OUTPUT_MODE=stream)
+	$(KUBECTL) apply -f k8s/net-sink/sink.yaml
+	$(KUBECTL) -n $(HARNESS_NAMESPACE) rollout status deploy/ss-sink --timeout=120s
+
+.PHONY: net-sink-clean
+net-sink-clean: ## Убрать sink-приёмник
+	$(KUBECTL) delete -f k8s/net-sink/sink.yaml --ignore-not-found
+
 .PHONY: trimaran-deps
 trimaran-deps: ## Установить metrics-server (нужен профилю trimaran; см. scheduler_variants в harness/config.yaml)
 	# LoadVariationRiskBalancing (плечо A-trimaran) читает утилизацию нод через

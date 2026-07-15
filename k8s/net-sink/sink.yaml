@@ -1,0 +1,71 @@
+# net-sink — приёмник сетевого вывода профиля high-s-net (OUTPUT_MODE=stream).
+# Просто сливает входящий TCP-поток в /dev/null. Жертва шлёт на него
+# NET_TOTAL_MB по TCP (bash /dev/tcp), под насыщением NIC отправка тормозит —
+# цена cˢ_net на критическом пути.
+#
+# ТОПОЛОГИЯ: чтобы стрим шёл через физический NIC, sink должен оказаться на
+# ДРУГОМ узле, чем жертва (same-node трафик мостится через veth и NIC не
+# касается). anti-affinity к victim-подам приблизит это; финально — проверить
+# smoke (см. entrypoint.sh run_net_stream). Разворачивать на bench-узел, не на
+# ss-system (иначе конкурирует с планировщиком за uplink системного узла).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ss-sink }
+  template:
+    metadata:
+      labels: { app: ss-sink }
+    spec:
+      # Держать sink подальше от жертв Geant4 — чтобы стрим шёл cross-node
+      # (через физический NIC), а не мостился локально.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels: { app: geant4-bench }
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: sink
+          image: python:3.12-slim
+          command: ["python3", "-c"]
+          args:
+            - |
+              import socket, threading
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", 9000)); srv.listen(128)
+              print("sink listening :9000", flush=True)
+              def drain(c):
+                  try:
+                      while c.recv(1 << 20):
+                          pass
+                  finally:
+                      c.close()
+              while True:
+                  c, _ = srv.accept()
+                  threading.Thread(target=drain, args=(c,), daemon=True).start()
+          ports:
+            - containerPort: 9000
+          resources:
+            requests: { cpu: "100m", memory: "64Mi" }
+            limits: { cpu: "1", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  selector: { app: ss-sink }
+  ports:
+    - port: 9000
+      targetPort: 9000
