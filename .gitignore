@@ -33,3 +33,7 @@ analysis/report-stage*/
 *.tfstate
 *.tfstate.*
 kubeconfig*
+
+# служебные файлы кнопки make series
+harness/.series-*
+harness/.redis-pf.*
