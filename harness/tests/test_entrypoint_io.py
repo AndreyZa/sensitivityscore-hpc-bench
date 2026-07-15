@@ -1,9 +1,10 @@
 """Тесты дисковой логики workload/entrypoint.sh — механизм cˢ_io без реального
 диска и без полного образа Geant4: geant4-app подменяется стабом (G4_BIN),
 писатель гоняется на локальной FS. Проверяется КОНТРАКТ, ради которого сделан
-режим blocking: makespan = max(время compute, время дискового писателя). Тогда
-под штормом (писатель медленный) makespan растёт, а на простое (писатель
-быстрый) — нет; это и есть cˢ_io > 0.
+режим blocking: makespan = время compute + время последовательного сброса
+вывода на диск. Под штормом фаза сброса (V/пропускная) растёт в разы (замерено
+×23) и удлиняет makespan — это и есть cˢ_io > 0. Сброс последователен (после
+compute, не параллельно) — иначе dd конкурировал бы с geant4 за CPU-квоту.
 """
 
 import os
@@ -51,41 +52,45 @@ def _run(env, timeout=60):
     return p, time.monotonic() - t0
 
 
-def test_blocking_gates_exit_on_slow_writer(stub_env):
-    """Писатель дольше compute (шторм) -> makespan >= время писателя: job ждёт
-    сброса вывода на диск. Это цена cˢ_io."""
+def test_blocking_flush_on_critical_path(stub_env):
+    """Фаза сброса идёт ПОСЛЕ compute и на критическом пути: makespan >= время
+    сброса. Медленный диск (шторм) => большой сброс => большой makespan =
+    цена cˢ_io."""
     env, _ = stub_env
     env.update(
         OUTPUT_MODE="blocking", COMPUTE_SECONDS="0.3",
-        IO_INTERVAL_SECONDS="0.3", IO_TOTAL_BURSTS="10",  # писатель ~3 с
+        IO_INTERVAL_SECONDS="0.3", IO_TOTAL_BURSTS="10",  # сброс ~3 с
     )
     p, wall = _run(env)
     assert p.returncode == 0
-    assert wall >= 2.5, f"gate не сработал: makespan {wall:.2f}s < времени писателя ~3s"
+    assert wall >= 2.5, f"сброс не на критическом пути: makespan {wall:.2f}s < ~3s"
 
 
-def test_blocking_writer_hidden_when_fast(stub_env):
-    """Писатель короче compute (простой диска) -> makespan ≈ compute, писатель
-    спрятан. Тот же профиль, что и выше, но быстрый диск — makespan не растёт."""
+def test_blocking_makespan_is_compute_plus_flush(stub_env):
+    """makespan(blocking) ≈ compute + сброс: тот же compute в режиме none даёт
+    только compute, разница = время сброса (аддитивно, последовательно)."""
     env, _ = stub_env
-    env.update(
-        OUTPUT_MODE="blocking", COMPUTE_SECONDS="3",
-        IO_INTERVAL_SECONDS="0.1", IO_TOTAL_BURSTS="3",  # писатель ~0.4 с
-    )
-    p, wall = _run(env)
-    assert p.returncode == 0
-    assert wall < 4.5, f"писатель не спрятан за compute: makespan {wall:.2f}s"
+    common = dict(COMPUTE_SECONDS="1")
+    env.update(OUTPUT_MODE="none", **common)
+    _, wall_none = _run(env)
+    env.update(OUTPUT_MODE="blocking", IO_INTERVAL_SECONDS="0.2", IO_TOTAL_BURSTS="10", **common)
+    _, wall_block = _run(env)
+    # сброс добавляет ~2с поверх того же compute.
+    assert wall_block - wall_none >= 1.3, (
+        f"сброс не аддитивен: blocking {wall_block:.2f}s − none {wall_none:.2f}s")
 
 
-def test_blocking_propagates_compute_exit_code(stub_env):
-    """Код возврата — от geant4-app, не от писателя (job упал = job упал)."""
+def test_blocking_skips_flush_on_compute_failure(stub_env):
+    """compute упал (rc=7) -> фаза сброса пропускается (незачем писать вывод
+    провалившегося job), быстрый выход с кодом compute."""
     env, _ = stub_env
     env.update(
         OUTPUT_MODE="blocking", COMPUTE_SECONDS="0.2", COMPUTE_RC="7",
-        IO_INTERVAL_SECONDS="0.1", IO_TOTAL_BURSTS="2",
+        IO_INTERVAL_SECONDS="0.5", IO_TOTAL_BURSTS="10",  # сброс ~5с, но должен быть пропущен
     )
-    p, _ = _run(env)
+    p, wall = _run(env)
     assert p.returncode == 7
+    assert wall < 2.0, f"сброс не пропущен при падении compute: makespan {wall:.2f}s"
 
 
 def test_blocking_cleans_up_scratch(stub_env):

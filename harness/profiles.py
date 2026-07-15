@@ -113,10 +113,14 @@ PROFILES: dict[str, ProfileSpec] = {
             "G4_THREADS": _ov("high-s-io", "THREADS", "8"),
             "PHYSICS_LIST": "FTFP_BERT_HP",
             "N_PRIMARIES": _ov("high-s-io", "PRIMARIES", "1000000"),
+            # blocking = compute + последовательный сброс V=IO_TOTAL×IO_BURST_MB
+            # с fsync. Диск-шторм STAGE режет запись ×~23 (замерено): ~1ГБ =
+            # сброс ~2с на чистом узле, ~55с под штормом. interval=0 — сброс
+            # = чистое IO-время (без сна), полностью чувствителен к шторму.
             "OUTPUT_MODE": _ov("high-s-io", "OUTPUT_MODE", "blocking"),
             "IO_BURST_MB": _ov("high-s-io", "IO_BURST_MB", "32"),
-            "IO_INTERVAL_SECONDS": _ov("high-s-io", "IO_INTERVAL_SECONDS", "1"),
-            "IO_TOTAL_BURSTS": _ov("high-s-io", "IO_TOTAL_BURSTS", "40"),
+            "IO_INTERVAL_SECONDS": _ov("high-s-io", "IO_INTERVAL_SECONDS", "0"),
+            "IO_TOTAL_BURSTS": _ov("high-s-io", "IO_TOTAL_BURSTS", "32"),
             "RNG_SEED": "42",
         },
         sensitivity=Sensitivity(llc="high", numa="high", net="low", io="high"),
