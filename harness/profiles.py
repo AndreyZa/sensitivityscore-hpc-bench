@@ -89,9 +89,11 @@ PROFILES: dict[str, ProfileSpec] = {
             "N_PRIMARIES": _ov("high-s-net", "PRIMARIES", "300000"),
             # По умолчанию none (детекция/уклонение). Режим stream (реальный
             # сетевой вывод на sink, крит. путь для cˢ_net) включается
-            # оверрайдом HARNESS_OVERRIDE_HIGH_S_NET_OUTPUT_MODE=stream в серии
-            # — ПОСЛЕ smoke-проверки, что сетевой шторм тормозит стрим (по
-            # аналогии с диском). NET_* — ручки стрима (sink и объём).
+            # оверрайдом HARNESS_OVERRIDE_HIGH_S_NET_OUTPUT_MODE=stream в серии.
+            # ПОДТВЕРЖДЕНО: egress-net-шторм (storm mode=net-egress, насыщает
+            # uplink узла) режет стрим соседа ×5.2 на квоте 500m (108→21 МБ/с,
+            # scripts/net_probe.sh + net_streamtest.sh) — так что makespan
+            # стримящей жертвы под штормом реально растёт. NET_* — ручки стрима.
             "OUTPUT_MODE": _ov("high-s-net", "OUTPUT_MODE", "none"),
             "NET_SINK_HOST": _ov("high-s-net", "NET_SINK_HOST", "ss-sink"),
             "NET_SINK_PORT": _ov("high-s-net", "NET_SINK_PORT", "9000"),
@@ -103,6 +105,29 @@ PROFILES: dict[str, ProfileSpec] = {
             "cpu": _ov("high-s-net", "CPU", "1"),
             "memory_request": _ov("high-s-net", "MEM_REQ", "1Gi"),
             "memory_limit": _ov("high-s-net", "MEM_LIM", "2Gi"),
+        },
+    ),
+    # Двойник high-s-net для сетевой серии differentiation: ТОТ ЖЕ compute и ТЕ
+    # ЖЕ ресурсы, но без сетевого вывода (OUTPUT_MODE=none) и с net=low. Как
+    # io-insensitive для диска — устраняет конфаунд упаковки: профиль-слепой
+    # default не может развести профили по ресурсным заявкам, поэтому любое
+    # различие размещения/времени между ними принадлежит чувствительности к
+    # сети. Под egress-net-штормом на узле жертвы (насыщает uplink, замерено
+    # ×5.2 на квоте 500m) high-s-net платит цену стрима на крит. пути, а
+    # net-insensitive — нет.
+    "net-insensitive": ProfileSpec(
+        env={
+            "G4_THREADS": _ov("net-insensitive", "THREADS", "1"),
+            "PHYSICS_LIST": "QGSP_BERT",
+            "N_PRIMARIES": _ov("net-insensitive", "PRIMARIES", "300000"),
+            "OUTPUT_MODE": "none",
+            "RNG_SEED": "42",
+        },
+        sensitivity=Sensitivity(llc="low", numa="low", net="low", io="low"),
+        resources={
+            "cpu": _ov("net-insensitive", "CPU", "1"),
+            "memory_request": _ov("net-insensitive", "MEM_REQ", "1Gi"),
+            "memory_limit": _ov("net-insensitive", "MEM_LIM", "2Gi"),
         },
     ),
     # high-s + реальный дисковый вывод на КРИТИЧЕСКОМ ПУТИ (blocking-писатель

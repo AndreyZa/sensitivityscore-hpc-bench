@@ -1,0 +1,53 @@
+# sink-stage.yaml — приёмник сетевого вывода (OUTPUT_MODE=stream) для серии
+# net-diff на STAGE. В отличие от sink.yaml (anti-affinity, недетерминированно)
+# ПРИБИТ к конкретной ноде: топология серии требует, чтобы sink жил НЕ на
+# штормимой ноде (w9) и НЕ на ноде egress-приёмника шторма (w10) — иначе его
+# RX конкурировал бы либо со штормом, либо с чужими стримами. Держим на w8.
+# Жертва high-s-net (на w9 под штормом) стримит сюда cross-node -> её TX
+# делит uplink w9 с egress-штормом -> цена cˢ_net на критическом пути.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  nodeName: worker-192.168.0.8
+  restartPolicy: Always
+  containers:
+    - name: sink
+      image: python:3.12-slim
+      command: ["python3", "-u", "-c"]
+      args:
+        - |
+          import socket, threading
+          s = socket.socket()
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 9000)); s.listen(128)
+          print("sink up :9000", flush=True)
+          def drain(c):
+              import contextlib
+              with contextlib.suppress(Exception):
+                  while c.recv(1 << 20):
+                      pass
+              c.close()
+          while True:
+              c, _ = s.accept()
+              threading.Thread(target=drain, args=(c,), daemon=True).start()
+      ports:
+        - containerPort: 9000
+      resources:
+        requests: { cpu: "200m", memory: "64Mi" }
+        limits: { cpu: "2", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  selector: { app: ss-sink }
+  ports:
+    - port: 9000
+      targetPort: 9000

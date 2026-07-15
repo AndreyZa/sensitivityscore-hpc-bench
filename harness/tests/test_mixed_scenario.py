@@ -72,6 +72,61 @@ def test_resolve_pressured_nodes_mixed_all_stormed():
     assert resolve_pressured_nodes(MIXED, {}) == ["w8", "w9", "w10"]
 
 
+# --- net-egress: cross-node egress-шторм (насыщает uplink штормимой ноды) ---
+
+NET_EGRESS = {
+    "name": "net-egress-diff",
+    "victims": [
+        {"profile": "high-s-net", "count": 3},
+        {"profile": "net-insensitive", "count": 3},
+    ],
+    "storms": [
+        {"node": "w9", "mode": "net-egress", "per_node": 2,
+         "egress_server_node": "w10", "parallel": 8, "toxic_for": ["high-s-net"]},
+    ],
+}
+
+
+def test_storm_specs_net_egress_fields():
+    specs = storm_specs(NET_EGRESS)
+    assert len(specs) == 1
+    s = specs[0]
+    assert s["mode"] == "net-egress"
+    assert s["egress_server_node"] == "w10"
+    assert s["parallel"] == 8
+    assert s["per_node"] == 2
+
+
+def test_expected_pods_net_egress():
+    # 2 клиента + 2 сервера (по одному на слот) = 4.
+    assert expected_pods(0, 0, NET_EGRESS) == 4
+
+
+def test_resolve_pressured_nodes_net_egress_only_storm_node():
+    # Под давлением (по TX uplink) только штормимая нода; сервер-нода —
+    # приёмник RX, жертвы могут планироваться туда без конфликта.
+    assert resolve_pressured_nodes(NET_EGRESS, {}) == ["w9"]
+
+
+def test_deploy_net_egress_requires_distinct_server(monkeypatch):
+    # Сервер-нода обязана быть задана и отличаться от штормимой — иначе
+    # egress не покидает ноду и uplink не насыщается.
+    import submit.aggressors as agg
+    import submit.k8s_submit as k8s_submit
+
+    monkeypatch.setattr(k8s_submit, "ensure_namespace", lambda ns: None)
+    monkeypatch.setattr(agg, "_apply_and_wait", lambda *a, **k: None)
+    cfg = {"kubernetes": {"namespace": "bench"}, "images": {"aggressor": "img"},
+           "aggressor": {}}
+
+    bad = {**NET_EGRESS, "storms": [
+        {"node": "w9", "mode": "net-egress", "per_node": 2,
+         "egress_server_node": "w9"}]}  # тот же узел — ошибка
+    import pytest
+    with pytest.raises(RuntimeError, match="differ from the storm node"):
+        agg.deploy([], 0, bad, cfg)
+
+
 # --- Плацебо-сценарий: тот же поток жертв, ноль агрессоров -----------------
 
 PLACEBO = {

@@ -1,0 +1,120 @@
+# config-stage-net-diff.yaml — СЕРИЯ NET-DIFF: сетевой аналог differentiation.
+# Показывает цену чувствительности к сети cˢ_net > 0 на равных ресурсах и
+# изолирует её от упаковки — как differentiation для диска.
+#
+# Механизм (проверен пробами scripts/net_probe.sh и net_streamtest.sh).
+# Боевой veth-net-шторм (mode: net) поднимает net_pressure ноды, но трафик
+# мостится локально и физический uplink не насыщает — makespan жертвы от него
+# НЕ зависит (годился лишь для детекции). Здесь шторм — EGRESS (mode:
+# net-egress): iperf3-клиенты на штормимой ноде w9 гонят TCP на сервер,
+# пиннутый на w10, насыщая uplink (TX) w9. Замерено: сосед-стример на w9
+# тормозит ×5.2 на квоте 500m (108->21 МБ/с). Жертва high-s-net с
+# OUTPUT_MODE=stream шлёт NET_TOTAL_MB на sink (ss-sink на w8, cross-node):
+# под egress-штормом фаза стрима (V/пропускная) растёт в разы — цена cˢ_net на
+# критическом пути, как V/пропускная-диска для cˢ_io.
+#
+# Дизайн (двойники, равные ресурсы — устраняет конфаунд упаковки):
+#   high-s-net      — net=high, стрим на sink (OUTPUT_MODE=stream);
+#   net-insensitive — net=low, тот же compute и ресурсы, без стрима.
+# ОТЛИЧИЕ ОТ ДИСКА: для сети базовая цена c⁰_net ≈ 0 — не-сетевую задачу
+# сетевая контенция не трогает (net_storm бьёт по uplink, а не по compute;
+# net_streamtest: net-insensitive под штормом плоский). Поэтому веса:
+# base net = 0, sensitivity net = 0.5 (объявленный prior; точная калибровка
+# cˢ_net — отдельная регрессия). Следствие сильнее дискового differentiation:
+# SS уводит от штормимой ноды ТОЛЬКО чувствительную (net-insensitive к ней
+# равнодушна) -> ожидается ЗАЗОР ПО РАЗМЕЩЕНИЮ, которого диск (c⁰_io>0) дать
+# не мог.
+#
+# Ожидание (объявлено до данных):
+#   1. Физика: под egress-штормом на одном узле high-s-net медленнее
+#      net-insensitive (twin-контраст) — цена cˢ_net; на чистых узлах равны.
+#   2. Размещение: у SS high-s-net попадает на штормовой узел РЕЖЕ, чем
+#      net-insensitive (у диска зазор маскировался c⁰_io; у сети c⁰_net≈0).
+#   3. Время/регрет high-s-net у SS лучше, чем у default и trimaran.
+#
+# Запуск: make series SERIES=net-diff
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - net-insensitive
+  - high-s-net
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.5
+    io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: net-diff
+    victims:
+      - { profile: high-s-net, count: 3 }
+      - { profile: net-insensitive, count: 3 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    storms:
+      - node: worker-192.168.0.9
+        mode: net-egress
+        egress_server_node: worker-192.168.0.10
+        per_node: 2
+        parallel: 8
+        toxic_for: [high-s-net]
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-net-diff.parquet"
+  baselines_file: "baselines-stage-net-diff.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

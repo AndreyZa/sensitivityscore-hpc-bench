@@ -13,7 +13,17 @@ cpu-request при большом реальном давлении — наме
     (iperf3 держит один тест за раз) + UDP-клиент с фиксированным
     -b scenario["net_bitrate_mbps"]. Трафик идёт pod-to-pod через veth и
     засвечивает net_bw/net_pressure ТОЛЬКО штормимой ноды — cross-node пара
-    засветила бы rx-стороной и вторую (чистую) ноду.
+    засветила бы rx-стороной и вторую (чистую) ноду. Режим ДЕТЕКЦИИ: агент
+    видит давление, планировщик уводит жертв, но uplink не насыщается —
+    makespan самой жертвы от него НЕ зависит (см. veth-оговорку выше).
+  - "net-egress" — iperf3-КЛИЕНТЫ на штормимой ноде egress'ят на сервер,
+    пиннутый на ДРУГОЙ ноде (storm["egress_server_node"]); TCP -P parallel
+    насыщает физический uplink (TX) штормимой ноды. В отличие от veth-режима
+    это РЕАЛЬНО режет пропускную стрима соседа на той же ноде (замерено ×5.2:
+    108→21 МБ/с на квоте 500m) — цена cˢ_net на критическом пути для жертвы
+    high-s-net с OUTPUT_MODE=stream. Сервер-нода — приёмник (RX), НЕ должна
+    совпадать ни со штормимой нодой, ни с нодой ss-sink (иначе RX-конфликт
+    ударил бы и по жертвам вне штормимой ноды). См. scripts/net_probe.sh.
 """
 
 from __future__ import annotations
@@ -59,6 +69,9 @@ def storm_specs(scenario: dict) -> list[dict] | None:
             "net_bitrate_mbps": int(
                 s.get("net_bitrate_mbps", scenario.get("net_bitrate_mbps", 400))
             ),
+            # net-egress: нода-приёмник шторма (RX) и число параллельных TCP.
+            "egress_server_node": s.get("egress_server_node"),
+            "parallel": int(s.get("parallel", 8)),
         }
         for s in storms
     ]
@@ -116,8 +129,10 @@ def expected_pods(node_count: int, per_node: int, scenario: dict) -> int:
     аргументы тогда не используются)."""
     storms = storm_specs(scenario)
     if storms:
+        # net и net-egress добавляют по iperf3-серверу на слот (клиент+сервер).
         return sum(
-            s["per_node"] * (2 if s["mode"] == "net" else 1) for s in storms
+            s["per_node"] * (2 if s["mode"] in ("net", "net-egress") else 1)
+            for s in storms
         )
     if scenario.get("aggressor_mode") == "net":
         return node_count * per_node * 2
@@ -232,6 +247,67 @@ def _deploy_net(nodes: list[str], per_node: int, scenario: dict, cfg: dict) -> N
     )
 
 
+def _deploy_net_egress(
+    storm_node: str,
+    server_node: str,
+    per_node: int,
+    parallel: int,
+    scenario: dict,
+    cfg: dict,
+) -> None:
+    """Egress-шторм: per_node iperf3-КЛИЕНТОВ на storm_node egress'ят TCP -P на
+    сервер(ы), пиннутые на server_node. Насыщает физический uplink (TX)
+    storm_node -> режет пропускную стрима жертвы на той же ноде (cˢ_net на
+    критическом пути). Свой сервер на каждый клиент: iperf3 -s обслуживает один
+    тест за раз, параллельные клиенты к одному серверу конфликтуют."""
+    namespace = cfg["kubernetes"]["namespace"]
+    if not server_node or server_node == storm_node:
+        raise RuntimeError(
+            f"net-egress storm on {storm_node}: egress_server_node must be set "
+            f"and differ from the storm node (got {server_node!r}); the server "
+            "is the RX sink and must live on another node to load the storm "
+            "node's uplink (see scripts/net_probe.sh)"
+        )
+
+    servers = []  # (slot, pod name)
+    manifests = []
+    for slot in range(per_node):
+        name = f"ss-aggressor-{storm_node}-esrv{slot}".lower()
+        servers.append((slot, name))
+        manifests.append(
+            _render_pod(
+                scenario, cfg,
+                name=name,
+                node_name=server_node,
+                command_json=json.dumps(["iperf3", "-s"]),
+            )
+        )
+    _apply_and_wait(manifests, namespace)
+
+    manifests = []
+    for slot, server_name in servers:
+        ip = _pod_ip(server_name, namespace)
+        # Вечный клиент с рестарт-циклом: разовый iperf3 -t рано или поздно
+        # завершится, а под с restartPolicy: Never не перезапустится.
+        client_cmd = (
+            f"while true; do iperf3 -c {ip} -P {parallel} -t 3600 >/dev/null 2>&1; "
+            f'echo "iperf3 egress client exited; retrying"; sleep 2; done'
+        )
+        manifests.append(
+            _render_pod(
+                scenario, cfg,
+                name=f"ss-aggressor-{storm_node}-{slot}".lower(),
+                node_name=storm_node,
+                command_json=json.dumps(["/bin/sh", "-c", client_cmd]),
+            )
+        )
+    _apply_and_wait(manifests, namespace)
+    log.info(
+        "net-egress aggressors: %d clients on %s -> server(s) on %s (-P %d each)",
+        per_node, storm_node, server_node, parallel,
+    )
+
+
 def deploy(
     nodes: list[str],
     per_node: int,
@@ -262,7 +338,7 @@ def deploy(
         # podIP сервера).
         stress_manifests = []
         for st in storms:
-            if st["mode"] == "net":
+            if st["mode"] in ("net", "net-egress"):
                 continue
             args = ["--temp-path", "/scratch"] + list(st["args"] or ["--stream", "2"])
             for slot in range(st["per_node"]):
@@ -282,6 +358,11 @@ def deploy(
                     [st["node"]], st["per_node"],
                     {**scenario, "net_bitrate_mbps": st["net_bitrate_mbps"]},
                     cfg,
+                )
+            elif st["mode"] == "net-egress":
+                _deploy_net_egress(
+                    st["node"], st["egress_server_node"],
+                    st["per_node"], st["parallel"], scenario, cfg,
                 )
         log.info(
             "mixed storms: %s",
