@@ -76,6 +76,13 @@ def ensure_namespace(namespace: str) -> None:
 log = logging.getLogger(__name__)
 
 
+def _k8s_name(job_id: str) -> str:
+    """job_id -> валидное имя K8s-объекта (RFC1123). Одна точка истины:
+    submit_job и abort_submission обязаны получать ОДНО имя, иначе abort
+    после упавшего сабмита удалял бы не тот Job."""
+    return job_id.lower().replace("_", "-").replace(".", "-")
+
+
 def list_worker_nodes(exclude: Iterable[str] = ()) -> list[str]:
     """Worker-ноды кластера (без control-plane и без системного узла
     node=ss-system), отсортированные по имени — детерминированный порядок
@@ -171,8 +178,7 @@ def submit_job(
     finally:
         Path(manifest_path).unlink(missing_ok=True)
 
-    k8s_name = job_id.lower().replace("_", "-").replace(".", "-")
-    handle = K8sJobHandle(job_id=job_id, k8s_name=k8s_name, namespace=namespace)
+    handle = K8sJobHandle(job_id=job_id, k8s_name=_k8s_name(job_id), namespace=namespace)
     handle.submit_time = time.time()
     return handle
 
@@ -331,7 +337,7 @@ def abort_submission(job_id: str, cfg: dict) -> None:
     """Best-effort removal of whatever a failed submit_job() attempt may have
     half-created, so run_experiment.py's single submit retry starts clean —
     re-applying a Job name that already exists would not rerun it."""
-    k8s_name = job_id.lower().replace("_", "-").replace(".", "-")
+    k8s_name = _k8s_name(job_id)
     subprocess.run(
         [
             "kubectl",

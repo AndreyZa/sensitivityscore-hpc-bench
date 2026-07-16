@@ -16,10 +16,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from profiles import PROFILES, Sensitivity
+from submit import node_pressure
 from submit.node_pressure import (
     DEFAULT_WEIGHTS,
     interference,
     placement_regret,
+    snapshot_node_pressure,
     split_weights,
 )
 
@@ -219,6 +221,39 @@ class TestBasePlusSensitivityWeights(unittest.TestCase):
         self.assertAlmostEqual(regret, 1.0 / 1.09)
         _, regret = placement_regret(LOW_ALL, snapshot, "w8", w)
         self.assertEqual(regret, 0.0)
+
+
+class _FakeRedis:
+    """Стаб r для snapshot_node_pressure: два узла, у одного НЕТ поля
+    net_pressure (version skew агента — нода со старым образом не пишет
+    новое поле; случалось на STAGE при роллинге DaemonSet)."""
+
+    def scan_iter(self, match):
+        return iter(["node:metrics:w8", "node:metrics:w9"])
+
+    def hgetall(self, key):
+        if key.endswith("w8"):  # старый агент: без net_pressure
+            return {"llc_miss_rate": "0.1", "numa_remote_ratio": "0",
+                    "io_pressure": "0.2"}
+        return {"llc_miss_rate": "0.3", "numa_remote_ratio": "0",
+                "net_pressure": "0.5", "io_pressure": "0.9"}
+
+
+class TestSnapshotMissingField(unittest.TestCase):
+    def test_missing_field_is_zero_not_nan(self):
+        # Отсутствующее поле = 0.0: NaN отравил бы interference узла и min()
+        # по всем узлам — regret молча стал бы NaN у всей серии.
+        orig = node_pressure._connect
+        node_pressure._connect = lambda addr: _FakeRedis()
+        try:
+            snap = snapshot_node_pressure("fake:6379")
+        finally:
+            node_pressure._connect = orig
+        self.assertEqual(snap["w8"]["net"], 0.0)
+        self.assertFalse(any(math.isnan(v) for p in snap.values() for v in p.values()))
+        # И regret по такому снапшоту считается, а не NaN.
+        chosen, regret = placement_regret(HIGH_ALL, snap, "w8", DEFAULT_WEIGHTS)
+        self.assertFalse(math.isnan(regret))
 
 
 if __name__ == "__main__":

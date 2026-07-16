@@ -246,9 +246,13 @@ stop() {
     fi
     pid_alive "$WDPIDFILE" && kill "$(cat "$WDPIDFILE")" 2>/dev/null
     rm -f "$PIDFILE" "$WDPIDFILE" "$STALLFLAG"
-    echo "уборка кластера: агрессоры + job'ы bench"
+    echo "уборка кластера: агрессоры + job'ы bench + sink"
     kubectl -n $BENCH_NS delete pods -l app=ss-aggressor --ignore-not-found --timeout=120s
     kubectl -n $BENCH_NS delete jobs -l app=geant4-bench --ignore-not-found --timeout=120s
+    # ss-sink разворачивает run-stage-net-diff.sh и сам же убирает в конце —
+    # но при остановке серии на середине он остался бы и завалил preflight
+    # следующей серии («чужие поды в bench ns»).
+    kubectl -n $BENCH_NS delete pod,svc -l app=ss-sink --ignore-not-found --timeout=60s
     echo "готово (статус-страница оставлена — она только читает)"
 }
 

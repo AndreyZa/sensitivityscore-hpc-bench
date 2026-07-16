@@ -80,8 +80,17 @@ def snapshot_node_pressure(redis_addr: str) -> dict[str, dict[str, float]]:
             fields = r.hgetall(key)
 
             def _field(name: str) -> float:
+                # Отсутствующее поле = 0.0, как и немпарсящееся: NaN здесь
+                # отравил бы interference ноды и min() по всем нодам — при
+                # version skew агента (нода со старым образом не пишет новое
+                # поле, случалось на STAGE) regret молча стал бы NaN у всей
+                # серии. Ноль честен ровно в этом сценарии: у отсутствующей
+                # оси вес обычно 0 (стенд её не меряет), вклад и так нулевой.
+                raw = fields.get(name)
+                if raw is None:
+                    return 0.0
                 try:
-                    return _clamp01(float(fields.get(name, "nan")))
+                    return _clamp01(float(raw))
                 except ValueError:
                     return 0.0
 
