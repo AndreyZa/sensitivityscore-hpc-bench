@@ -13,10 +13,10 @@ harness/profiles.py в самих данных) с фактическим пов
 remote ratio, PSI stall share); net для fingerprint берётся сырыми bytes/s —
 сравнение внутри оси относительное, и сырая метрика не зависит от того,
 откалиброван ли NET_REFERENCE_MBPS на стенде (в score при этом идёт
-нормированный net_pressure). Известная честная оговорка: профиль high-s-net
-ДЕКЛАРИРУЕТ net=high, но сетевого трафика сам пока не генерирует (см.
-harness/profiles.py) — монотонность по оси net ожидаемо флагается, это
-осознанный компромисс до появления сетевого OUTPUT_MODE у воркера.
+нормированный net_pressure). Оговорка: в детекционных сериях профиль
+high-s-net ДЕКЛАРИРУЕТ net=high при OUTPUT_MODE=none (трафика нет), и
+монотонность по оси net ожидаемо флагается; в сериях с OUTPUT_MODE=stream
+(net-diff) жертва реально стримит и ось измерима (см. harness/profiles.py).
 """
 
 from __future__ import annotations

@@ -228,7 +228,7 @@ make nuke                 # всё перечисленное, Deployment пла
 
 | Конфиг | Что сравнивает | Статус |
 |--------|----------------|--------|
-| **A** (K8s) | default / SensitivityScore / trimaran | выполнено на STAGE: 5 серий × 10 повторов, эталоны на каждом узле |
+| **A** (K8s) | default / SensitivityScore / trimaran | выполнено на STAGE: 9 серий × 10 повторов, эталоны на каждом узле |
 | **B** (KubeVirt) | накладные расходы виртуализации | ожидает прод-стенда |
 | **C** (Slurm) | верхняя граница на однородной нагрузке | ожидает прод-стенда |
 | **D** (Slinky) | slurm-on-k8s | ожидает прод-стенда |
@@ -262,11 +262,12 @@ make nuke                 # всё перечисленное, Deployment пла
 - **Trimaran** (`LoadVariationRiskBalancing`) — load-aware, но не
   interference-aware контрольный бейзлайн (H1-trimaran).
 
-Известные TODO: сетевой стрим для профиля `high-s-net` (сейчас net=high
-декларируется, но трафик не генерируется — fingerprint это отмечает);
-`uncore_imc_*` PMU как уточнение NUMA-метрики; подключение
+Известные TODO: `uncore_imc_*` PMU как уточнение NUMA-метрики; подключение
 `QemuProcessResolver` к KubeVirt API (config B отправляет Job, а не VMI);
-per-event ntuple вместо `OUTPUT_MODE=burst` для оси IO.
+per-event ntuple как более физичный дисковый вывод (сейчас
+`OUTPUT_MODE=blocking` — синтетический fsync-сброс на критическом пути).
+Сетевой стрим (`OUTPUT_MODE=stream`) реализован и проверен серией
+net-diff — из TODO выбыл.
 
 ---
 

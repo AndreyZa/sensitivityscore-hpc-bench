@@ -111,12 +111,13 @@ pressure_scenarios:
     repetitions: 10
     aggressor_args: ["--hdd", "2", "--hdd-bytes", "1g"]
 
-  # Net-шторм: iperf3-пары (сервер+UDP-клиент) на штормимой ноде, трафик
-  # pod-to-pod через veth — net_bw/net_pressure растёт только у неё (см.
-  # aggressors.py про cross-node вариант). Жертва high-s-net декларирует
-  # net=high; вычислительно она сети не генерирует (честная оговорка в
-  # profiles.py) — сценарий валидирует детекцию шторма и решения
-  # планировщика (placement/regret + slowdown-per-node как честный исход).
+  # Net-шторм (ДЕТЕКЦИОННЫЙ): iperf3-пары (сервер+UDP-клиент) на штормимой
+  # ноде, трафик pod-to-pod через veth — net_bw/net_pressure растёт только у
+  # неё, но uplink не насыщается и обмен соседа НЕ страдает. Жертва high-s-net
+  # здесь трафика не генерирует (OUTPUT_MODE=none) — сценарий валидирует
+  # детекцию шторма и решения планировщика (placement/regret). Деградацию
+  # самой жертвы измеряет серия net-diff (config-stage-net-diff.yaml):
+  # egress-шторм + OUTPUT_MODE=stream.
   - name: net
     victim_profile: high-s-net
     victim_count: 6

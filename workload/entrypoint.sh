@@ -8,7 +8,7 @@
 #   G4_THREADS    1 (low-S) .. N physical cores per NUMA domain (high-S)  -> NUMA pressure
 #   PHYSICS_LIST  QGSP_BERT (low-S) .. FTFP_BERT_HP (high-S)              -> LLC working set
 #   N_PRIMARIES   1e4 (low-S) .. 1e6-1e7 (high-S)                        -> job duration
-#   OUTPUT_MODE   none (low-S) .. burst / blocking (high-S)              -> Disk I/O
+#   OUTPUT_MODE   none (low-S) .. burst / blocking (disk) / stream (net) -> Disk I/O, Net
 #   RNG_SEED      fixed per repetition                                   -> reproducibility
 #
 # IMPORTANT (fixed after an earlier wrong assumption): TestEm5 — like every
