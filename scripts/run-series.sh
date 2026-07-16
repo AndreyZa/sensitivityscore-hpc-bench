@@ -1,11 +1,11 @@
 #!/bin/bash
-# Кнопка «прогнать серию»: preflight -> запуск одной сессией (setsid) ->
-# статус-страница -> вотчдог. Одна команда вместо ритуала из шести шагов,
-# каждый из которых уже стоил ночи стенда, будучи забытым.
+# Запуск серии одной командой: preflight -> запуск одной сессией (setsid) ->
+# статус-страница -> вотчдог. Пропуск любого из этих шагов при ручном
+# запуске приводил к потере прогона — поэтому они объединены.
 #
 #   make series SERIES=<имя>          запустить (preflight + фон + вотчдог)
 #   make series-status SERIES=<имя>   состояние идущей/законченной серии
-#   make series-stop SERIES=<имя>     остановить и прибрать за собой
+#   make series-stop SERIES=<имя>     остановить серию и удалить её поды
 #
 # Конвенция имён (SERIES=placebo -> «stage-placebo»):
 #   конфиг     harness/config-stage-<имя>.yaml
@@ -71,7 +71,7 @@ preflight() {
         [ -f "$f" ] && pid_alive "$f" && fail "уже идёт серия (pid $(cat "$f"), $f)"
     done
     pgrep -f "run_experiment.py --config" >/dev/null && \
-        fail "уже работает run_experiment.py вне кнопки (pgrep -f run_experiment.py)"
+        fail "уже работает run_experiment.py, запущенный вручную (pgrep -f run_experiment.py)"
     ok "других серий нет"
 
     kubectl get nodes >/dev/null 2>&1 || fail "кластер недоступен (KUBECONFIG=$KUBECONFIG)"
