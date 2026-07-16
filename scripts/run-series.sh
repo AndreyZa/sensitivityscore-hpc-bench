@@ -167,6 +167,19 @@ watchdog() {
     done
     if grep -q "PRESSURE DONE" "$LOG" 2>/dev/null; then
         echo "WATCHDOG $(date '+%F %T'): серия $SERIES завершена (PRESSURE DONE)." >> "$LOG"
+        # Отчёт H1 (Манн-Уитни+Холм+δ, графики) — панель «Анализ» статус-
+        # страницы читает analysis/report-stage-<серия>/. Генерируется здесь,
+        # ПОСЛЕ выхода процесса серии (кластер уже свободен); неудача отчёта
+        # серию не трогает — данные в parquet/ClickHouse, отчёт повторим руками.
+        local results baselines
+        { read -r results; read -r baselines; } < <(results_paths)
+        if (cd analysis && .venv/bin/python analyze.py \
+                --results "../$results" --baselines "../$baselines" \
+                --outdir "report-stage-$SERIES") >> "$LOG" 2>&1; then
+            echo "WATCHDOG $(date '+%F %T'): отчёт готов — analysis/report-stage-$SERIES (статус-страница «Анализ»)." >> "$LOG"
+        else
+            echo "WATCHDOG ERROR $(date '+%F %T'): отчёт не собрался (см. выше) — повторить: make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines" >> "$LOG"
+        fi
     else
         echo "WATCHDOG ERROR $(date '+%F %T'): процесс серии вышел ДО маркера PRESSURE DONE — смотри хвост лога." >> "$LOG"
     fi
