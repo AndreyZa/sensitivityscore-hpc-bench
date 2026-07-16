@@ -1,0 +1,107 @@
+# config-stage-net-diff-v2.yaml — СЕРИЯ NET-DIFF-V2: повтор net-diff с
+# НЕЙТРАЛЬНЫМ sink. В net-diff sink стоял на bench-узле w8; датчик сети видит
+# обе стороны egress-шторма (tx w9 + rx w10), SS увёл чувствительные на
+# единственный «тихий» w8 — и их стрим стал локальным (~26 с вместо 45 с
+# cross-node). Медиана SS несла бонус локальности, лобовое «27 vs 50 с»
+# требовало оговорки. Здесь sink на системном узле w5 (sink-stage-v2.yaml):
+# стрим с ЛЮБОГО bench-узла cross-node, топология симметрична.
+#
+# Всё остальное идентично net-diff: egress-шторм w9 -> сервер w10, двойники
+# high-s-net / net-insensitive с равными ресурсами, веса base=0 / sens net=0.5.
+#
+# Ожидание (объявлено до данных):
+#   1. Контраст близнецов на шторме сохраняется (~×5–6) — физика не зависит
+#      от места sink;
+#   2. Зазор по размещению сохраняется (SS уводит со шторма чувствительную,
+#      к близнецу равнодушен);
+#   3. НОВОЕ: вне шторма high-s-net теперь ~равен между плечами (~45–50 с
+#      у всех — бонуса локальности нет), и разрыв SS–default по среднему
+#      СОЖМЁТСЯ до честной компоненты уклонения от шторма. Если п.3
+#      выполнится, оговорка про локальность закрывается экспериментально.
+#
+# Запуск: make series SERIES=net-diff-v2
+
+configs:
+  - A
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+exclude_nodes: []
+
+profiles:
+  - net-insensitive
+  - high-s-net
+
+overcommit_ratios: [1.0]
+node_capacity_jobs: 1
+repetitions: 5
+cooldown_seconds: 20
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.5
+    io: 0.0
+
+backends:
+  A: k8s
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+pressure_scenarios:
+  - name: net-diff-v2
+    victims:
+      - { profile: high-s-net, count: 3 }
+      - { profile: net-insensitive, count: 3 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    storms:
+      - node: worker-192.168.0.9
+        mode: net-egress
+        egress_server_node: worker-192.168.0.10
+        per_node: 2
+        parallel: 8
+        toxic_for: [high-s-net]
+    stabilize_seconds: 30
+    repetitions: 10
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-net-diff-v2.parquet"
+  baselines_file: "baselines-stage-net-diff-v2.parquet"
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

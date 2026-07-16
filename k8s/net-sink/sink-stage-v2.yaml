@@ -1,0 +1,54 @@
+# sink-stage-v2.yaml — приёмник стрима для серии net-diff-v2: НЕЙТРАЛЬНАЯ
+# топология. В net-diff sink стоял на bench-узле w8, и жертвы, попавшие туда,
+# стримили локально (~26 с против 45 с cross-node) — медиана SS несла бонус
+# локальности. Здесь sink пиннится на СИСТЕМНЫЙ узел (w5, ss-system): все три
+# bench-узла равноудалены от приёмника, стрим отовсюду cross-node, бонуса нет.
+# nodeName обходит планировщик, поэтому NoSchedule-taint системного узла не
+# мешает. Риск RX системного узла принят: стримы короткие (2ГБ, ~20 с чисто),
+# redis/планировщик обмениваются килобайтами.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  nodeName: worker-192.168.0.5
+  restartPolicy: Always
+  containers:
+    - name: sink
+      image: python:3.12-slim
+      command: ["python3", "-u", "-c"]
+      args:
+        - |
+          import socket, threading
+          s = socket.socket()
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 9000)); s.listen(128)
+          print("sink up :9000", flush=True)
+          def drain(c):
+              import contextlib
+              with contextlib.suppress(Exception):
+                  while c.recv(1 << 20):
+                      pass
+              c.close()
+          while True:
+              c, _ = s.accept()
+              threading.Thread(target=drain, args=(c,), daemon=True).start()
+      ports:
+        - containerPort: 9000
+      resources:
+        requests: { cpu: "200m", memory: "64Mi" }
+        limits: { cpu: "2", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  selector: { app: ss-sink }
+  ports:
+    - port: 9000
+      targetPort: 9000
