@@ -164,26 +164,31 @@ def analysis_digest(report_dir: Path) -> dict:
         scenarios: dict = {}
         for sc, g in df.groupby("scenario"):
             metrics = []
+            # Строка вердикта — на КАЖДЫЙ профиль жертвы отдельно. Смешивать
+            # профили нельзя: в сериях с двумя+ профилями (близнецы, смешанная)
+            # старый код брал SS из первой строки метрики (чувствительный
+            # профиль), а соперника — из последней (нечувствительный двойник,
+            # вдвое быстрее по своей природе) и показывал «SS значимо хуже».
+            n_profiles = g["profile"].nunique()
             for col, label, fmt in DIGEST_METRICS:
-                gm = g[g["metric"] == col]
-                if gm.empty:
-                    continue
-                ss_mean = float(gm.iloc[0]["mean_a"])
-                opponents = {}
-                for r in gm.to_dict("records"):
-                    holm = r.get("mw_p_holm")
-                    sig = bool(pd.notna(holm) and holm < 0.05)
-                    opponents[r["config_b"]] = {
-                        "mean": float(r["mean_b"]),
-                        "p_holm": None if pd.isna(holm) else float(holm),
-                        "delta": None if pd.isna(r.get("cliffs_delta")) else float(r["cliffs_delta"]),
-                        "better": float(r["mean_a"]) < float(r["mean_b"]),
-                        "sig": sig,
-                    }
-                metrics.append(
-                    {"col": col, "label": label, "fmt": fmt,
-                     "ss": ss_mean, "opponents": opponents}
-                )
+                for prof, gm in g[g["metric"] == col].groupby("profile"):
+                    row_label = f"{label} · {prof}" if n_profiles > 1 else label
+                    ss_mean = float(gm.iloc[0]["mean_a"])
+                    opponents = {}
+                    for r in gm.to_dict("records"):
+                        holm = r.get("mw_p_holm")
+                        sig = bool(pd.notna(holm) and holm < 0.05)
+                        opponents[r["config_b"]] = {
+                            "mean": float(r["mean_b"]),
+                            "p_holm": None if pd.isna(holm) else float(holm),
+                            "delta": None if pd.isna(r.get("cliffs_delta")) else float(r["cliffs_delta"]),
+                            "better": float(r["mean_a"]) < float(r["mean_b"]),
+                            "sig": sig,
+                        }
+                    metrics.append(
+                        {"col": col, "label": row_label, "fmt": fmt,
+                         "ss": ss_mean, "opponents": opponents}
+                    )
             if metrics:
                 scenarios[sc] = metrics
         return {"exists": True, "scenarios": scenarios,
