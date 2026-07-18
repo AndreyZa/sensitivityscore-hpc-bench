@@ -94,10 +94,11 @@ spec:
           configMap:
             name: prometheus-rules
         - name: tsdb
-          # hostPath, а не PVC: в кластере нет ни одного StorageClass
-          # (`kubectl get sc` пуст), динамического провижининга нет. Под и так
-          # прибит к ss-system через nodeSelector в overlay, так что путь
-          # стабилен. При переезде на стенд с CSI — заменить на PVC.
+          # hostPath, а не PVC: под и так прибит к ss-system через nodeSelector
+          # в overlay, поэтому путь стабилен, а PVC добавил бы мониторингу
+          # зависимость от провижинера (local-path кладёт тома каталогами на
+          # этом же узле — тот же диск, лишнее звено). При переезде на стенд
+          # с сетевым CSI — заменить на PVC.
           hostPath:
             path: /var/lib/sensitivityscore/prometheus
             type: DirectoryOrCreate

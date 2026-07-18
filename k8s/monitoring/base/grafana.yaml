@@ -127,7 +127,7 @@ spec:
           configMap:
             name: grafana-dashboards
         - name: data
-          hostPath: # как у Prometheus: StorageClass в кластере нет
+          hostPath: # как у Prometheus: путь на ss-system, без звена-провижинера
             path: /var/lib/sensitivityscore/grafana
             type: DirectoryOrCreate
 ---

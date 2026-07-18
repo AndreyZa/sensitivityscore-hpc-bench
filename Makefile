@@ -210,7 +210,9 @@ net-sink-clean: ## Убрать sink-приёмник
 # ---------------------------------------------------------------------------
 
 MONITORING_NAMESPACE ?= sensitivityscore-monitoring
-MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage   # прод: k8s/monitoring/overlays/prod
+# Прод: k8s/monitoring/overlays/prod. Комментарий отдельной строкой — в make
+# всё до `#` попадает в значение вместе с пробелами перед ним.
+MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
 
@@ -692,7 +694,8 @@ ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse
 
 # --- In-cluster ClickHouse (StatefulSet на системной ноде; см. k8s/clickhouse) ---
 CH_INCLUSTER_NS ?= sensitivityscore-system
-CH_KUSTOMIZE    ?= k8s/clickhouse/base   # прод: k8s/clickhouse/overlays/prod
+# Прод: k8s/clickhouse/overlays/prod (комментарий отдельной строкой — см. выше).
+CH_KUSTOMIZE    ?= k8s/clickhouse/base
 
 .PHONY: ch-incluster-deploy
 ch-incluster-deploy: ## Развернуть in-cluster ClickHouse (CH_KUSTOMIZE=base|k8s/clickhouse/overlays/prod)
