@@ -57,24 +57,29 @@ spec:
               # job duration was the real fix, and 5s keeps per-node
               # kube-apiserver LIST traffic 5x lower for the partner stand.
               value: "5"
+            # Калибровки стенда — из ConfigMap metrics-agent-calibration, НЕ
+            # из этого манифеста. Пока здесь стояло value: "", любой
+            # `kubectl apply -f daemonset.yaml` молча обнулял выставленные
+            # значения: 2026-07-18 так потерялись NET=1616 и LLC=15000000,
+            # жившие с 14 июля, — Net-ось выключилась, а llc_miss_rate
+            # вернулся к сырому ratio, который инвертируется под нагрузкой.
+            # ConfigMap апплаем DaemonSet'а не затрагивается.
+            #
+            # optional: true — без ConfigMap переменные просто отсутствуют, и
+            # агент честно выключает соответствующие оси (прежнее поведение).
+            # Задавать: make calibration-apply / make netcheck-apply.
             - name: NET_REFERENCE_MBPS
-              # Net-калибровка стенда: реально достижимый cross-node aggregate
-              # (rx+tx, Mbit/s) из `make netcheck-run && make netcheck-logs`.
-              # Пусто = Net-ось выключена (net_pressure=0, сырой net_bw
-              # пишется всё равно). Значение СТЕНДО-СПЕЦИФИЧНО — задаётся при
-              # деплое (kubectl -n sensitivityscore-system set env
-              # ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=<из
-              # netcheck>), в манифесте намеренно не хардкодится.
-              value: ""
+              valueFrom:
+                configMapKeyRef:
+                  name: metrics-agent-calibration
+                  key: NET_REFERENCE_MBPS
+                  optional: true
             - name: LLC_REFERENCE_MISSES_PER_SEC
-              # LLC-калибровка узлового давления: misses/s под эталонным
-              # штормом (поле llc_misses_per_sec узла в Redis при 2×stress-ng
-              # --stream). Пусто = узловой llc_miss_rate остаётся сырым ratio
-              # misses/references — ВНИМАНИЕ: ratio инвертируется под
-              # потоковой нагрузкой (знаменатель раздувается), для llc-серий
-              # калибровка обязательна. Стендо-специфично, задаётся kubectl
-              # set env, как NET_REFERENCE_MBPS.
-              value: ""
+              valueFrom:
+                configMapKeyRef:
+                  name: metrics-agent-calibration
+                  key: LLC_REFERENCE_MISSES_PER_SEC
+                  optional: true
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the
             # container's own /proc show every host process (net.go reads

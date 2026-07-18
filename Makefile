@@ -356,14 +356,50 @@ netcheck-logs: ## Дождаться завершения клиента и ра
 		echo "netcheck: клиент ещё не Succeeded — показываю, что есть"; \
 	$(KUBECTL) logs pod/netcheck-client | $(PYTHON) scripts/netcheck/parse.py
 
+# Калибровки живут в ConfigMap metrics-agent-calibration, а НЕ в env
+# DaemonSet'а: пока они задавались `kubectl set env`, любой `kubectl apply -f
+# daemonset.yaml` их молча обнулял (случилось 2026-07-18). ConfigMap апплаем
+# DaemonSet'а не трогается. В git не хранится — значения стендо-специфичны.
+CALIBRATION_CM ?= metrics-agent-calibration
+
+.PHONY: calibration-apply
+calibration-apply: ## Выставить калибровки: make calibration-apply NET_REFERENCE_MBPS=<N> LLC_REFERENCE_MISSES_PER_SEC=<M> (перезапускает агент — МЕЖДУ сериями)
+	@test -n "$(NET_REFERENCE_MBPS)$(LLC_REFERENCE_MISSES_PER_SEC)" || { \
+		echo "укажи хотя бы одну: NET_REFERENCE_MBPS=<N> (из make netcheck-logs)"; \
+		echo "                    LLC_REFERENCE_MISSES_PER_SEC=<M> (llc_misses_per_sec под 2x stress-ng --stream)"; \
+		exit 1; }
+	@args=""; \
+	if [ -n "$(NET_REFERENCE_MBPS)" ]; then args="$$args --from-literal=NET_REFERENCE_MBPS=$(NET_REFERENCE_MBPS)"; fi; \
+	if [ -n "$(LLC_REFERENCE_MISSES_PER_SEC)" ]; then args="$$args --from-literal=LLC_REFERENCE_MISSES_PER_SEC=$(LLC_REFERENCE_MISSES_PER_SEC)"; fi; \
+	existing=$$($(KUBECTL) -n $(NAMESPACE) get cm $(CALIBRATION_CM) -o json 2>/dev/null \
+		| python3 -c 'import json,sys; d=json.load(sys.stdin).get("data",{}); print(" ".join(f"--from-literal={k}={v}" for k,v in d.items()))' 2>/dev/null); \
+	for kv in $$existing; do \
+		key=$${kv#--from-literal=}; key=$${key%%=*}; \
+		case "$$args" in *"--from-literal=$$key="*) ;; *) args="$$args $$kv";; esac; \
+	done; \
+	$(KUBECTL) -n $(NAMESPACE) create configmap $(CALIBRATION_CM) $$args \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NAMESPACE) rollout restart ds/sensitivityscore-metrics-agent
+	$(KUBECTL) -n $(NAMESPACE) rollout status ds/sensitivityscore-metrics-agent --timeout=240s
+	@$(MAKE) --no-print-directory calibration-show
+
+.PHONY: calibration-show
+calibration-show: ## Показать текущие калибровки стенда
+	@$(KUBECTL) -n $(NAMESPACE) get cm $(CALIBRATION_CM) -o json 2>/dev/null \
+		| python3 -c 'import json,sys; d=json.load(sys.stdin).get("data") or {}; \
+		  print("\n".join(f"  {k} = {v}" for k,v in sorted(d.items())) or "  (пусто — обе оси выключены)")' \
+		|| echo "  ConfigMap $(CALIBRATION_CM) отсутствует — обе оси не откалиброваны"
+
 .PHONY: netcheck-apply
-netcheck-apply: ## Выставить измеренный референс на DaemonSet: make netcheck-apply NET_REFERENCE_MBPS=<N> (перезапускает агент — делать МЕЖДУ сериями, не в прогоне)
+netcheck-apply: ## Выставить измеренный референс: make netcheck-apply NET_REFERENCE_MBPS=<N> (перезапускает агент — делать МЕЖДУ сериями, не в прогоне)
 	@test -n "$(NET_REFERENCE_MBPS)" || { echo "укажи число из 'make netcheck-logs': make netcheck-apply NET_REFERENCE_MBPS=<N> (пусто = ось Net выключить -> netcheck-disable)"; exit 1; }
-	$(KUBECTL) -n $(NAMESPACE) set env ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS=$(NET_REFERENCE_MBPS)
+	@$(MAKE) --no-print-directory calibration-apply NET_REFERENCE_MBPS=$(NET_REFERENCE_MBPS)
 
 .PHONY: netcheck-disable
-netcheck-disable: ## Выключить Net-ось (NET_REFERENCE_MBPS='' — сырой net_bw пишется, net_pressure=0)
-	$(KUBECTL) -n $(NAMESPACE) set env ds/sensitivityscore-metrics-agent NET_REFERENCE_MBPS-
+netcheck-disable: ## Выключить Net-ось (сырой net_bw пишется, net_pressure=0)
+	$(KUBECTL) -n $(NAMESPACE) patch cm $(CALIBRATION_CM) --type=json \
+		-p='[{"op":"remove","path":"/data/NET_REFERENCE_MBPS"}]' || true
+	$(KUBECTL) -n $(NAMESPACE) rollout restart ds/sensitivityscore-metrics-agent
 
 .PHONY: netcheck-clean
 netcheck-clean: ## Убрать поды и Service netcheck
