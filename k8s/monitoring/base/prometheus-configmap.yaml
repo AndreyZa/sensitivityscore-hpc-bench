@@ -121,10 +121,40 @@ data:
         static_configs:
           - targets: ["kube-state-metrics.sensitivityscore-monitoring.svc.cluster.local:8080"]
 
+      # --- metrics-agent: оси чувствительности ----------------------------
+      # Отдельная job с ЧАСТЫМ интервалом. Причина — разрешение по времени, а
+      # не нагрузка: планировщик читает node:metrics:<node> с TTL 30s, и
+      # "возраст сэмпла" должен ловить протухание раньше, чем оно случится.
+      # При общем интервале 30s наблюдаемый возраст сам по себе доходит до
+      # ~35s (время с последнего скрейпа + возраст на момент скрейпа), то
+      # есть порог 30s давал бы и ложную тревогу на здоровом стенде, и
+      # срабатывание уже ПОСЛЕ потери данных планировщиком. При 10s возраст
+      # держится <15s, и порог 30s означает ровно то, что написано на панели.
+      # Цель дешёвая: 4 эндпоинта, процессы на узлах уже запущены.
+      - job_name: sensitivityscore-metrics-agent
+        scrape_interval: 10s
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: sensitivityscore-metrics-agent
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          # Метку node агент проставляет сам (pkg/promexport), поэтому здесь
+          # её НЕ трогаем — иначе она превратилась бы в exported_node.
+
       # --- поды с prometheus.io/scrape ------------------------------------
-      # Сюда попадают metrics-agent (все узлы, включая bench — процесс там уже
-      # есть, скрейп ничего не добавляет) и node-exporter (только ss-system).
-      # KSM сюда НЕ входит — см. job выше.
+      # Сюда попадает node-exporter (только ss-system) и то, что уже несёт
+      # аннотации от k0s/Calico (kube-proxy, coredns, calico). KSM и
+      # metrics-agent сюда НЕ входят — у них свои job'ы выше.
       - job_name: kubernetes-pods
         kubernetes_sd_configs:
           - role: pod
@@ -132,6 +162,11 @@ data:
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
             action: keep
             regex: "true"
+          # Агент уже покрыт своей job'ой с интервалом 10s — иначе он попал бы
+          # в обе и дал бы две серии на узел с разной частотой.
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: drop
+            regex: sensitivityscore-metrics-agent
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
             action: replace
             target_label: __metrics_path__
