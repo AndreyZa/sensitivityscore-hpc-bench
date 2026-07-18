@@ -155,5 +155,14 @@ STAGE: максимум 10.6 с), и порог означает ровно то
 С уже жившими там Redis, планировщиком и metrics-server — ~900 Mi запросов из
 ~1.8 Gi allocatable. Retention Prometheus: 30 суток или 6 ГБ, что раньше.
 
-**Когда на STAGE приедет ClickHouse** (`k8s/clickhouse/`, сейчас там только
-манифесты) — запаса не хватит: ужимать retention или разносить компоненты.
+**Про соседство с ClickHouse.** In-cluster CH запланирован на **прод**, не на
+STAGE: `k8s/clickhouse/overlays/prod` пинит StatefulSet на ss-system, а
+`k8s/clickhouse/README.md` фиксирует «на проде не разворачивалось (стенда ещё
+нет)». На прод-ВМ 4 vCPU / 8 ГБ мониторинг (~900 Mi) и CH уживаются. Если CH
+когда-нибудь понадобится на STAGE — там 2 ГБ, и запаса не хватит: ужимать
+retention или разносить компоненты.
+
+Сейчас результаты уходят не в in-cluster CH, а в ClickHouse на домашнем ПК
+через SSH-туннель (`make ch-tunnel` → `make ch-load`). Мониторинг с этим
+путём не связан: `remote_write`/federation в конфиге нет, TSDB живёт и умирает
+в hostPath на ss-system.
