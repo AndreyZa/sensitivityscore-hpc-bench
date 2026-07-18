@@ -1,0 +1,76 @@
+# node_exporter — ТОЛЬКО на ss-system.
+#
+# Это не экономия ресурсов, а требование методики. Измерительные узлы (роль
+# bench) должны оставаться чистыми: любой посторонний процесс, периодически
+# читающий /proc и /sys, попадает в те самые LLC/IO-счётчики, ради которых
+# стенд и существует (docs «Ввод прод-стенда (Этап 0)» §2 — системные
+# компоненты «не шумят в LLC/IO/Net измерительных узлов»).
+#
+# Узловые метрики bench при этом НЕ теряются: их отдают kubelet и cAdvisor,
+# уже работающие на каждом узле, плюс metrics-agent с его /metrics
+# (pkg/promexport) — то есть ни одного НОВОГО процесса на bench не появляется.
+# Разница против node_exporter — нет узловых деталей вроде температуры,
+# textfile-коллектора и per-device diskstats; для bench это приемлемо, а на
+# ss-system (где стоит ClickHouse и TSDB) они как раз нужны.
+#
+# Если для конкретной серии узловые детали bench всё же понадобятся — снимать
+# node_exporter МЕЖДУ сериями, а не во время (см. README рядом).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: sensitivityscore-monitoring
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      hostPID: true
+      hostNetwork: true # чтобы node_network_* были метриками узла, а не пода
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsUser: 65534
+        runAsNonRoot: true
+      containers:
+        - name: node-exporter
+          image: quay.io/prometheus/node-exporter:v1.8.2
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+          ports:
+            - name: metrics
+              containerPort: 9100
+              hostPort: 9100
+          volumeMounts:
+            - {name: proc, mountPath: /host/proc, readOnly: true}
+            - {name: sys, mountPath: /host/sys, readOnly: true}
+            - {name: root, mountPath: /host/root, readOnly: true, mountPropagation: HostToContainer}
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+      volumes:
+        - {name: proc, hostPath: {path: /proc}}
+        - {name: sys, hostPath: {path: /sys}}
+        - {name: root, hostPath: {path: /}}

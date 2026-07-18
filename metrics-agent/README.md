@@ -10,6 +10,7 @@ pkg/perf/        — perf_event_open() обёртка: LLC misses/references, cg
 pkg/cgroup/       — io.stat (Disk I/O); net.go — rx+tx байты из /proc/<pid>/net/dev
 pkg/redisclient/  — запись node:metrics:* / job:metrics:*
 pkg/vpmu/         — health-check vPMU-доступности для серии B (§3.3)
+pkg/promexport/   — зеркало узловых осей в Prometheus (/metrics:9101)
 cmd/agent/        — цикл сэмплирования: discover pods on node -> sample -> write
 ```
 
@@ -28,6 +29,14 @@ cmd/agent/        — цикл сэмплирования: discover pods on node
 - Redis writer с правильным разделением `node:metrics:*` (TTL) / `job:metrics:*`
   (без TTL, для последующей выгрузки харнессом в Parquet).
 - vPMU health-check (in-guest + `virsh capabilities`) для конфигурации B.
+- **Prometheus-эндпоинт** `:9101/metrics` (`pkg/promexport`) — те же узловые оси,
+  что уходят в Redis, плюс метрики годности сбора
+  (`ss_agent_pmu_hardware_available`, `ss_agent_llc_calibrated`,
+  `ss_agent_net_calibrated`, `ss_agent_psi_available`,
+  `ss_agent_last_sample_timestamp_seconds`). **Redis остаётся авторитетным**:
+  горячий путь планировщика и выгрузка харнесса читают только его, Prometheus —
+  read-only наблюдаемость, и падение HTTP-сервера не влияет на сэмплирование.
+  Дашборды и scrape-конфиг — `k8s/monitoring/`.
 
 ## Сознательно оставлено как TODO (см. комментарии в коде)
 

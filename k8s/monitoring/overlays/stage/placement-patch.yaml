@@ -1,0 +1,21 @@
+# Прибить компонент к системной ноде, как это сделано для ClickHouse
+# (k8s/clickhouse/overlays/prod/placement-patch.yaml). Мониторинг не должен
+# оказаться на измерительных узлах: Prometheus с его TSDB — заметный
+# IO-генератор, а именно IO-ось стенд и меряет.
+#
+# Патч применяется к Deployment по имени (см. kustomization.yaml); у
+# node-exporter nodeSelector зашит в base — там это не размещение, а часть
+# смысла компонента.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: PLACEHOLDER # переопределяется target'ом в kustomization.yaml
+spec:
+  template:
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule

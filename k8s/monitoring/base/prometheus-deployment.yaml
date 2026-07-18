@@ -1,0 +1,116 @@
+# Prometheus одним Deployment'ом, без prometheus-operator: на 2-ГБ ss-system
+# оператор с CRD стоит ~100 Mi и ничего не даёт стенду из четырёх узлов, а
+# репозиторий и так живёт на сырых манифестах + kustomize (см. k8s/clickhouse).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: sensitivityscore-monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  # TSDB лежит в hostPath на конкретном узле, второй экземпляр его повредит:
+  # обновляемся только через полную остановку старого пода.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsUser: 65534 # nobody — образ prom/prometheus так и работает
+        runAsGroup: 65534
+        fsGroup: 65534
+      # hostPath создаётся root'ом с правами 755, а Prometheus — nobody.
+      # Без chown TSDB не откроется на свежем узле.
+      initContainers:
+        - name: chown-tsdb
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data && chown -R 65534:65534 /data"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: tsdb
+              mountPath: /data
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            # 30 суток покрывают серию с запасом и позволяют сравнить прогоны
+            # между собой; ограничение по размеру — страховка от 40-ГБ диска
+            # STAGE, TSDB сам удалит старые блоки, не дожидаясь retention.
+            - --storage.tsdb.retention.time=30d
+            - --storage.tsdb.retention.size=6GB
+            - --web.enable-lifecycle # POST /-/reload вместо перезапуска пода
+            - --web.console.libraries=/usr/share/prometheus/console_libraries
+            - --web.console.templates=/usr/share/prometheus/consoles
+          ports:
+            - name: web
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: tsdb
+              mountPath: /data
+          readinessProbe:
+            httpGet: {path: /-/ready, port: web}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: web}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              # 512Mi хватает на ~10 целей стенда с 30s-интервалом; жёсткий
+              # потолок здесь важнее запаса — сосед по узлу это Redis и
+              # планировщик, их вытеснять нельзя.
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: tsdb
+          # hostPath, а не PVC: в кластере нет ни одного StorageClass
+          # (`kubectl get sc` пуст), динамического провижининга нет. Под и так
+          # прибит к ss-system через nodeSelector в overlay, так что путь
+          # стабилен. При переезде на стенд с CSI — заменить на PVC.
+          hostPath:
+            path: /var/lib/sensitivityscore/prometheus
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: sensitivityscore-monitoring
+  labels:
+    app: prometheus
+spec:
+  # ClusterIP, НЕ NodePort: у узлов стенда белые IP (195.133.25.138 и
+  # соседи), NodePort выставил бы Prometheus в интернет без аутентификации.
+  # Доступ — через `make monitoring-open` (kubectl port-forward).
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: web

@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: sensitivityscore-monitoring
+data:
+  stand.yaml: |
+    # Alertmanager намеренно НЕ развёрнут (экономия ~80 Mi на 2-ГБ ss-system):
+    # правила всё равно вычисляются и видны в Prometheus /alerts и в Grafana.
+    # Смысл этих правил — не «дежурство», а защита от МОЛЧАЛИВО НЕВЕРНЫХ
+    # СЕРИЙ: почти всё ниже описывает состояние, при котором стенд продолжает
+    # писать цифры, но цифры уже нельзя нести в диссертацию.
+    groups:
+      - name: sensitivityscore-collection
+        rules:
+          - alert: SSAgentStale
+            # Планировщик читает node:metrics:<node> с TTL 30s. Если агент
+            # встал, ключ протухает и Score() работает на пустых данных —
+            # молча, без ошибок в логе плагина.
+            expr: time() - ss_agent_last_sample_timestamp_seconds > 60
+            for: 1m
+            labels: {severity: critical}
+            annotations:
+              summary: "metrics-agent на {{ $labels.node }} не сэмплирует >60s"
+              description: "Redis-ключ node:metrics:{{ $labels.node }} (TTL 30s) протухает — планировщик скорит на пустых данных."
+
+          - alert: SSAgentDown
+            expr: up{job="kubernetes-pods", app="sensitivityscore-metrics-agent"} == 0
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: "metrics-agent недоступен на {{ $labels.instance_node }}"
+
+          - alert: SSPMUSynthetic
+            # Синтетика — режим для dev-бокса. На стенде это значит, что
+            # perf_event_open не отдаёт честные счётчики: LLC/NUMA-цифры серии
+            # непригодны (docs §1а, perfcheck).
+            expr: ss_agent_pmu_hardware_available == 0
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "PMU на {{ $labels.node }} нечестный — LLC синтетический"
+              description: "Агент свалился в synthetic-devbox. Проверить perf_event_paranoid и CAP_PERFMON (docs §5), прогнать make perfcheck-run NODE={{ $labels.node }}."
+
+          - alert: SSLLCUncalibrated
+            # Самая коварная: без калибровки узловой llc_miss_rate — сырой
+            # ratio misses/references, который ИНВЕРТИРУЕТСЯ под потоковой
+            # нагрузкой (STAGE 2026-07-14: 0.018 под штормом против 0.33 на
+            # простое). Дашборд покажет «чистый» узел ровно тогда, когда он
+            # максимально загружен.
+            expr: ss_agent_llc_calibrated == 0
+            for: 15m
+            labels: {severity: warning}
+            annotations:
+              summary: "LLC-ось на {{ $labels.node }} не откалибрована"
+              description: "llc_miss_rate — сырой ratio, инвертируется под нагрузкой. Снять llc_misses_per_sec под 2x stress-ng --stream и выставить LLC_REFERENCE_MISSES_PER_SEC."
+
+          - alert: SSNetUncalibrated
+            expr: ss_agent_net_calibrated == 0
+            for: 15m
+            labels: {severity: warning}
+            annotations:
+              summary: "Net-ось на {{ $labels.node }} выключена (нет NET_REFERENCE_MBPS)"
+              description: "net_pressure=0 честно, но ось не участвует в Score(). make netcheck-run && make netcheck-apply."
+
+          - alert: SSPSIUnavailable
+            expr: ss_agent_psi_available == 0
+            for: 15m
+            labels: {severity: warning}
+            annotations:
+              summary: "PSI недоступен на {{ $labels.node }} — IO-ось выключена"
+              description: "Нет cgroup io.pressure: ядру нужен psi=1 (docs §5). io_pressure будет нулём, и это не «нет нагрузки»."
+
+          - alert: SSRedisWriteErrors
+            expr: rate(ss_agent_redis_write_errors_total[5m]) > 0
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "Агент на {{ $labels.node }} не пишет в Redis"
+              description: "Горячий путь планировщика и экспорт харнесса теряют данные, даже если /metrics выглядит здоровым."
+
+      - name: sensitivityscore-platform
+        rules:
+          - alert: SSSystemNodeMemoryLow
+            # ss-system на STAGE — 2 ГБ. Здесь живут Redis, планировщик,
+            # metrics-server, весь мониторинг и (в планах) ClickHouse.
+            # Вытеснение отсюда роняет горячий путь планировщика.
+            expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.15
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "На ss-system осталось <15% памяти"
+              description: "Риск вытеснения Redis/планировщика/Prometheus. Проверить, не приехал ли на узел ClickHouse."
+
+          - alert: SSSystemNodeDiskLow
+            expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "На ss-system осталось <15% диска"
+              description: "TSDB Prometheus лежит в hostPath на этом же диске (40 ГБ на STAGE)."
+
+          - alert: SSPodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total{namespace=~"sensitivityscore-.*"}[15m]) > 0
+            for: 5m
+            labels: {severity: warning}
+            annotations:
+              summary: "{{ $labels.namespace }}/{{ $labels.pod }} перезапускается"
+
+          - alert: SSPodOOMKilled
+            expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"sensitivityscore-.*"} == 1
+            for: 1m
+            labels: {severity: critical}
+            annotations:
+              summary: "{{ $labels.namespace }}/{{ $labels.pod }} убит по OOM"
+              description: "На 2-ГБ ss-system это ожидаемый способ отказа при переуплотнении узла."
+
+          - alert: SSSchedulerDown
+            expr: kube_deployment_status_replicas_available{namespace="sensitivityscore-system", deployment="sensitivityscore-scheduler"} < 1
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "sensitivityscore-scheduler недоступен — поды серии не разложатся"

@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: sensitivityscore-monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        # Явный uid: дашборды (grafana-dashboards.yaml) ссылаются именно на
+        # него. Без него Grafana сгенерирует случайный, и провижининг
+        # дашбордов развалится при пересоздании пода.
+        uid: sensitivityscore-prom
+        access: proxy
+        url: http://prometheus.sensitivityscore-monitoring.svc.cluster.local:9090
+        isDefault: true
+        jsonData:
+          # Совпадает с global.scrape_interval — иначе Grafana подставляет в
+          # $__rate_interval своё значение и rate() по 30s-серии рвётся.
+          timeInterval: 30s
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: sensitivityscore
+        orgId: 1
+        folder: SensitivityScore
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: sensitivityscore-monitoring
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # как у Prometheus: hostPath-состояние не терпит двух подов
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        runAsUser: 472 # grafana
+        runAsGroup: 472
+        fsGroup: 472
+      initContainers:
+        - name: chown-data
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /var/lib/grafana && chown -R 472:472 /var/lib/grafana"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.4
+          env:
+            # Пароль НЕ в манифесте: секрет создаётся при деплое
+            # (`make monitoring-deploy` генерирует случайный, если его ещё
+            # нет) — в git не попадает ничего.
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef: {name: grafana-admin, key: admin-user}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: grafana-admin, key: admin-password}
+            # Доступ только через port-forward (Service — ClusterIP), поэтому
+            # аналитику и проверку обновлений наружу выключаем.
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_INSTALL_PLUGINS
+              # Пусто: узлы стенда могут не иметь выхода в grafana.com, а
+              # плагины нужны только под ClickHouse-датасорсник (когда CH
+              # реально появится на стенде — см. k8s/clickhouse/).
+              value: ""
+          ports:
+            - name: http
+              containerPort: 3000
+          volumeMounts:
+            - name: provisioning-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: provisioning-dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: data
+              mountPath: /var/lib/grafana
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+      volumes:
+        - name: provisioning-datasources
+          configMap:
+            name: grafana-provisioning
+            items: [{key: datasources.yaml, path: datasources.yaml}]
+        - name: provisioning-dashboards
+          configMap:
+            name: grafana-provisioning
+            items: [{key: dashboards.yaml, path: dashboards.yaml}]
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          hostPath: # как у Prometheus: StorageClass в кластере нет
+            path: /var/lib/sensitivityscore/grafana
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: sensitivityscore-monitoring
+  labels:
+    app: grafana
+spec:
+  # ClusterIP: у узлов белые IP, NodePort выставил бы Grafana в интернет.
+  # Доступ — `make monitoring-open`.
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

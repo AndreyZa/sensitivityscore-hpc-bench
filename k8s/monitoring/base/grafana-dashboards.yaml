@@ -1,0 +1,250 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: sensitivityscore-monitoring
+data:
+  # Дашборд 1 — оси чувствительности (то, ради чего стенд существует).
+  # Верхний ряд намеренно не про нагрузку, а про ГОДНОСТЬ СБОРА: нулевая ось
+  # означает либо «тихо», либо «датчик выключен», и различать это нужно
+  # ДО того, как цифры уедут в диссертацию.
+  sensitivity-axes.json: |
+    {
+      "uid": "ss-axes",
+      "title": "SensitivityScore — оси чувствительности",
+      "tags": ["sensitivityscore"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": {"from": "now-1h", "to": "now"},
+      "templating": {"list": [
+        {
+          "name": "node",
+          "type": "query",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "query": "label_values(ss_agent_last_sample_timestamp_seconds, node)",
+          "multi": true,
+          "includeAll": true,
+          "current": {"text": "All", "value": "$__all"}
+        }
+      ]},
+      "panels": [
+        {"type": "row", "title": "Годность сбора", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}},
+        {
+          "type": "stat", "title": "PMU честный",
+          "description": "0 = агент свалился в synthetic-devbox: LLC/NUMA этой серии непригодны. Проверить perf_event_paranoid и CAP_PERFMON, прогнать make perfcheck-run.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 5, "x": 0, "y": 1},
+          "targets": [{"expr": "ss_agent_pmu_hardware_available{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {
+            "mappings": [{"type": "value", "options": {"0": {"text": "СИНТЕТИКА", "color": "red"}, "1": {"text": "честный", "color": "green"}}}],
+            "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+          }},
+          "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+        },
+        {
+          "type": "stat", "title": "LLC откалиброван",
+          "description": "0 = llc_miss_rate это сырой ratio misses/references. Он ИНВЕРТИРУЕТСЯ под потоковой нагрузкой: загруженный узел выглядит чище простаивающего (STAGE 2026-07-14: 0.018 под штормом против 0.33 на простое). Пока здесь 0 — нижний график LLC rate читать как давление НЕЛЬЗЯ.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 5, "x": 5, "y": 1},
+          "targets": [{"expr": "ss_agent_llc_calibrated{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {
+            "mappings": [{"type": "value", "options": {"0": {"text": "СЫРОЙ RATIO", "color": "orange"}, "1": {"text": "калиброван", "color": "green"}}}],
+            "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}, {"color": "green", "value": 1}]}
+          }},
+          "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+        },
+        {
+          "type": "stat", "title": "Net-ось",
+          "description": "0 = NET_REFERENCE_MBPS не задан, net_pressure честно нулевой и в Score() не участвует. make netcheck-run && make netcheck-apply.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 5, "x": 10, "y": 1},
+          "targets": [{"expr": "ss_agent_net_calibrated{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {
+            "mappings": [{"type": "value", "options": {"0": {"text": "выключена", "color": "text"}, "1": {"text": "включена", "color": "green"}}}]
+          }},
+          "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+        },
+        {
+          "type": "stat", "title": "PSI (IO-ось)",
+          "description": "0 = ядро не отдаёт cgroup io.pressure, IO-ось выключена (нужен psi=1). Нули на графике io_pressure тогда не означают отсутствие конкуренции за диск.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 5, "x": 15, "y": 1},
+          "targets": [{"expr": "ss_agent_psi_available{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {
+            "mappings": [{"type": "value", "options": {"0": {"text": "НЕТ PSI", "color": "orange"}, "1": {"text": "есть", "color": "green"}}}]
+          }},
+          "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+        },
+        {
+          "type": "stat", "title": "Возраст сэмпла",
+          "description": "Планировщик читает node:metrics:<node> с TTL 30s. Больше 30s здесь — Score() уже работает на протухших данных.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+          "targets": [{"expr": "time() - ss_agent_last_sample_timestamp_seconds{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {
+            "unit": "s",
+            "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 30}, {"color": "red", "value": 60}]}
+          }},
+          "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+        },
+
+        {"type": "row", "title": "LLC", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}},
+        {
+          "type": "timeseries", "title": "LLC misses/sec (сырые)",
+          "description": "Монотонны по нагрузке — в отличие от ratio. Именно это поле снимают под эталонным штормом 2x stress-ng --stream, чтобы получить LLC_REFERENCE_MISSES_PER_SEC.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+          "targets": [{"expr": "ss_node_llc_misses_per_sec{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "LLC miss rate [0,1]",
+          "description": "Ось давления LLC. ВНИМАНИЕ: смысл зависит от верхней панели «LLC откалиброван». Без калибровки это сырой ratio, инвертирующийся под потоковой нагрузкой.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+          "targets": [{"expr": "ss_node_llc_miss_rate{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+
+        {"type": "row", "title": "IO / NUMA / Net", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}},
+        {
+          "type": "timeseries", "title": "IO pressure (PSI some)",
+          "description": "Доля окна, в которой хотя бы одна задача узла стояла на IO — реальная конкуренция за устройство, включая непод'овый IO.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 0, "y": 15},
+          "targets": [{"expr": "ss_node_io_pressure{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "NUMA remote ratio",
+          "description": "Доля чтений DRAM, обслуженных удалённым NUMA-узлом. На одно-NUMA узлах STAGE ожидаемо 0; на прод-R760 (2 сокета) ось оживает.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 8, "y": 15},
+          "targets": [{"expr": "ss_node_numa_remote_ratio{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "Net bandwidth (rx+tx)",
+          "description": "Сырая суммарная полоса подов узла. Сетевая серия должна быть egress-штормом: локальная пара на одном узле мостится через veth и аплинк не занимает.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 16, "y": 15},
+          "targets": [{"expr": "ss_node_net_bw_bytes_per_second{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "IO iops",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 0, "y": 22},
+          "targets": [{"expr": "ss_node_io_iops{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "iops", "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "Net pressure [0,1]",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 8, "y": 22},
+          "targets": [{"expr": "ss_node_net_pressure{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "Подов в выборке",
+          "description": "Сколько подов дали НЕбазовый сэмпл на последнем тике. Первый тик пода только праймит счётчики, поэтому задачи короче ~2x SAMPLE_INTERVAL_SECONDS агенту невидимы вообще.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 8, "x": 16, "y": 22},
+          "targets": [{"expr": "ss_agent_sampled_pods{node=~\"$node\"}", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never", "drawStyle": "bars"}}}
+        }
+      ]
+    }
+
+  # Дашборд 2 — инфраструктура стенда. Узловые панели строятся на cAdvisor и
+  # kubelet, а не на node_exporter: на bench-узлах его намеренно нет.
+  stand-infra.json: |
+    {
+      "uid": "ss-infra",
+      "title": "Стенд — инфраструктура",
+      "tags": ["sensitivityscore"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {"from": "now-3h", "to": "now"},
+      "panels": [
+        {"type": "row", "title": "Узлы", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}},
+        {
+          "type": "stat", "title": "Узлы Ready",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+          "targets": [{"expr": "sum(kube_node_status_condition{condition=\"Ready\", status=\"true\"})", "refId": "A"}],
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 4}]}}},
+          "options": {"colorMode": "background", "graphMode": "none"}
+        },
+        {
+          "type": "stat", "title": "Агентов живо",
+          "description": "DaemonSet metrics-agent должен стоять на КАЖДОМ узле, включая ss-system.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+          "targets": [{"expr": "count(ss_agent_last_sample_timestamp_seconds)", "refId": "A"}],
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 4}]}}},
+          "options": {"colorMode": "background", "graphMode": "none"}
+        },
+        {
+          "type": "stat", "title": "Память ss-system",
+          "description": "На STAGE это 2 ГБ на всё: Redis, планировщик, metrics-server, мониторинг и (в планах) ClickHouse.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+          "targets": [{"expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1,
+            "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.75}, {"color": "red", "value": 0.85}]}}},
+          "options": {"colorMode": "background", "graphMode": "area"}
+        },
+        {
+          "type": "stat", "title": "Диск ss-system (/)",
+          "description": "Здесь же лежит TSDB Prometheus (hostPath, retention 30d / 6GB).",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+          "targets": [{"expr": "1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1,
+            "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.75}, {"color": "red", "value": 0.85}]}}},
+          "options": {"colorMode": "background", "graphMode": "area"}
+        },
+        {
+          "type": "timeseries", "title": "CPU по узлам (из cAdvisor, сумма контейнеров)",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+          "targets": [{"expr": "sum by (node) (rate(container_cpu_usage_seconds_total[5m]))", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+        {
+          "type": "timeseries", "title": "Память по узлам (working set)",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+          "targets": [{"expr": "sum by (node) (container_memory_working_set_bytes)", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"fillOpacity": 8, "showPoints": "never"}}}
+        },
+
+        {"type": "row", "title": "Поды стенда", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13}},
+        {
+          "type": "timeseries", "title": "Рестарты контейнеров (sensitivityscore-*)",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 14},
+          "targets": [{"expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace=~\"sensitivityscore-.*\"}[15m]))", "legendFormat": "{{namespace}}/{{pod}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never", "drawStyle": "bars"}}}
+        },
+        {
+          "type": "timeseries", "title": "Поды по фазам (sensitivityscore-bench)",
+          "description": "Job'ы харнесса: видно, идёт ли серия и не залипли ли поды в Pending (нет узла, прошедшего фильтр планировщика).",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 14},
+          "targets": [{"expr": "sum by (phase) (kube_pod_status_phase{namespace=\"sensitivityscore-bench\"})", "legendFormat": "{{phase}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never", "drawStyle": "bars", "stacking": {"mode": "normal"}}}}
+        },
+        {
+          "type": "timeseries", "title": "Системные компоненты — память (limit 256Mi/512Mi)",
+          "description": "Redis, планировщик и агент на ss-system. Приближение к лимиту здесь means OOMKill горячего пути планировщика.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
+          "targets": [{"expr": "sum by (pod) (container_memory_working_set_bytes{namespace=~\"sensitivityscore-system|sensitivityscore-monitoring\"})", "legendFormat": "{{pod}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"fillOpacity": 4, "showPoints": "never"}}}
+        }
+      ]
+    }

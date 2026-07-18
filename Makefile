@@ -26,6 +26,13 @@ METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
 AGGRESSOR_IMAGE         ?= $(REGISTRY)/aggressor:dev
 HARNESS_IMAGE           ?= $(REGISTRY)/harness:dev
 
+# Все узлы стенда — amd64 (`kubectl get nodes -o wide`). На Apple Silicon
+# `docker build` без --platform собирает arm64, и такой образ падает на узле
+# с "exec format error" уже ПОСЛЕ пуша, при следующем рестарте пода
+# (imagePullPolicy: Always) — то есть ломается не сборка, а стенд, и не сразу.
+# Целевую платформу задаём явно; на amd64-машине это no-op.
+IMAGE_PLATFORM          ?= linux/amd64
+
 # --- Kubernetes ---
 KUBECTL      ?= kubectl
 NAMESPACE    ?= sensitivityscore-system
@@ -86,13 +93,18 @@ scheduler-plugin-image: ## Собрать Docker-образ плагина в ф
 fmt-go: ## gofmt -w по metrics-agent
 	gofmt -l -w metrics-agent
 
+# GOOS=linux в vet/build: pkg/perf держится на perf_event_open и cgroupfs
+# (unix.PerfEventAttr, PERF_FLAG_PID_CGROUP) — на darwin этих символов в
+# x/sys/unix нет, и хостовый `go vet ./...` падает undefined, хотя агент
+# собирается и живёт только в linux-контейнере. Кросс-проверка под целевую
+# платформу, а не под платформу разработчика.
 .PHONY: vet-go
-vet-go: ## go vet по metrics-agent
-	cd metrics-agent && go vet ./...
+vet-go: ## go vet по metrics-agent (под целевой linux)
+	cd metrics-agent && GOOS=linux go vet ./...
 
 .PHONY: build-go
 build-go: fmt-go vet-go ## Собрать metrics-agent локально
-	cd metrics-agent && go build ./...
+	cd metrics-agent && GOOS=linux CGO_ENABLED=0 go build ./...
 
 .PHONY: test-go
 test-go: ## Юнит-тесты metrics-agent
@@ -104,7 +116,7 @@ test-go: ## Юнит-тесты metrics-agent
 
 .PHONY: image-workload
 image-workload: ## Собрать образ нагрузки Geant4 (workload/)
-	docker build -t $(WORKLOAD_IMAGE) ./workload
+	docker build --platform $(IMAGE_PLATFORM) -t $(WORKLOAD_IMAGE) ./workload
 
 .PHONY: image-workload-push
 image-workload-push:
@@ -112,11 +124,11 @@ image-workload-push:
 
 .PHONY: image-metrics-agent
 image-metrics-agent: build-go ## Собрать образ metrics-agent
-	docker build -t $(METRICS_AGENT_IMAGE) ./metrics-agent
+	docker build --platform $(IMAGE_PLATFORM) -t $(METRICS_AGENT_IMAGE) ./metrics-agent
 
 .PHONY: image-aggressor
 image-aggressor: ## Собрать образ LLC/membw-агрессора (stress-ng) для pressure-сценариев
-	docker build -t $(AGGRESSOR_IMAGE) ./aggressor
+	docker build --platform $(IMAGE_PLATFORM) -t $(AGGRESSOR_IMAGE) ./aggressor
 
 .PHONY: images
 images: image-workload image-metrics-agent image-harness image-aggressor ## Собрать ВСЕ образы стенда (кроме плагина — он в форке, см. scheduler-plugin-image)
@@ -174,6 +186,88 @@ net-sink-deploy: ## Развернуть sink-приёмник сетевого 
 net-sink-clean: ## Убрать sink-приёмник
 	$(KUBECTL) delete -f k8s/net-sink/sink.yaml --ignore-not-found
 
+# ---------------------------------------------------------------------------
+# Мониторинг (k8s/monitoring) — Prometheus + Grafana + kube-state-metrics на
+# ss-system. Без оператора и без Helm: репозиторий живёт на сырых манифестах,
+# а на 2-ГБ системном узле prometheus-operator стоил бы ~100 Mi ни за что.
+#
+# ЧИСТОТА ИЗМЕРЕНИЙ: node_exporter стоит ТОЛЬКО на ss-system. Узловые метрики
+# bench снимаются с kubelet/cAdvisor и с metrics-agent, которые там и так
+# работают, — на измерительные узлы не добавляется ни одного процесса
+# (docs «Ввод прод-стенда (Этап 0)» §2).
+#
+# Доступ — только через port-forward (`make monitoring-open`): Service'ы
+# ClusterIP намеренно, у узлов стенда белые IP и NodePort выставил бы
+# Grafana/Prometheus в интернет.
+# ---------------------------------------------------------------------------
+
+MONITORING_NAMESPACE ?= sensitivityscore-monitoring
+MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage
+GRAFANA_PORT         ?= 3000
+PROMETHEUS_PORT      ?= 9090
+
+.PHONY: monitoring-secret
+monitoring-secret: ## Создать секрет grafana-admin со случайным паролем (идемпотентно, в git не попадает)
+	@$(KUBECTL) create namespace $(MONITORING_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
+	@if $(KUBECTL) -n $(MONITORING_NAMESPACE) get secret grafana-admin >/dev/null 2>&1; then \
+		echo "secret/grafana-admin уже есть — пароль не трогаем"; \
+	else \
+		pw=$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24); \
+		$(KUBECTL) -n $(MONITORING_NAMESPACE) create secret generic grafana-admin \
+			--from-literal=admin-user=admin --from-literal=admin-password="$$pw"; \
+		echo ""; \
+		echo "  Grafana admin: admin / $$pw"; \
+		echo "  (сохрани сейчас — повторно make его не покажет; сброс: make monitoring-password-reset)"; \
+		echo ""; \
+	fi
+
+.PHONY: monitoring-deploy
+monitoring-deploy: monitoring-secret ## Развернуть стек мониторинга на ss-system
+	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/prometheus --timeout=180s
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/grafana --timeout=180s
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/kube-state-metrics --timeout=180s
+	@echo "готово — дальше: make monitoring-open"
+
+.PHONY: monitoring-reload
+monitoring-reload: ## Перечитать scrape-конфиг и правила без перезапуска пода
+	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
+	@echo "ждём распространения ConfigMap на том (до ~60s)..."
+	@sleep 60
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -- \
+		wget -q -O- --post-data='' http://localhost:9090/-/reload && echo "reload OK"
+
+.PHONY: monitoring-open
+monitoring-open: ## Проброс портов: Grafana :3000, Prometheus :9090 (Ctrl-C — закрыть)
+	@echo "Grafana    -> http://localhost:$(GRAFANA_PORT)  (логин: make monitoring-password)"
+	@echo "Prometheus -> http://localhost:$(PROMETHEUS_PORT)/targets"
+	@trap 'kill 0' EXIT; \
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) port-forward svc/grafana $(GRAFANA_PORT):3000 & \
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) port-forward svc/prometheus $(PROMETHEUS_PORT):9090 & \
+	wait
+
+.PHONY: monitoring-password
+monitoring-password: ## Показать текущий пароль Grafana из секрета
+	@$(KUBECTL) -n $(MONITORING_NAMESPACE) get secret grafana-admin \
+		-o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+.PHONY: monitoring-password-reset
+monitoring-password-reset: ## Перевыпустить пароль Grafana (пересоздаёт секрет и перезапускает под)
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) delete secret grafana-admin --ignore-not-found
+	@$(MAKE) --no-print-directory monitoring-secret
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout restart deploy/grafana
+
+.PHONY: monitoring-targets
+monitoring-targets: ## Показать состояние scrape-целей (up/down) без открытия UI
+	@$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -- \
+		wget -q -O- 'http://localhost:9090/api/v1/query?query=up' \
+		| python3 -c 'import json,sys;rs=json.load(sys.stdin)["data"]["result"];rs.sort(key=lambda r:r["metric"].get("job",""));[print("UP  " if r["value"][1]=="1" else "DOWN", r["metric"].get("job","?").ljust(28), r["metric"].get("instance","?")) for r in rs]'
+
+.PHONY: monitoring-clean
+monitoring-clean: ## Снести стек мониторинга (TSDB в hostPath на узле НЕ удаляется)
+	$(KUBECTL) delete -k $(MONITORING_OVERLAY) --ignore-not-found
+	@echo "namespace удалён; данные Prometheus/Grafana остались в /var/lib/sensitivityscore на ss-system"
+
 .PHONY: trimaran-deps
 trimaran-deps: ## Установить metrics-server (нужен профилю trimaran; см. scheduler_variants в harness/config.yaml)
 	# LoadVariationRiskBalancing (плечо A-trimaran) читает утилизацию нод через
@@ -200,7 +294,7 @@ trimaran-deps: ## Установить metrics-server (нужен профилю
 
 .PHONY: perfcheck-image
 perfcheck-image: ## Собрать образ perfcheck (изолированная PMU-проверка)
-	docker build -t andreyza/perfcheck:dev -f metrics-agent/cmd/perfcheck/Dockerfile ./metrics-agent
+	docker build --platform $(IMAGE_PLATFORM) -t andreyza/perfcheck:dev -f metrics-agent/cmd/perfcheck/Dockerfile ./metrics-agent
 
 .PHONY: perfcheck-push
 perfcheck-push: ## Запушить образ perfcheck в registry (узлы тянут его с imagePullPolicy: Always)
@@ -429,7 +523,7 @@ harness-clean-full: harness-clean-jobs ## Снести весь namespace хар
 
 .PHONY: image-harness
 image-harness: ## Собрать образ харнесса (python + kubectl) -> $(HARNESS_IMAGE)
-	docker build -t $(HARNESS_IMAGE) ./harness
+	docker build --platform $(IMAGE_PLATFORM) -t $(HARNESS_IMAGE) ./harness
 
 .PHONY: harness-rbac
 harness-rbac: ## Применить namespace/ServiceAccount/RBAC/PVC для in-cluster харнесса (один раз)

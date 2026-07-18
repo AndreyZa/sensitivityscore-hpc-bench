@@ -20,6 +20,7 @@ import (
 
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/cgroup"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/perf"
+	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/promexport"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/redisclient"
 )
 
@@ -101,6 +102,13 @@ func main() {
 		synth = &perf.SyntheticEstimator{}
 	}
 
+	// Зеркало узловых осей в Prometheus (pkg/promexport): Redis остаётся
+	// авторитетным для планировщика и харнесса, это — только наблюдаемость,
+	// поэтому сервер живёт в своей горутине и его падение не трогает сбор.
+	exporter := promexport.New(nodeName)
+	exporter.SetEnvironment(hwPMUAvailable, netRefMbps, llcRefMps)
+	go exporter.Serve(promexport.DefaultAddr)
+
 	log.Printf("metrics-agent starting on node=%s, sampling every %s", nodeName, sampleInterval)
 
 	// Per-pod sampling state, keyed by pod UID, kept across ticks: perf
@@ -116,7 +124,8 @@ func main() {
 		now := time.Now()
 		elapsed := now.Sub(lastTick)
 		lastTick = now
-		if err := sampleOnce(ctx, clientset, writer, nodeName, synth, samplers, nodePSI, netRefMbps, llcRefMps, elapsed); err != nil {
+		if err := sampleOnce(ctx, clientset, writer, exporter, nodeName, synth, samplers, nodePSI, netRefMbps, llcRefMps, elapsed); err != nil {
+			exporter.ObserveSampleError()
 			log.Printf("sample error: %v", err)
 		}
 	}
@@ -144,7 +153,10 @@ type nodePSISampler struct {
 
 // pressure returns the node's IO stall share over the window since the
 // previous call; 0 on the first (baseline) call and when PSI is unavailable.
-func (n *nodePSISampler) pressure() float64 {
+// The second return says whether the kernel exposes PSI at all — a zero share
+// on a PSI-less kernel means "axis off", not "no IO contention", and the
+// dashboard has to be able to tell those apart (ss_agent_psi_available).
+func (n *nodePSISampler) pressure() (float64, bool) {
 	now := time.Now()
 	psi, err := cgroup.ReadIOPressure(cgroupFSRoot)
 	if err != nil {
@@ -154,10 +166,12 @@ func (n *nodePSISampler) pressure() float64 {
 					"io_pressure will stay 0 (IO dimension effectively off)", cgroupFSRoot)
 				psiUnavailableWarned = true
 			}
-		} else {
-			log.Printf("node io.pressure read failed: %v (io_pressure=0 this tick)", err)
+			return 0, false
 		}
-		return 0
+		// Читаемый, но сбойный io.pressure — PSI в ядре есть, ось жива,
+		// нулём отдаём только этот тик.
+		log.Printf("node io.pressure read failed: %v (io_pressure=0 this tick)", err)
+		return 0, true
 	}
 
 	var p float64
@@ -169,7 +183,7 @@ func (n *nodePSISampler) pressure() float64 {
 	}
 	n.last = &psi
 	n.lastTS = now
-	return p
+	return p, true
 }
 
 // podSampler holds one pod's cross-tick sampling state: the open LLC/NUMA
@@ -341,7 +355,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 // it instead of perf_event_open() and tagged accordingly. samplers carries the
 // per-pod cross-tick state; pods that left the node are evicted (and their
 // counters closed) here.
-func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler, netRefMbps, llcRefMps float64, elapsed time.Duration) error {
+func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *redisclient.Writer, exporter *promexport.Exporter, nodeName string, synth *perf.SyntheticEstimator, samplers map[string]*podSampler, nodePSI *nodePSISampler, netRefMbps, llcRefMps float64, elapsed time.Duration) error {
 	pods, err := listLocalPods(ctx, clientset, nodeName)
 	if err != nil {
 		return err
@@ -449,6 +463,7 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 
 		if jobID, ok := p.annotations[annoJobID]; ok {
 			if err := writer.WriteJobMetrics(ctx, jobID, nodeName, sample); err != nil {
+				exporter.ObserveWriteError()
 				log.Printf("write job metrics for %s: %v", jobID, err)
 			}
 		}
@@ -476,12 +491,23 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 		nodeAgg.NUMARemoteRatio = clamp01(perf.Ratio(nodeDeltas.numaNum, nodeDeltas.numaDen))
 	}
-	nodeAgg.IOPressure = clamp01(nodePSI.pressure())
+	ioPressure, psiOK := nodePSI.pressure()
+	nodeAgg.IOPressure = clamp01(ioPressure)
 	// Node-level Net: the summed pod rx+tx rate against the same calibrated
 	// reference — bandwidth is additive, so the sum is the honest node figure.
 	nodeAgg.NetPressure = netPressure(nodeAgg.NetBW, netRefMbps)
 
-	return writer.WriteNodeMetrics(ctx, nodeName, nodeAgg)
+	// Зеркалим тик в Prometheus ДО записи в Redis: даже если Redis лежит,
+	// дашборд продолжает показывать оси, а сам факт отказа виден в
+	// ss_agent_redis_write_errors_total.
+	exporter.SetPSIAvailable(psiOK)
+	exporter.Publish(nodeAgg, sampledPods)
+
+	if err := writer.WriteNodeMetrics(ctx, nodeName, nodeAgg); err != nil {
+		exporter.ObserveWriteError()
+		return err
+	}
+	return nil
 }
 
 func clamp01(v float64) float64 {

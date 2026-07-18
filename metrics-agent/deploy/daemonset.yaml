@@ -16,6 +16,16 @@ spec:
     metadata:
       labels:
         app: sensitivityscore-metrics-agent
+      annotations:
+        # Скрейп-цель Prometheus (k8s/monitoring): узловые оси PressureVector
+        # зеркалятся в /metrics (pkg/promexport). На bench-узлах агент —
+        # ЕДИНСТВЕННАЯ цель мониторинга: node_exporter туда намеренно не
+        # ставится, чтобы не шуметь в LLC/IO измерительных узлов
+        # (docs «Ввод прод-стенда (Этап 0)» §2), а сам агент там и так уже
+        # работает — скрейп не добавляет на узел ни одного процесса.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: sensitivityscore-metrics-agent
       hostPID: true # needed to read /proc/<pid>/cgroup for non-pod processes (qemu-kvm, config B)
@@ -27,6 +37,10 @@ spec:
             capabilities:
               add: ["PERFMON", "SYS_PTRACE"] # SYS_PTRACE only needed for cross-namespace /proc reads (config B)
             privileged: false
+          ports:
+            - name: metrics
+              containerPort: 9101
+              protocol: TCP
           env:
             - name: NODE_NAME
               valueFrom:

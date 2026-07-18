@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sensitivityscore-monitoring
+
+resources:
+  - namespace.yaml
+  - prometheus-rbac.yaml
+  - prometheus-configmap.yaml
+  - prometheus-rules.yaml
+  - prometheus-deployment.yaml
+  - kube-state-metrics.yaml
+  - node-exporter-daemonset.yaml
+  - grafana.yaml
+  - grafana-dashboards.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sensitivityscore
+    # includeSelectors: false — метка идёт только в metadata.labels.
+    # commonLabels (устарел) писал её ещё и в selector/matchLabels, а это
+    # неизменяемое поле: любой будущий набор меток ломал бы apply на уже
+    # развёрнутом Deployment.
+    includeSelectors: false
+
+# Секрет grafana-admin намеренно НЕ здесь: пароль не должен лежать в git.
+# `make monitoring-deploy` создаёт его со случайным значением, если его ещё
+# нет (см. Makefile, цель monitoring-secret).

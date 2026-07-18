@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# STAGE: весь мониторинг — на ss-system (taint NoSchedule), как ClickHouse в
+# k8s/clickhouse/overlays/prod. Причина та же: не загрязнять LLC/IO/Net
+# измерительных узлов (docs «Ввод прод-стенда (Этап 0)» §2).
+patches:
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: prometheus
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: grafana
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: kube-state-metrics
+
+# Ресурсные лимиты в base уже посчитаны под STAGE-узел 2 vCPU / 2 ГБ:
+#   prometheus 256Mi/512Mi + grafana 128Mi/256Mi + KSM 32Mi/128Mi
+#   + node-exporter 32Mi/64Mi  =  ~450Mi requests.
+# Вместе с уже живущими там Redis/планировщиком/metrics-server это ~880Mi
+# запросов из ~1.8Gi allocatable. Запас под ClickHouse остаётся, но НЕ
+# бесконечный: когда CH приедет на STAGE, retention Prometheus придётся
+# ужать или разнести компоненты (на проде ss-system — 4 vCPU / 8 ГБ).
