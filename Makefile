@@ -26,24 +26,12 @@ METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
 AGGRESSOR_IMAGE         ?= $(REGISTRY)/aggressor:dev
 HARNESS_IMAGE           ?= $(REGISTRY)/harness:dev
 
-# Пуш в Docker Hub с ретраями. Встроенный прокси Docker Desktop
-# (http.docker.internal:3128, виден в `docker info`) рвёт upload'ы с EOF:
-# 2026-07-18 наблюдалось четыре отказа подряд, успех на пятой попытке, причём
-# `curl https://registry-1.docker.io/v2/` с того же хоста отвечал нормально —
-# то есть сеть жива, ломается именно демон. Радикальное лечение (перезапуск
-# Docker Desktop) убивает локальный kind-кластер, поэтому лечим ретраями.
-#
-# Пуш идемпотентен: уже залитые слои переиспользуются, повтор дешёвый и
-# безопасный. Между попытками пауза — прокси обычно оживает сам.
+# Прокси Docker Desktop рвёт upload'ы в Docker Hub с EOF — лечим ретраями.
 PUSH_RETRIES ?= 5
 PUSH_BACKOFF ?= 10
 
-# $(call docker_push,<image>)
-#
-# Отсутствующий локально образ — ошибка ПОСТОЯННАЯ, ретраить её бессмысленно
-# (иначе `make images-push` без предварительной сборки молча жуёт минуту на
-# каждый несобранный тег). Поэтому сначала дешёвая проверка наличия, и только
-# потом ретраи — они лечат ровно сетевую флакозность прокси.
+# $(call docker_push,<image>) — проверка наличия (ошибка постоянная, ретрай
+# бессмыслен), затем ретраи на сетевую флакозность.
 define docker_push
 @docker image inspect $(1) >/dev/null 2>&1 || { \
 	echo ">> НЕТ локального образа $(1) — сначала собери его (make images)."; \
@@ -57,18 +45,13 @@ define docker_push
 	fi; \
 done; \
 echo ">> ОШИБКА: $(1) не запушился за $(PUSH_RETRIES) попыток."; \
-echo ">> Прокси Docker Desktop, вероятно, лёг совсем. Варианты:"; \
-echo ">>   make PUSH_RETRIES=15 ... — упереться ретраями;"; \
-echo ">>   перезапустить Docker Desktop (УБЬЁТ локальный kind-кластер);"; \
-echo ">>   Settings -> Resources -> Proxies: снять 'Manual proxy configuration'."; \
+echo ">> Упереться: make PUSH_RETRIES=15 ...  Либо снять прокси в"; \
+echo ">> Docker Desktop -> Settings -> Resources -> Proxies (убьёт kind)."; \
 exit 1
 endef
 
-# Все узлы стенда — amd64 (`kubectl get nodes -o wide`). На Apple Silicon
-# `docker build` без --platform собирает arm64, и такой образ падает на узле
-# с "exec format error" уже ПОСЛЕ пуша, при следующем рестарте пода
-# (imagePullPolicy: Always) — то есть ломается не сборка, а стенд, и не сразу.
-# Целевую платформу задаём явно; на amd64-машине это no-op.
+# Узлы стенда amd64: без --platform сборка с Apple Silicon даёт arm64, и он
+# падает на узле "exec format error" уже после пуша. На amd64-хосте это no-op.
 IMAGE_PLATFORM          ?= linux/amd64
 
 # --- Kubernetes ---
@@ -131,11 +114,8 @@ scheduler-plugin-image: ## Собрать Docker-образ плагина в ф
 fmt-go: ## gofmt -w по metrics-agent
 	gofmt -l -w metrics-agent
 
-# GOOS=linux в vet/build: pkg/perf держится на perf_event_open и cgroupfs
-# (unix.PerfEventAttr, PERF_FLAG_PID_CGROUP) — на darwin этих символов в
-# x/sys/unix нет, и хостовый `go vet ./...` падает undefined, хотя агент
-# собирается и живёт только в linux-контейнере. Кросс-проверка под целевую
-# платформу, а не под платформу разработчика.
+# GOOS=linux: pkg/perf держится на perf_event_open/cgroupfs, на darwin этих
+# символов в x/sys/unix нет и хостовый go vet падает undefined.
 .PHONY: vet-go
 vet-go: ## go vet по metrics-agent (под целевой linux)
 	cd metrics-agent && GOOS=linux go vet ./...
@@ -225,18 +205,8 @@ net-sink-clean: ## Убрать sink-приёмник
 	$(KUBECTL) delete -f k8s/net-sink/sink.yaml --ignore-not-found
 
 # ---------------------------------------------------------------------------
-# Мониторинг (k8s/monitoring) — Prometheus + Grafana + kube-state-metrics на
-# ss-system. Без оператора и без Helm: репозиторий живёт на сырых манифестах,
-# а на 2-ГБ системном узле prometheus-operator стоил бы ~100 Mi ни за что.
-#
-# ЧИСТОТА ИЗМЕРЕНИЙ: node_exporter стоит ТОЛЬКО на ss-system. Узловые метрики
-# bench снимаются с kubelet/cAdvisor и с metrics-agent, которые там и так
-# работают, — на измерительные узлы не добавляется ни одного процесса
-# (docs «Ввод прод-стенда (Этап 0)» §2).
-#
-# Доступ — только через port-forward (`make monitoring-open`): Service'ы
-# ClusterIP намеренно, у узлов стенда белые IP и NodePort выставил бы
-# Grafana/Prometheus в интернет.
+# Мониторинг — Prometheus + Grafana на ss-system. Обоснование схемы сбора и
+# чистоты измерений: k8s/monitoring/README.md.
 # ---------------------------------------------------------------------------
 
 MONITORING_NAMESPACE ?= sensitivityscore-monitoring
