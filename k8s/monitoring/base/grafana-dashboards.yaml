@@ -71,7 +71,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_agent_pmu_hardware_available{node=~\"$node\"}",
+              "expr": "max by (node) (ss_agent_pmu_hardware_available{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -131,7 +131,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_agent_llc_calibrated{node=~\"$node\"}",
+              "expr": "max by (node) (ss_agent_llc_calibrated{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -191,7 +191,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_agent_net_calibrated{node=~\"$node\"}",
+              "expr": "max by (node) (ss_agent_net_calibrated{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -238,7 +238,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_agent_psi_available{node=~\"$node\"}",
+              "expr": "max by (node) (ss_agent_psi_available{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -285,7 +285,7 @@ data:
           },
           "targets": [
             {
-              "expr": "time() - ss_agent_last_sample_timestamp_seconds{node=~\"$node\"}",
+              "expr": "time() - max by (node) (ss_agent_last_sample_timestamp_seconds{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -348,7 +348,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_llc_misses_per_sec{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_llc_misses_per_sec{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -380,7 +380,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_llc_miss_rate{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_llc_miss_rate{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -427,7 +427,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_io_pressure{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_io_pressure{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -461,7 +461,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_numa_remote_ratio{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_numa_remote_ratio{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -495,7 +495,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_net_bw_bytes_per_second{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_net_bw_bytes_per_second{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -526,7 +526,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_io_iops{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_io_iops{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -557,7 +557,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_node_net_pressure{node=~\"$node\"}",
+              "expr": "max by (node) (ss_node_net_pressure{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -591,7 +591,7 @@ data:
           },
           "targets": [
             {
-              "expr": "ss_agent_sampled_pods{node=~\"$node\"}",
+              "expr": "max by (node) (ss_agent_sampled_pods{node=~\"$node\"})",
               "legendFormat": "{{node}}",
               "refId": "A"
             }
@@ -708,7 +708,7 @@ data:
           },
           "targets": [
             {
-              "expr": "count(ss_agent_last_sample_timestamp_seconds)",
+              "expr": "count(count by (node) (ss_agent_last_sample_timestamp_seconds))",
               "refId": "A"
             }
           ],
@@ -751,7 +751,7 @@ data:
           },
           "targets": [
             {
-              "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+              "expr": "1 - avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
               "refId": "A"
             }
           ],
@@ -801,7 +801,7 @@ data:
           },
           "targets": [
             {
-              "expr": "1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
+              "expr": "1 - avg(node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})",
               "refId": "A"
             }
           ],

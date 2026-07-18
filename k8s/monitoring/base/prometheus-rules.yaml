@@ -17,7 +17,7 @@ data:
             # Планировщик читает node:metrics:<node> с TTL 30s. Если агент
             # встал, ключ протухает и Score() работает на пустых данных —
             # молча, без ошибок в логе плагина.
-            expr: time() - ss_agent_last_sample_timestamp_seconds > 60
+            expr: time() - max by (node) (ss_agent_last_sample_timestamp_seconds) > 60
             for: 1m
             labels: {severity: critical}
             annotations:
@@ -25,17 +25,20 @@ data:
               description: "Redis-ключ node:metrics:{{ $labels.node }} (TTL 30s) протухает — планировщик скорит на пустых данных."
 
           - alert: SSAgentDown
-            expr: up{job="kubernetes-pods", app="sensitivityscore-metrics-agent"} == 0
+            # job здесь — sensitivityscore-metrics-agent, а не kubernetes-pods:
+            # агент вынесен в свою job (интервал 10s), и прежнее условие по
+            # kubernetes-pods+app молча не срабатывало бы никогда.
+            expr: max by (node) (up{job="sensitivityscore-metrics-agent"}) == 0
             for: 2m
             labels: {severity: critical}
             annotations:
-              summary: "metrics-agent недоступен на {{ $labels.instance_node }}"
+              summary: "metrics-agent недоступен на {{ $labels.node }}"
 
           - alert: SSPMUSynthetic
             # Синтетика — режим для dev-бокса. На стенде это значит, что
             # perf_event_open не отдаёт честные счётчики: LLC/NUMA-цифры серии
             # непригодны (docs §1а, perfcheck).
-            expr: ss_agent_pmu_hardware_available == 0
+            expr: max by (node) (ss_agent_pmu_hardware_available) == 0
             for: 5m
             labels: {severity: critical}
             annotations:
@@ -48,7 +51,7 @@ data:
             # нагрузкой (STAGE 2026-07-14: 0.018 под штормом против 0.33 на
             # простое). Дашборд покажет «чистый» узел ровно тогда, когда он
             # максимально загружен.
-            expr: ss_agent_llc_calibrated == 0
+            expr: max by (node) (ss_agent_llc_calibrated) == 0
             for: 15m
             labels: {severity: warning}
             annotations:
@@ -56,7 +59,7 @@ data:
               description: "llc_miss_rate — сырой ratio, инвертируется под нагрузкой. Снять llc_misses_per_sec под 2x stress-ng --stream и выставить LLC_REFERENCE_MISSES_PER_SEC."
 
           - alert: SSNetUncalibrated
-            expr: ss_agent_net_calibrated == 0
+            expr: max by (node) (ss_agent_net_calibrated) == 0
             for: 15m
             labels: {severity: warning}
             annotations:
@@ -64,7 +67,7 @@ data:
               description: "net_pressure=0 честно, но ось не участвует в Score(). make netcheck-run && make netcheck-apply."
 
           - alert: SSPSIUnavailable
-            expr: ss_agent_psi_available == 0
+            expr: max by (node) (ss_agent_psi_available) == 0
             for: 15m
             labels: {severity: warning}
             annotations:
@@ -72,7 +75,7 @@ data:
               description: "Нет cgroup io.pressure: ядру нужен psi=1 (docs §5). io_pressure будет нулём, и это не «нет нагрузки»."
 
           - alert: SSRedisWriteErrors
-            expr: rate(ss_agent_redis_write_errors_total[5m]) > 0
+            expr: sum by (node) (rate(ss_agent_redis_write_errors_total[5m])) > 0
             for: 5m
             labels: {severity: critical}
             annotations:
@@ -85,7 +88,7 @@ data:
             # ss-system на STAGE — 2 ГБ. Здесь живут Redis, планировщик,
             # metrics-server, весь мониторинг и (в планах) ClickHouse.
             # Вытеснение отсюда роняет горячий путь планировщика.
-            expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.15
+            expr: min(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
             for: 5m
             labels: {severity: critical}
             annotations:
