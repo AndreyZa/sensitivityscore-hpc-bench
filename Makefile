@@ -700,8 +700,8 @@ ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make c
 # ПК (или отсутствие прод-кластера) не должно мешать залить во второй. Поэтому
 # цикл не прерывается на первой ошибке, а в конце печатает команду долива
 # именно того приёмника, который не взлетел. Повторная заливка безопасна:
-# таблицы — ReplacingMergeTree(ingested_at), тот же прогон заменит строки,
-# а не продублирует (db/clickhouse/schema.sql).
+# таблицы — ReplacingMergeTree(ingested_at), версии схлопываются при мерже,
+# а читатели селектят с FINAL (analysis/clickhouse_source.py).
 .PHONY: ch-load-all
 ch-load-all: venv-clickhouse ## Залить results+baselines во ВСЕ приёмники: make ch-load-all STAND=<s> RUN_LABEL=<l> [CH_SINKS="prod home"]
 	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии>"; exit 1; }

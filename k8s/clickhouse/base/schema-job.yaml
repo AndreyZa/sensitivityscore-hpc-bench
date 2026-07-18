@@ -23,12 +23,19 @@ spec:
           image: clickhouse/clickhouse-server:25.3
           command: ["/bin/bash", "-c"]
           args:
+            # set -e обязателен: без него неудачный apply не прерывал скрипт —
+            # печаталось "schema applied", а Job падал лишь потому, что
+            # следующий SHOW TABLES не находил БД. При обновлении схемы поверх
+            # существующих таблиц это была бы тихая ложь: CREATE TABLE
+            # IF NOT EXISTS делает повтор no-op, старые таблицы на месте,
+            # SHOW TABLES проходит — Job рапортует успех, а новых колонок нет.
             - |
+              set -eu
               until clickhouse-client --host clickhouse -q "SELECT 1" >/dev/null 2>&1; do
-                echo "waiting for clickhouse service..."; sleep 3;
+                echo "ждём сервис clickhouse..."; sleep 3;
               done
               clickhouse-client --host clickhouse --multiquery < /schema/schema.sql
-              echo "schema applied:"; clickhouse-client --host clickhouse -q "SHOW TABLES FROM sensitivityscore"
+              echo "схема применена:"; clickhouse-client --host clickhouse -q "SHOW TABLES FROM sensitivityscore"
           volumeMounts:
             - name: schema
               mountPath: /schema
