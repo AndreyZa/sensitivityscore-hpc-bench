@@ -239,8 +239,8 @@ data:
           "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 8, "showPoints": "never", "drawStyle": "bars", "stacking": {"mode": "normal"}}}}
         },
         {
-          "type": "timeseries", "title": "Системные компоненты — память (limit 256Mi/512Mi)",
-          "description": "Redis, планировщик и агент на ss-system. Приближение к лимиту здесь means OOMKill горячего пути планировщика.",
+          "type": "timeseries", "title": "Системные компоненты — память",
+          "description": "Redis, планировщик, агент и сам мониторинг на ss-system. Приближение к лимиту пода — это OOMKill горячего пути планировщика. Лимиты различаются по стендам (на проде ВМ 4 vCPU/8 ГБ против 2/2 на STAGE), поэтому в заголовке не зашиты.",
           "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
           "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
           "targets": [{"expr": "sum by (pod) (container_memory_working_set_bytes{namespace=~\"sensitivityscore-system|sensitivityscore-monitoring\"})", "legendFormat": "{{pod}}", "refId": "A"}],

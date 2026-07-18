@@ -1,0 +1,42 @@
+# Прод: тот же ss-system, но ВМ 4 vCPU / 8 ГБ / 100 ГБ против 2/2/40 на STAGE
+# (docs «Ввод прод-стенда (Этап 0)» §4), и bench-узлы — 3× R760 по 64 ядра /
+# 128 потоков. Целей и рядов будет ощутимо больше, чем на STAGE, а места под
+# них наконец хватает.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  template:
+    spec:
+      containers:
+        - name: prometheus
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            # Год истории: серии прода — это материал диссертации, их нужно
+            # сравнивать между собой спустя месяцы. При ~30 целях реальный
+            # объём за год — единицы-десятки ГБ, так что 60 ГБ упереться не
+            # должны; это страховка диска, а не рабочий предел. Хранилище —
+            # hostPath на 100-ГБ диске ss-system, запас остаётся.
+            - --storage.tsdb.retention.time=365d
+            - --storage.tsdb.retention.size=60GB
+            - --enable-feature=expand-external-labels
+            - --web.enable-lifecycle
+            - --web.console.libraries=/usr/share/prometheus/console_libraries
+            - --web.console.templates=/usr/share/prometheus/consoles
+          env:
+            # Провенанс: с ним прод-ряды не смешаются со stage ни в Grafana,
+            # ни при выгрузке (ср. `make ch-load STAND=prod`).
+            - name: STAND
+              value: prod
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              # 2Gi против 512Mi на STAGE: cAdvisor на 128-поточном
+              # bare-metal узле даёт кратно больше рядов, чем на 2-ядерной
+              # облачной ноде, а 8-ГБ ВМ это позволяет.
+              cpu: "1500m"
+              memory: "2Gi"

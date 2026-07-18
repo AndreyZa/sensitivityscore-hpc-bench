@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Прод. Отличия от stage — только размерность узла и провенанс; схема сбора
+# (node_exporter лишь на ss-system, метрики bench с kubelet/cAdvisor и агента)
+# одинакова на обоих стендах и живёт в base.
+#
+# Разметка ролей на проде та же — `scripts/bootstrap-cluster.sh <ss-system-ВМ>`
+# вешает node-role.kubernetes.io/ss-system + taint и роль bench остальным,
+# поэтому placement-патч ниже работает без правок.
+#
+# Хранилище — hostPath, как на stage (не PVC): под прибит к ss-system
+# nodeSelector'ом, диск ВМ 100 ГБ, retention поднят под него.
+patches:
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: prometheus
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: grafana
+  - path: placement-patch.yaml
+    target:
+      kind: Deployment
+      name: kube-state-metrics
+  - path: prometheus-prod-patch.yaml
+    target:
+      kind: Deployment
+      name: prometheus
+  - path: grafana-prod-patch.yaml
+    target:
+      kind: Deployment
+      name: grafana

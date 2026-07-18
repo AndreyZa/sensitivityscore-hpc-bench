@@ -15,7 +15,12 @@ data:
       scrape_interval: 30s
       evaluation_interval: 30s
       external_labels:
-        stand: stage
+        # Провенанс данных, а не косметика: метка stand отличает прогоны
+        # стендов друг от друга (ср. `make ch-load STAND=prod`). Значение
+        # подставляется из переменной окружения STAND (см. Deployment,
+        # --enable-feature=expand-external-labels), чтобы prod-overlay менял
+        # одну переменную, а не копировал весь конфиг.
+        stand: ${STAND}
 
     rule_files:
       - /etc/prometheus/rules/*.yaml

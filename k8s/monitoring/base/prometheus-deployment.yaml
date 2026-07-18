@@ -44,14 +44,20 @@ spec:
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/data
-            # 30 суток покрывают серию с запасом и позволяют сравнить прогоны
-            # между собой; ограничение по размеру — страховка от 40-ГБ диска
-            # STAGE, TSDB сам удалит старые блоки, не дожидаясь retention.
+            # Retention здесь — под 40-ГБ диск STAGE; prod-overlay поднимает
+            # его под 100 ГБ. Ограничение по размеру страхует диск: TSDB
+            # удалит старые блоки, не дожидаясь retention.time.
             - --storage.tsdb.retention.time=30d
             - --storage.tsdb.retention.size=6GB
+            # Подстановка ${STAND} в external_labels (см. ConfigMap): overlay
+            # меняет одну env-переменную вместо копии всего scrape-конфига.
+            - --enable-feature=expand-external-labels
             - --web.enable-lifecycle # POST /-/reload вместо перезапуска пода
             - --web.console.libraries=/usr/share/prometheus/console_libraries
             - --web.console.templates=/usr/share/prometheus/consoles
+          env:
+            - name: STAND
+              value: stage
           ports:
             - name: web
               containerPort: 9090

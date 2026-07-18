@@ -210,7 +210,7 @@ net-sink-clean: ## Убрать sink-приёмник
 # ---------------------------------------------------------------------------
 
 MONITORING_NAMESPACE ?= sensitivityscore-monitoring
-MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage
+MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage   # прод: k8s/monitoring/overlays/prod
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
 
