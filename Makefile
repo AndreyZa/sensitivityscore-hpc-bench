@@ -650,6 +650,17 @@ CH_SSH         ?= andrey@192.168.1.72
 CH_TUNNEL_PORT ?= 8123
 CH_SOCK        ?= /tmp/ch-tunnel-$(CH_TUNNEL_PORT).sock
 
+# Результаты льются в ДВА приёмника (ch-load-all):
+#   prod — in-cluster ClickHouse прод-стенда (make ch-forward),
+#   home — домашний ПК-агрегатор, кросс-стендовая агрегация (make ch-tunnel).
+# Порты локальные и РАЗНЫЕ намеренно: туннель к дому уже занимает 8123, а оба
+# приёмника должны быть доступны одновременно, иначе «залить в оба» не выйдет.
+CH_SINKS     ?= prod home
+CH_PROD_HOST ?= localhost
+CH_PROD_PORT ?= 8124
+CH_HOME_HOST ?= localhost
+CH_HOME_PORT ?= $(CH_TUNNEL_PORT)
+
 .PHONY: ch-tunnel
 ch-tunnel: ## Поднять SSH-туннель к ПК-агрегатору (CH_SSH=user@host); дальше ch-load CH_HOST=localhost
 	@if ssh -S $(CH_SOCK) -O check $(CH_SSH) 2>/dev/null; then \
@@ -683,6 +694,50 @@ ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make c
 		--host $(CH_HOST) --port $(CH_PORT) --user $(CH_USER) --password "$(CH_PASSWORD)" \
 		--database $(CH_DATABASE) --stand $(STAND) --run-label $(RUN_LABEL) \
 		--results $(RESULTS_FILE) --baselines $(BASELINES_FILE)
+
+# Заливка в оба приёмника. Устойчивость к недоступности одного из них здесь
+# принципиальна: источник истины — parquet на диске, поэтому падение домашнего
+# ПК (или отсутствие прод-кластера) не должно мешать залить во второй. Поэтому
+# цикл не прерывается на первой ошибке, а в конце печатает команду долива
+# именно того приёмника, который не взлетел. Повторная заливка безопасна:
+# таблицы — ReplacingMergeTree(ingested_at), тот же прогон заменит строки,
+# а не продублирует (db/clickhouse/schema.sql).
+.PHONY: ch-load-all
+ch-load-all: venv-clickhouse ## Залить results+baselines во ВСЕ приёмники: make ch-load-all STAND=<s> RUN_LABEL=<l> [CH_SINKS="prod home"]
+	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии>"; exit 1; }
+	@# Загрузчик на отсутствующий файл лишь предупреждает и выходит с 0 (чтобы
+	@# можно было залить только --results или только --baselines). Здесь это
+	@# опасно: цель отрапортовала бы «залито во все приёмники», не залив ничего.
+	@test -f $(RESULTS_FILE) || test -f $(BASELINES_FILE) || { \
+		echo "нет ни $(RESULTS_FILE), ни $(BASELINES_FILE) — сначала make harness-fetch-results"; exit 1; }
+	@failed=""; \
+	for sink in $(CH_SINKS); do \
+		case $$sink in \
+			prod) host="$(CH_PROD_HOST)"; port="$(CH_PROD_PORT)"; hint="make ch-forward";; \
+			home) host="$(CH_HOME_HOST)"; port="$(CH_HOME_PORT)"; hint="make ch-tunnel";; \
+			*) echo "неизвестный приёмник: $$sink (ожидается prod и/или home)"; exit 1;; \
+		esac; \
+		echo ""; echo "=== $$sink -> $$host:$$port ==="; \
+		if $(CH_VENV)/bin/python db/clickhouse/load_parquet.py \
+			--host "$$host" --port "$$port" --user $(CH_USER) --password "$(CH_PASSWORD)" \
+			--database $(CH_DATABASE) --stand $(STAND) --run-label $(RUN_LABEL) \
+			--results $(RESULTS_FILE) --baselines $(BASELINES_FILE); then \
+			echo "  OK: $$sink"; \
+		else \
+			echo "  ОШИБКА: приёмник $$sink недоступен (поднят ли $$hint?)"; \
+			echo "  parquet на месте — долить позже одной командой:"; \
+			echo "    make ch-load-all CH_SINKS=$$sink STAND=$(STAND) RUN_LABEL=$(RUN_LABEL)"; \
+			failed="$$failed $$sink"; \
+		fi; \
+	done; \
+	echo ""; \
+	if [ -n "$$failed" ]; then echo "НЕ залито:$$failed — см. команды долива выше"; exit 1; fi; \
+	echo "залито во все приёмники: $(CH_SINKS)"
+
+.PHONY: ch-forward
+ch-forward: ## Проброс in-cluster ClickHouse на localhost:$(CH_PROD_PORT) (Ctrl-C — закрыть)
+	@echo "ClickHouse (in-cluster) -> localhost:$(CH_PROD_PORT); дальше в другом окне: make ch-load-all"
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) port-forward svc/clickhouse $(CH_PROD_PORT):8123
 
 .PHONY: ch-analyze
 ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)

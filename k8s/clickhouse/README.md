@@ -43,6 +43,27 @@ make ch-load    CH_HOST=clickhouse.sensitivityscore-system.svc STAND=prod RUN_LA
 make ch-analyze CH_HOST=<host> STAND=prod RUN_LABEL=<l>
 ```
 
+## Два приёмника результатов
+
+Результаты серии льются и в этот in-cluster CH (стенд), и в домашний
+ПК-агрегатор (кросс-стендовая агрегация) — `make ch-load-all`:
+
+```bash
+make ch-forward &        # in-cluster CH -> localhost:8124
+make ch-tunnel           # ПК-агрегатор  -> localhost:8123
+make ch-load-all STAND=prod RUN_LABEL=<серия>
+```
+
+Порты локальные и разные намеренно: туннель к дому уже занимает 8123, а лить
+нужно в оба.
+
+Недоступность одного приёмника не мешает залить во второй: источник истины —
+`results.parquet` на диске, поэтому цикл не прерывается на первой ошибке, а в
+конце печатает команду долива именно того приёмника, который не взлетел
+(`make ch-load-all CH_SINKS=home ...`). Долив безопасен: таблицы —
+`ReplacingMergeTree(ingested_at)`, тот же прогон заменит строки, а не
+продублирует.
+
 ## Центральная агрегация нескольких стендов
 
 CH per стенд (in-cluster) фрагментирует данные — для кросс-стенд анализа один
@@ -57,4 +78,6 @@ SELECT * FROM remoteSecure('prod-ch:9440', sensitivityscore.results, 'user', 'pa
 
 Манифесты протестированы на docker-desktop (k8s 1.35): StatefulSet+PVC поднялся,
 schema-Job накатил таблицы, загрузчик залил данные через port-forward. На проде
-не разворачивалось (стенда ещё нет) — применять prod-overlay, когда появится.
+не разворачивалось (стенда ещё нет) — деплой входит в `make provision`
+провижнера (шаг `clickhouse`, после `storage`: PVC просит том без
+`storageClassName` и без класса по умолчанию повиснет в Pending).

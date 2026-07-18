@@ -153,11 +153,23 @@ def _load_one(path: Path, table: str, args) -> int:
         return len(rows)
 
     import clickhouse_connect  # импорт здесь: dry-run не требует клиента
-    client = clickhouse_connect.get_client(
-        host=args.host, port=args.port, username=args.user,
-        password=args.password, database=args.database,
-    )
-    client.insert(table, rows, column_names=INSERT_COLUMNS)
+    # Недоступный приёмник — штатная ситуация (ПК-агрегатор выключен, прод-порт
+    # не проброшен), а не баг загрузчика: parquet на диске остаётся источником
+    # истины, залить можно позже. Поэтому одна внятная строка вместо трейсбека.
+    # OperationalError — уровень соединения (порт закрыт, туннель не поднят);
+    # clickhouse_connect заворачивает в него в т.ч. ConnectionRefusedError,
+    # поэтому ловим его, а не OSError.
+    from clickhouse_connect.driver.exceptions import OperationalError
+    try:
+        client = clickhouse_connect.get_client(
+            host=args.host, port=args.port, username=args.user,
+            password=args.password, database=args.database,
+        )
+        client.insert(table, rows, column_names=INSERT_COLUMNS)
+    except OperationalError as e:
+        raise SystemExit(f"ERROR: нет связи с ClickHouse {args.host}:{args.port} — {e}")
+    except Exception as e:  # ошибки схемы/типов: приёмник ответил, но вставку не принял
+        raise SystemExit(f"ERROR: ClickHouse {args.host}:{args.port} не принял вставку в {table} — {e}")
     print(f"  залито в {args.database}.{table}")
     return len(rows)
 
