@@ -274,6 +274,42 @@ EOF
     leftovers=$(kubectl -n $BENCH_NS get pods --no-headers 2>/dev/null | wc -l)
     [ "$leftovers" -eq 0 ] || fail "$leftovers чужих подов в $BENCH_NS (эталонам нужен пустой кластер) — make harness-clean-jobs"
     ok "bench-namespace пуст"
+
+    # Ни один служебный под не должен стоять на измерительном узле. Проверка
+    # не дублирует предыдущую: та требует ПУСТОЙ bench-namespace, а эта ловит
+    # инфраструктуру в ЛЮБОМ неймспейсе (мониторинг, статус-страница, харнесс-
+    # Job'ы, reader) — то есть ровно тот случай, когда посторонний процесс
+    # шумит на LLC и памяти узла, чувствительность которого серия измеряет.
+    # Смещение систематическое и в логах не видно, поэтому ловим до старта.
+    # Исключения — то, чему на bench быть ПОЛОЖЕНО:
+    #   ss-aggressor      генераторы фоновой нагрузки, они и есть интерференция
+    #   geant4-*, bench-* жертвы (собственно измеряемые задачи)
+    #   ss-sink           приёмник стрима, пиннится к bench-узлу манифестом
+    #                     k8s/net-sink/sink-stage.yaml (серия net-diff)
+    #   metrics-agent     DaemonSet, сам измерительный инструмент: он ОБЯЗАН
+    #                     быть на каждом bench-узле, иначе оси не считаются
+    #   kube-system       базовая обвязка k0s (calico, coredns, kube-proxy) —
+    #                     не наша, снять её нельзя, и она одинакова на всех
+    #                     узлах, то есть в разность плеч не входит
+    local bench_nodes intruders
+    bench_nodes=$(kubectl get nodes -l node-role.kubernetes.io/bench \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    if [ -n "$bench_nodes" ]; then
+        intruders=$(kubectl get pods -A -o \
+            custom-columns=NS:.metadata.namespace,N:.metadata.name,NODE:.spec.nodeName \
+            --no-headers 2>/dev/null \
+            | awk -v nodes="$bench_nodes" '
+                BEGIN { split(nodes, a, " "); for (i in a) bench[a[i]] = 1 }
+                $3 in bench &&
+                $2 !~ /^(ss-aggressor|ss-sink|geant4|bench-)/ &&
+                $2 !~ /metrics-agent/ &&
+                $1 !~ /^(kube-system|kube-node-lease|kube-public)$/ { print "        " $1 "/" $2 " -> " $3 }')
+        if [ -n "$intruders" ]; then
+            echo "$intruders"
+            fail "служебные поды на измерительных узлах (замеры будут смещены)"
+        fi
+        ok "на измерительных узлах нет посторонних подов"
+    fi
     echo "=== preflight пройден ==="
 }
 

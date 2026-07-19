@@ -16,6 +16,19 @@ spec:
     spec:
       serviceAccountName: harness-runner
       restartPolicy: Never
+      # Пиннинг КРИТИЧЕН для валидности замеров: харнесс — посторонний
+      # процесс, а весь стенд построен на том, что на измерительных узлах
+      # (bench) не крутится ничего лишнего. Без nodeSelector планировщик
+      # клал этот под на bench, и он весь прогон шумел на LLC и памяти
+      # ровно того узла, чувствительность которого серия и измеряет —
+      # систематическое смещение, не видное ни в одном логе.
+      # Толерантность нужна: ss-system несёт taint NoSchedule.
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: harness
           image: andreyza/harness:dev

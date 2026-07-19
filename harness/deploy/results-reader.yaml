@@ -9,6 +9,18 @@ metadata:
   name: harness-results-reader
   namespace: sensitivityscore-bench
 spec:
+  # Пиннинг КРИТИЧЕН для валидности замеров: этот под — посторонний процесс,
+  # а весь стенд построен на том, что на измерительных узлах (bench) не
+  # крутится ничего лишнего. Без nodeSelector планировщик клал его на bench,
+  # и он жил там часами (sleep 3600, к тому же оставляется намеренно для
+  # повторных kubectl cp), шумя на узле, чувствительность которого серия и
+  # измеряет. Толерантность нужна: ss-system несёт taint NoSchedule.
+  nodeSelector:
+    node-role.kubernetes.io/ss-system: ""
+  tolerations:
+    - key: node-role.kubernetes.io/ss-system
+      operator: Exists
+      effect: NoSchedule
   containers:
     - name: reader
       image: busybox:1.36
