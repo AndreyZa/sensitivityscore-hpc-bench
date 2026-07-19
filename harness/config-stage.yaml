@@ -74,6 +74,9 @@ backends:
 
 kubernetes:
   namespace: sensitivityscore-bench
+  # Где живут Redis, планировщик и ConfigMap'ы калибровок/весов —
+  # оттуда harness/provenance.py снимает провенанс серии.
+  system_namespace: sensitivityscore-system
   job_timeout_seconds: 900
   poll_interval_seconds: 5
 

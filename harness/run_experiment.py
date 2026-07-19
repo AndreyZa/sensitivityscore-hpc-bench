@@ -58,9 +58,26 @@ sys.path.insert(
     0, str(Path(__file__).parent)
 )  # allow `from submit import ...` / `from profiles import ...`
 
+import provenance
 from profiles import PROFILES, make_job_id
 from submit import aggressors, k8s_submit, node_pressure, slurm_submit
 from submit.redis_metrics import purge_job_metrics
+
+# Провенанс серии: чем снята строка (коммит, конфиг, калибровки, веса).
+# Постоянен в пределах прогона, поэтому собирается один раз и подмешивается
+# в каждую строку — включая строки ошибок, иначе неудачные точки плана
+# оказались бы без контекста ровно там, где он нужнее всего.
+# Модульный уровень, а не параметр: строки собираются в шести местах, и
+# протаскивать неизменяемое значение через все — больше шансов забыть.
+_PROVENANCE: dict[str, str] = {}
+
+
+def init_provenance(cfg: dict, config_path: str) -> None:
+    global _PROVENANCE
+    _PROVENANCE = provenance.collect(
+        config_path,
+        cfg.get("kubernetes", {}).get("system_namespace", "sensitivityscore-system"),
+    )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("run_experiment")
@@ -144,6 +161,7 @@ def error_row(
         "interference_chosen": float("nan"),
         "placement_regret": float("nan"),
         **sensitivity_columns(profile),
+        **_PROVENANCE,
     }
     row.update(extra)
     return row
@@ -247,6 +265,12 @@ def run_one(
         row["interference_chosen"] = chosen
         row["placement_regret"] = regret
         row.update(sensitivity_columns(profile))
+        # Провенанс серии сначала, затем workload_image из самой строки:
+        # digest резолвится на под, а не на серию (imagePullPolicy: Always
+        # означает, что пуш нового образа переключает часть Job'ов прямо
+        # посреди прогона — именно это и нужно увидеть в данных).
+        for key, value in _PROVENANCE.items():
+            row.setdefault(key, value)
         return row
     finally:
         # Always clean up, including on wait timeout/failure — a job left
@@ -728,6 +752,8 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+
+    init_provenance(cfg, args.config)
 
     if args.pressure and args.baseline:
         parser.error("--pressure and --baseline are mutually exclusive")

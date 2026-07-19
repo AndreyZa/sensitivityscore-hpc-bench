@@ -80,6 +80,9 @@ backends:
 # Kubernetes connection (used by submit/k8s_submit.py)
 kubernetes:
   namespace: sensitivityscore-bench
+  # Где живут Redis, планировщик и ConfigMap'ы калибровок/весов —
+  # оттуда harness/provenance.py снимает провенанс серии.
+  system_namespace: sensitivityscore-system
   job_timeout_seconds: 1800
   poll_interval_seconds: 5 # Job status poll (completion OR failure — fast fail)
 

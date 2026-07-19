@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.results
     -- диагностика
     approximation      String,                   -- ok / missing / synthetic / error:<...>
     source_file        String,
+    -- провенанс прогона: чем именно снята строка (harness/provenance.py).
+    -- DEFAULT '' — девять STAGE-серий сняты до введения провенанса; пустое
+    -- значение честно читается как «восстановить нельзя», а не как факт.
+    harness_commit     LowCardinality(String) DEFAULT '',  -- git HEAD харнесса (+-dirty)
+    config_sha256      LowCardinality(String) DEFAULT '',  -- sha256 конфига серии
+    workload_image     LowCardinality(String) DEFAULT '',  -- разрешённый digest образа, не тег
+    calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
+    score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
@@ -92,6 +100,14 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.baselines
     sensitivity_io     LowCardinality(String),
     approximation      String,
     source_file        String,
+    -- провенанс прогона: чем именно снята строка (harness/provenance.py).
+    -- DEFAULT '' — девять STAGE-серий сняты до введения провенанса; пустое
+    -- значение честно читается как «восстановить нельзя», а не как факт.
+    harness_commit     LowCardinality(String) DEFAULT '',  -- git HEAD харнесса (+-dirty)
+    config_sha256      LowCardinality(String) DEFAULT '',  -- sha256 конфига серии
+    workload_image     LowCardinality(String) DEFAULT '',  -- разрешённый digest образа, не тег
+    calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
+    score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)

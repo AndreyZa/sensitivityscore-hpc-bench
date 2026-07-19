@@ -695,6 +695,16 @@ venv-clickhouse: $(CH_VENV)/bin/activate ## Создать/обновить venv
 ch-schema: ## Применить schema.sql на ПК-агрегаторе (нужен clickhouse-client; CH_HOST=<PC>)
 	clickhouse-client --host $(CH_HOST) --multiquery < db/clickhouse/schema.sql
 
+# schema.sql создаёт таблицы через IF NOT EXISTS и потому не меняет уже
+# существующие — новые колонки накатываются миграциями.
+.PHONY: ch-migrate
+ch-migrate: ## Накатить миграции схемы на приёмник: make ch-migrate CH_HOST=<хост>
+	@for m in db/clickhouse/migrations/*.sql; do \
+		echo "-> $$m"; \
+		clickhouse-client --host $(CH_HOST) --port 9000 --multiquery < "$$m" || exit 1; \
+	done
+	@echo "миграции применены"
+
 .PHONY: ch-load
 ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make ch-load CH_HOST=<PC> STAND=<s> RUN_LABEL=<l>
 	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии>"; exit 1; }

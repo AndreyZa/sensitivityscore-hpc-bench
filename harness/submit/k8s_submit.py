@@ -131,6 +131,9 @@ class K8sJobHandle:
         # clock) — the honest makespan, comparable to Slurm's sacct Elapsed.
         self.container_start: float | None = None
         self.container_end: float | None = None
+        # Разрешённый digest образа нагрузки (provenance): тег :dev
+        # перезаписывается, digest — нет.
+        self.workload_image: str = ""
 
 
 def submit_job(
@@ -251,19 +254,26 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
             "-l",
             f"job-name={handle.k8s_name}",
             "-o",
+            # imageID тем же запросом: это РАЗРЕШЁННЫЙ digest, а не тег.
+            # Тег :dev перезаписывается, а imagePullPolicy: Always означает,
+            # что пуш нового образа переключает часть Job'ов даже внутри одной
+            # серии — по тегу это неотличимо, по digest видно построчно.
             "jsonpath={.items[0].spec.nodeName}"
             "{'|'}{.items[0].status.containerStatuses[0].state.terminated.startedAt}"
-            "{'|'}{.items[0].status.containerStatuses[0].state.terminated.finishedAt}",
+            "{'|'}{.items[0].status.containerStatuses[0].state.terminated.finishedAt}"
+            "{'|'}{.items[0].status.containerStatuses[0].imageID}",
         ],
         check=True,
         capture_output=True,
         text=True,
     )
-    node, _, times = result.stdout.strip().partition("|")
-    started_raw, _, finished_raw = times.partition("|")
+    node, _, rest = result.stdout.strip().partition("|")
+    started_raw, _, rest = rest.partition("|")
+    finished_raw, _, image_id = rest.partition("|")
     handle.node = node
     handle.container_start = _parse_k8s_time(started_raw)
     handle.container_end = _parse_k8s_time(finished_raw)
+    handle.workload_image = image_id
 
 
 def record_result(
@@ -310,6 +320,7 @@ def record_result(
         "submit_ts": handle.submit_time,
         "start_ts": start_ts,
         "end_ts": end_ts,
+        "workload_image": handle.workload_image,
         **metrics,
     }
 
