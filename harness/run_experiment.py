@@ -161,6 +161,7 @@ def error_row(
         "batch_index": None,
         "interference_chosen": float("nan"),
         "placement_regret": float("nan"),
+        "storm_nodes": "",
         **sensitivity_columns(profile),
         **_PROVENANCE,
     }
@@ -446,6 +447,12 @@ def run_pressure_arm(
         row["scenario"] = scenario_col
         row["batch_size"] = victim_count
         row["batch_index"] = index
+        # Какие узлы несли шторм. Раньше это знание жило только внутри
+        # aggressors.deploy и в строку не попадало, поэтому анализ
+        # twin-контраста вынужден был бы выводить штормовой узел косвенно —
+        # по максимуму измеренного давления. Пишем прямо: «на каком узле был
+        # шторм» — факт постановки эксперимента, а не результат измерения.
+        row["storm_nodes"] = ";".join(nodes or [])
         return row
 
     rows: list[dict] = []

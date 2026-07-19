@@ -42,7 +42,7 @@ INSERT_COLUMNS = [
     # Провенанс (harness/provenance.py); в parquet до его введения этих
     # колонок нет — добираются пустыми через _BACKFILL_DEFAULTS.
     "harness_commit", "config_sha256", "workload_image", "calibration", "score_weights",
-    "profile_overrides",
+    "profile_overrides", "storm_nodes",
 ]
 
 # Колонки, которые обязаны быть в parquet (провенанс добавляем мы).
@@ -54,7 +54,7 @@ REQUIRED_PARQUET_COLUMNS = {
     "placement_regret", "sensitivity_llc", "sensitivity_numa", "sensitivity_net",
     "sensitivity_io", "approximation",
     "harness_commit", "config_sha256", "workload_image", "calibration", "score_weights",
-    "profile_overrides",
+    "profile_overrides", "storm_nodes",
 }
 
 def _is_missing(x) -> bool:
@@ -92,7 +92,7 @@ _BACKFILL_DEFAULTS = {
     "batch_size": 1, "batch_index": 0,
     # Пустой провенанс = «серия снята до его введения, восстановить нельзя».
     "harness_commit": "", "config_sha256": "", "workload_image": "",
-    "calibration": "", "score_weights": "", "profile_overrides": "",
+    "calibration": "", "score_weights": "", "profile_overrides": "", "storm_nodes": "",
 }
 
 
@@ -148,6 +148,7 @@ def coerce_rows(df: pd.DataFrame, stand: str, run_label: str, source_file: str) 
             _s(r["calibration"]),
             _s(r["score_weights"]),
             _s(r["profile_overrides"]),
+            _s(r["storm_nodes"]),
         ])
     return rows
 

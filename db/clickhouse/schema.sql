@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.results
     calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
+    storm_nodes        String DEFAULT '',                  -- узлы под агрессорами, ';'-разделитель
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
@@ -110,6 +111,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.baselines
     calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
+    storm_nodes        String DEFAULT '',                  -- узлы под агрессорами, ';'-разделитель
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)

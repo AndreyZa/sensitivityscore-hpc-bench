@@ -784,6 +784,23 @@ ch-forward: ## Проброс in-cluster ClickHouse на localhost:$(CH_PROD_POR
 	@echo "ClickHouse (in-cluster) -> localhost:$(CH_PROD_PORT); дальше в другом окне: make ch-load-all"
 	$(KUBECTL) -n $(CH_INCLUSTER_NS) port-forward svc/clickhouse $(CH_PROD_PORT):8123
 
+# B1/B2 из docs/«Аудит и план работ». Оба умеют --self-test: проверяют себя на
+# данных с известным ответом, иначе «эффекта нет» неотличимо от «скрипт не
+# умеет его находить».
+.PHONY: twin-contrast
+twin-contrast: venv-analysis ## Контраст двойников на штормовом узле (B1): make twin-contrast PAIR=high-s-net:net-insensitive RESULTS_FILE=<parquet>
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py \
+		--results ../$(RESULTS_FILE) --pair $(or $(PAIR),high-s-net:net-insensitive)
+
+.PHONY: drift-check
+drift-check: venv-analysis ## Внутрисессионный дрейф стенда (B2): make drift-check RESULTS_FILE=<parquet>
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --results ../$(RESULTS_FILE)
+
+.PHONY: analysis-self-test
+analysis-self-test: venv-analysis ## Самопроверка скриптов B1/B2 на данных с известным ответом
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py --self-test
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --self-test
+
 .PHONY: ch-analyze
 ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)
 	@test -n "$(STAND)" && test -n "$(RUN_LABEL)" || { echo "укажи STAND=<стенд> RUN_LABEL=<метка серии> (поверх make ch-tunnel)"; exit 1; }

@@ -17,7 +17,8 @@ ALTER TABLE sensitivityscore.results
     ADD COLUMN IF NOT EXISTS workload_image LowCardinality(String) DEFAULT '' AFTER config_sha256,
     ADD COLUMN IF NOT EXISTS calibration    LowCardinality(String) DEFAULT '' AFTER workload_image,
     ADD COLUMN IF NOT EXISTS score_weights  String                 DEFAULT '' AFTER calibration,
-    ADD COLUMN IF NOT EXISTS profile_overrides String              DEFAULT '' AFTER score_weights;
+    ADD COLUMN IF NOT EXISTS profile_overrides String              DEFAULT '' AFTER score_weights,
+    ADD COLUMN IF NOT EXISTS storm_nodes       String              DEFAULT '' AFTER profile_overrides;
 
 ALTER TABLE sensitivityscore.baselines
     ADD COLUMN IF NOT EXISTS harness_commit LowCardinality(String) DEFAULT '' AFTER source_file,
@@ -25,4 +26,5 @@ ALTER TABLE sensitivityscore.baselines
     ADD COLUMN IF NOT EXISTS workload_image LowCardinality(String) DEFAULT '' AFTER config_sha256,
     ADD COLUMN IF NOT EXISTS calibration    LowCardinality(String) DEFAULT '' AFTER workload_image,
     ADD COLUMN IF NOT EXISTS score_weights  String                 DEFAULT '' AFTER calibration,
-    ADD COLUMN IF NOT EXISTS profile_overrides String              DEFAULT '' AFTER score_weights;
+    ADD COLUMN IF NOT EXISTS profile_overrides String              DEFAULT '' AFTER score_weights,
+    ADD COLUMN IF NOT EXISTS storm_nodes       String              DEFAULT '' AFTER profile_overrides;
