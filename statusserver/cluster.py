@@ -61,15 +61,29 @@ def stand_info(label: str = "") -> dict:
     return {**_STAND_CACHE["data"], "label": label}
 
 
-def worker_node_count(cfg: dict | None = None) -> int:
+def worker_node_count(cfg: dict | None = None) -> int | None:
     """Число измерительных (bench) узлов для расчёта ожидаемых per-node
     эталонных прогонов: узлы без ролей control-plane/ss-system (см.
     stand_info) минус exclude_nodes конфига — ровно те узлы, которые
     харнесс перебирает в эталонах и матрице (k8s_submit.list_worker_nodes,
-    тот же селектор по ролям)."""
+    тот же селектор по ролям).
+
+    None = топология НЕИЗВЕСТНА (kubectl недоступен, протух токен, страница
+    в кластере без kubeconfig). Раньше здесь стояло `or 1`, и «узлов не
+    видно» было неотличимо от «узел ровно один»: ожидаемый объём эталонов
+    занижался в N раз, страница рисовала «Эталонные прогоны 6/6 ✓» на
+    шести из восемнадцати, и решение «эталоны собраны, пора запускать
+    серию» принималось по заведомо ложному индикатору. Число узлов можно
+    задать явно (baseline.nodes в конфиге) — тогда счёт верен и без kubectl.
+    """
+    explicit = (cfg or {}).get("baseline", {}).get("nodes")
+    if explicit:
+        return int(explicit)
     names = set(stand_info().get("bench", []))
+    if not names:
+        return None
     excluded = set((cfg or {}).get("exclude_nodes", []))
-    return len(names - excluded) or 1
+    return len(names - excluded) or None
 
 
 _SNAP_CACHE: dict = {"ts": 0.0, "data": {}}

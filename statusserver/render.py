@@ -503,6 +503,39 @@ def phase_favicon(phase: str, color: str) -> str:
             f"viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='{c}'/>{check}</svg>")
 
 
+def warn_banners(d: dict, prog: dict) -> str:
+    """Плашки «этим цифрам верить нельзя».
+
+    Все три случая раньше были молчаливыми: страница выглядела полностью
+    исправной и показывала неверные числа, что для многочасового прогона
+    хуже, чем честная ошибка.
+    """
+    out = []
+    if d.get("config_error"):
+        out.append(
+            "Конфиг серии не прочитан — объёмы, проценты и план недоступны: "
+            f"{esc(d['config_error'])} (файл {esc(d.get('config_path', '?'))})"
+        )
+    if d.get("topology_unknown"):
+        out.append(
+            "Список измерительных узлов не получен (kubectl недоступен) — "
+            "ожидаемый объём эталонных прогонов неизвестен, доля эталонов в "
+            "общем проценте не учтена. Число узлов можно задать явно: "
+            "baseline.nodes в конфиге серии."
+        )
+    if prog.get("incomplete"):
+        out.append(
+            f"Прогон помечен завершённым, но не хватает {prog['missing_rows']} "
+            "строк из ожидаемых. Маркер завершения печатается скриптом серии "
+            "безусловно — проверьте ошибки в хвосте лога, прежде чем считать "
+            "серию собранной."
+        )
+    if not out:
+        return ""
+    items = "".join(f"<div class='warnrow'>⚠ {x}</div>" for x in out)
+    return f"<div class='card warnbox'>{items}</div>"
+
+
 def render_html(d: dict) -> str:
     phase = d["phase"]
     color, phase_word = PHASE_META.get(phase, ("#868e96", phase))
@@ -601,6 +634,9 @@ th{{background:transparent;color:var(--dim);font-weight:600;font-size:.86em}}
 table.money td,table.money th{{padding:.4em .8em}}
 tr.hero td{{background:var(--hero)}}
 tr.hero td:first-child{{border-left:3px solid var(--herobd)}}
+.warnbox{{border-left:4px solid var(--warn);background:var(--warnbg)}}
+.warnrow{{color:var(--warn);font-weight:600;line-height:1.5}}
+.warnrow+.warnrow{{margin-top:.5em}}
 .good{{color:var(--good)}} .warn{{color:var(--warn)}} .bad{{color:var(--bad)}}
 td.good{{background:var(--goodbg)}} td.warn{{background:var(--warnbg)}} td.bad{{background:var(--badbg)}}
 .pct{{font-size:.85em;color:var(--dim)}}
@@ -660,6 +696,7 @@ select.pill{{padding:.2em .5em}}
     <button id="themebtn" class="pill" onclick="cycleTheme()" title="тема">🌗</button>
   </span>
 </div>
+{warn_banners(d, prog)}
 <div class="now">{hero_now(d)}</div>
 {bar}
 {plan_section(d.get('plan') or [])}

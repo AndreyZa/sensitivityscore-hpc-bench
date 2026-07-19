@@ -20,8 +20,9 @@
   - workload image inputs: `workload/{Dockerfile,entrypoint.sh,macros/**}` →
     `make image-workload` then `docker push andreyza/geant4:11.2` (check
     `WORKLOAD_IMAGE` in `Makefile` for the current tag).
-  - harness image inputs: `harness/{run_experiment.py,profiles.py,submit/**,
-    templates/**,config*.yaml,requirements.txt,Dockerfile}` →
+  - harness image inputs: `harness/{run_experiment.py,profiles.py,
+    config_loader.py,provenance.py,submit/**,templates/**,config*.yaml,
+    requirements.txt,Dockerfile}` →
     `make image-harness` then `docker push andreyza/harness:dev` — the
     in-cluster harness Job (harness/deploy/job-*.yaml) pulls this image;
     without the rebuild it silently runs stale code. (A host-side
@@ -31,8 +32,12 @@
   - statusserver image inputs: `statusserver/*.py`, `statusserver/Dockerfile`,
     `statusserver/requirements.txt`, `harness/config_loader.py` (страница
     читает конфиг серии через него) → `make image-statusserver` then
-    `docker push andreyza/statusserver:dev`. Локальный запуск собирает свой
-    нативный образ через compose и в пуше не нуждается.
+    `docker push andreyza/statusserver:dev` — это образ ДЛЯ КЛАСТЕРА
+    (`linux/amd64`, тянется `k8s/statusserver/statusserver.yaml`).
+    Локальный запуск — отдельный образ `statusserver:local`, его собирает сам
+    compose (`up -d --build`) под архитектуру машины; пушить его не надо и
+    нельзя путать с кластерным. `statusserver/docker-compose.yaml`,
+    `statusserver/README.md` → ни пересборки, ни пуша.
   - aggressor image inputs: `aggressor/Dockerfile` only →
     `make image-aggressor` then `docker push andreyza/aggressor:dev`
     (pressure-scenario stress pods).

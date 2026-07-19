@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import re
+import signal
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +24,19 @@ ARGS: argparse.Namespace  # заполняется в main()
 # запускать из любого каталога.
 ROOT = Path(__file__).resolve().parents[1]
 
+# config_loader харнесса импортируется ОДИН раз на старте, а не на каждый
+# запрос: раньше sys.path.insert стоял внутри load_cfg, и sys.path рос на
+# запись за GET (3000 запросов -> 3005 записей). Заодно ошибка импорта теперь
+# видна при запуске, а не превращается в молчаливый пустой конфиг.
+sys.path.insert(0, str(ROOT / "harness"))
+try:
+    from config_loader import load_config
+except Exception as _e:  # noqa: BLE001 — страница поднимается и без харнесса
+    load_config = None
+    _LOADER_ERROR = f"{type(_e).__name__}: {_e}"
+else:
+    _LOADER_ERROR = None
+
 
 def tail_lines(path: Path, n: int = 12) -> list[str]:
     try:
@@ -31,19 +46,26 @@ def tail_lines(path: Path, n: int = 12) -> list[str]:
         return [f"(лог {path} недоступен)"]
 
 
-def load_cfg(path: Path) -> dict:
+def load_cfg(path: Path) -> tuple[dict, str | None]:
+    """Конфиг серии + текст ошибки, если прочитать не вышло.
+
+    Через загрузчик харнесса: конфиг серии — слой поверх родителя (extends), и
+    плоский safe_load показал бы страницу без унаследованных значений, то есть
+    тихо соврал бы.
+
+    Ошибка ВОЗВРАЩАЕТСЯ, а не глотается. Раньше здесь был голый `except:
+    return {}`, и опечатка в SERIES (compose подставляет имя строкой) давала
+    полностью рабочую с виду страницу — с таблицей, кластером и логом — но без
+    прогресс-бара и плана. Причину не показывали ни страница, ни /json, ни
+    docker logs, и это читалось как «строк пока мало, бар ещё не появился».
+    """
+    if load_config is None:
+        return {}, f"config_loader недоступен: {_LOADER_ERROR}"
     try:
-        # Через загрузчик харнесса: конфиг серии — слой поверх родителя
-        # (extends), и плоский safe_load показал бы страницу без унаследованных
-        # значений, то есть тихо соврал бы.
-        import sys
-
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "harness"))
-        from config_loader import load_config
-
-        return load_config(path) or {}
-    except Exception:  # noqa: BLE001 — страница не должна падать из-за конфига
-        return {}
+        return load_config(path) or {}, None
+    except Exception as e:  # noqa: BLE001 — страница не должна падать из-за конфига
+        print(f"config load failed: {path}: {type(e).__name__}: {e}", flush=True)
+        return {}, f"{type(e).__name__}: {e}"
 
 
 def collect() -> dict:
@@ -56,7 +78,7 @@ def collect() -> dict:
     # «эталонные прогоны 100%».
     if ARGS.scope == "baseline" and phase == "baseline" and "baseline" in ends:
         phase = "DONE"
-    cfg = load_cfg(Path(ARGS.config))
+    cfg, cfg_error = load_cfg(Path(ARGS.config))
     results = pressure_results(Path(ARGS.results), cfg)
     baselines = baseline_summary(Path(ARGS.baselines))
     exp = expected_rows(cfg)
@@ -73,6 +95,11 @@ def collect() -> dict:
         "time": time.strftime("%H:%M:%S"),
         "stand": stand_info(ARGS.stand),
         "phase": phase,
+        # Причины, по которым цифрам ниже верить нельзя. Пусто в норме;
+        # render показывает их плашкой, /json отдаёт как есть.
+        "config_error": cfg_error,
+        "config_path": str(ARGS.config),
+        "topology_unknown": exp.get("topology_unknown", False),
         "activity": current_activity(all_lines, profile_scenario_map(cfg)),
         "progress": progress(
             phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0),
@@ -98,6 +125,14 @@ def collect() -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — API http.server
+        # Проверка живости НЕ должна собирать снимок: collect() читает лог,
+        # оба parquet и ходит в kubectl (до 18 с на холодном кэше топологии
+        # при медленном API-сервере). Healthcheck с таймаутом 5 с на «/» из-за
+        # этого регулярно отваливался и метил исправную страницу как
+        # unhealthy, а в кластере readinessProbe выводила под из Endpoints —
+        # то есть проверка живости сама и делала страницу недоступной.
+        if self.path.rstrip("/") == "/healthz":
+            return self._respond(200, "text/plain; charset=utf-8", b"ok")
         if self.path.startswith("/report/"):
             return self._serve_report_file()
         d = collect()
@@ -170,5 +205,24 @@ def main():
     p.add_argument("--bind", default="127.0.0.1")
     ARGS = p.parse_args()
     srv = ThreadingHTTPServer((ARGS.bind, ARGS.port), Handler)
+
+    # В контейнере python — PID 1, а ядро не доставляет процессу с pid 1
+    # сигналы с действием по умолчанию: без ЯВНОГО обработчика SIGTERM просто
+    # игнорируется. Замерено: `docker stop` висел ровно 10.1 с (таймаут
+    # docker) и добивал SIGKILL с кодом 137 — то есть каждый старт серии
+    # (compose up пересоздаёт контейнер) стоил лишних 10 секунд, а код выхода
+    # переставал что-либо означать: любое падение выглядело как «137», и
+    # отличить его от штатной остановки было нельзя.
+    def _bye(signum, _frame):
+        print(f"получен сигнал {signum} — останавливаюсь", flush=True)
+        # shutdown() из обработчика сигнала блокирует, пока serve_forever не
+        # выйдет, а serve_forever крутится в этом же треде -> дедлок. Поэтому
+        # только снимаем флаг цикла; ждать нечего, страница ничего не пишет.
+        srv._BaseServer__shutdown_request = True
+
+    signal.signal(signal.SIGTERM, _bye)
+    signal.signal(signal.SIGINT, _bye)
+
     print(f"status: http://{ARGS.bind}:{ARGS.port}  (JSON: /json)")
     srv.serve_forever()
+    srv.server_close()

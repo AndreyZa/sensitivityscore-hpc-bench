@@ -1,21 +1,29 @@
 # Статус-страница прогона локально, в контейнере.
 #
-# Заменяет прежний run-stage.sh, который запускал сервер хостовым питоном из
-# venv харнесса. Причина замены не в удобстве: на macOS с python 3.14 сервер
-# СЕГФОЛТИТСЯ через несколько секунд после старта (код выхода 139, пустой лог —
-# ни трейсбека, ни строчки). В контейнере с python 3.12 та же страница на тех
-# же данных работает стабильно. Хостовый запуск был просто ненадёжен, и
-# чинить в нём было нечего.
+# Единственный поддерживаемый способ поднять страницу на своей машине.
+# Обычно её поднимает сам лаунчер (scripts/run-series.sh -> `make series`),
+# вручную это нужно только чтобы посмотреть на уже законченную серию.
 #
-# Репозиторий монтируется read-only: страница только читает, и возможности
-# испортить идущий прогон у неё быть не должно.
-#
-#   SERIES=net-diff docker compose -f statusserver/docker-compose.yaml up -d
+#   SERIES=net-diff docker compose -f statusserver/docker-compose.yaml up -d --build
 #   docker compose -f statusserver/docker-compose.yaml logs -f
 #   docker compose -f statusserver/docker-compose.yaml down
 #
-# SERIES выбирает, за какой серией смотреть; без него — файлы по умолчанию
-# (stage-pressure).
+# --build обязателен: без него compose поднимет РАНЕЕ собранный statusserver:local
+# и правки страницы просто не попадут в контейнер.
+#
+# Переменные:
+#   SERIES       какую серию показывать (без неё — дефолтные файлы, см. ниже)
+#   STATUS_PORT  порт на хосте (по умолчанию 8787)
+#   STAND        подпись стенда в шапке страницы
+#   RESULTS/BASELINES  пути к parquet ОТНОСИТЕЛЬНО корня репозитория. Их
+#                передаёт run-series.sh, который берёт имена из секции output
+#                конфига серии — там единственный источник правды. Дефолты
+#                ниже лишь воспроизводят обычное соглашение об именах.
+#   KUBECONFIG   конфиг доступа к стенду; ДОЛЖЕН указывать на нужный кластер —
+#                иначе секция кластера покажет чужой (например docker-desktop).
+#
+# Репозиторий монтируется read-only: страница только читает, и возможности
+# испортить идущий прогон у неё быть не должно.
 services:
   statusserver:
     # Тег локальный и собирается ЗДЕСЬ, под архитектуру машины. Образ для
@@ -32,23 +40,31 @@ services:
       - "${STATUS_PORT:-8787}:8787"
     volumes:
       - ..:/repo:ro
-      # kubeconfig — для секции кластера (statusserver/cluster.py). Без него
-      # страница живёт дальше, просто без узлов: в cluster.py это best-effort.
+      # kubeconfig — для секции кластера (statusserver/cluster.py). Если файла
+      # нет, docker создаёт на его месте ПУСТУЮ ДИРЕКТОРИЮ (в том числе в
+      # $HOME пользователя) и kubectl внутри падает; страница живёт дальше, но
+      # секция кластера молча пустая — в cluster.py это best-effort.
       - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
     environment:
       KUBECONFIG: /kube/config
     command:
       - --log=/repo/harness/stage-${SERIES:-pressure}.log
       - --config=/repo/harness/config-stage${SERIES:+-${SERIES}}.yaml
-      - --results=/repo/harness/results/results-stage${SERIES:+-${SERIES}}.parquet
-      - --baselines=/repo/harness/results/baselines-stage${SERIES:+-${SERIES}}.parquet
+      - --results=/repo/${RESULTS:-harness/results/results-stage${SERIES:+-${SERIES}}.parquet}
+      - --baselines=/repo/${BASELINES:-harness/results/baselines-stage${SERIES:+-${SERIES}}.parquet}
       - --report=/repo/analysis/report-stage${SERIES:+-${SERIES}}
       - --scope=full
       - --stand=${STAND:-STAGE}
+    # Страница переживает перезагрузку хоста и падение процесса. Гасить её
+    # отдельно: `docker compose -f statusserver/docker-compose.yaml down` —
+    # остановка серии (`make series-stop`) её НЕ трогает.
     restart: unless-stopped
     healthcheck:
+      # /healthz, а не «/»: «/» собирает весь снимок (лог, оба parquet, до трёх
+      # kubectl), и на холодном кэше топологии это дольше таймаута проверки —
+      # исправная страница помечалась unhealthy. /healthz не читает ничего.
       test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8787/')"]
+             "import urllib.request; urllib.request.urlopen('http://localhost:8787/healthz')"]
       interval: 30s
       timeout: 5s
       retries: 3

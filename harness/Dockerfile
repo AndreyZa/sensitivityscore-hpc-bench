@@ -24,7 +24,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # run-stage-*.sh и прочее хост-хозяйство образу не нужны, а их правки не
 # должны инвалидировать слой и требовать пересборки. Этот список — и есть
 # условие «когда пересобирать harness-образ» (см. CLAUDE.md).
-COPY run_experiment.py profiles.py ./
+# config_loader и provenance — обязательны: run_experiment.py импортирует их
+# верхнеуровнево (строки 61-62). Без них in-cluster Job падает с ImportError
+# ещё до первого прогона; на хосте этого не видно, там модули лежат рядом.
+COPY run_experiment.py profiles.py config_loader.py provenance.py ./
 COPY submit/ submit/
 COPY templates/ templates/
 COPY config*.yaml ./

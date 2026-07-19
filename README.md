@@ -80,7 +80,8 @@ metrics-agent/           — Go: DaemonSet-агент, perf_event_open() → Red
 aggressor/               — генератор LLC/membw-нагрузки (stress-ng) для pressure-сценариев
 harness/                 — Python: оркестрация серии экспериментов (run_experiment.py),
                            запускается как Job внутри кластера (harness/deploy/)
-statusserver/            — Python: страница прогресса серии (запускается целью make series)
+statusserver/            — Python: страница прогресса серии в контейнере (docker compose;
+                           поднимается автоматически при старте любого прогона)
 analysis/                — Python: статистика (Mann-Whitney, Cliff's δ) + графики
 db/clickhouse/           — схема и загрузчик parquet → ClickHouse (агрегатор результатов)
 scripts/                 — bootstrap-кластера и run-series.sh (запуск серии одной командой)
@@ -166,9 +167,17 @@ watchdog (`scripts/run-series.sh`; `SERIES=<имя>` соответствует
 
 ```bash
 make series SERIES=<имя>          # имя ∈ placebo | llc | mixed | mixed-calib | io-sensitivity | differentiation | net-diff
-make series-status SERIES=<имя>   # фазы, ошибки, число строк результатов (в реальном времени)
+make series SERIES=<имя> PILOT=1  # одна точка плана вместо полной серии — проверить обвязку
+make series-status SERIES=<имя>   # фазы, ошибки, число строк результатов + состояние страницы
 make series-stop SERIES=<имя>     # остановить серию и удалить агрессоры и Job'ы
 ```
+
+Страница статуса (`http://localhost:8787`) поднимается контейнером **при
+старте любого прогона** — и через `make series`, и при ручном запуске
+`harness/run-stage-<имя>.sh`. Она только читает и `make series-stop` её не
+гасит; отдельно — `make status-page` / `make status-page-down`. Подробности,
+включая разбор плашек «этим цифрам верить нельзя», —
+[statusserver/README.md](statusserver/README.md).
 
 Соответствие сериям из Сводки: `llc` — серия кэша (LLC); `mixed` и
 `mixed-calib` — смешанная и смешанная с калиброванным скорингом; `placebo` —

@@ -1,6 +1,7 @@
 """statusserver — локальная HTTP-страница прогресса прогонов харнесса.
 
-Одна страница (авто-обновление 10с) + /json для скриптов. Терминология на
+Одна страница (интервал авто-обновления выбирается в шапке) + /json для
+скриптов и /healthz для проб живости. Терминология на
 странице рассчитана на читателя со стороны (научный руководитель), а не на
 жаргон проекта: «планировщик», «повторение», «эталонные прогоны»,
 «перегруженный узел». Никакой записи, только чтение — безопасно держать
@@ -19,17 +20,19 @@
     (дайджест из comparisons.csv, графики, полный summary.md);
   - хвост лога и последние ошибки.
 
-Запуск (из корня репозитория; зависимости — venv харнесса):
-    harness/.venv/bin/python -m statusserver \
-        --log harness/stage-pressure.log --config harness/config-stage.yaml \
-        --results harness/results/results-stage.parquet \
-        --baselines harness/results/baselines-stage.parquet \
-        --report analysis/report-stage --stand "STAGE (Timeweb k0s)"
-Локально страница поднимается контейнером:
-    SERIES=<имя> docker compose -f statusserver/docker-compose.yaml up -d --build
+Запускается ТОЛЬКО контейнером (docker compose) — хостовый python отпадал с
+SIGSEGV на чтении parquet, см. README.md пакета. Обычно её поднимает лаунчер
+серии сам; вручную:
+    make status-page SERIES=<имя>     # поднять
+    make status-page-down             # погасить
 Затем открыть http://localhost:8787 (из WSL2 виден и в Windows-браузере).
+
+Полное описание — statusserver/README.md: запуск, разворачивание в кластере,
+эндпойнты (включая дешёвый /healthz для проб) и разбор плашек «этим цифрам
+верить нельзя».
 
 Модули: labels (подписи и словоформы), cluster (kubectl-снимки стенда),
 progress (лог -> фаза/активность/проценты/ETA/план), data (parquet/csv ->
-сводки), render (HTML), server (сборка ответа + HTTP).
+сводки), render (HTML), server (сборка ответа + HTTP), selfcheck (импорт
+модулей + рендер на синтетике).
 """

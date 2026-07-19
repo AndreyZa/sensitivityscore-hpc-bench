@@ -95,10 +95,23 @@ def expected_rows(cfg: dict) -> dict[str, int]:
             if v not in profiles:
                 profiles.append(v)
     baseline_exp = len(profiles) * cfg.get("baseline", {}).get("repetitions", 5)
+    unknown = False
     if cfg.get("baseline", {}).get("per_node", True):
-        baseline_exp *= max(worker_node_count(cfg), 1)
+        nodes = worker_node_count(cfg)
+        if nodes is None:
+            # Топология неизвестна — честно говорим «не знаю» вместо тихого
+            # умножения на 1. Занижённый объём эталонов завышал бы процент и
+            # показывал незаконченный этап как пройденный.
+            baseline_exp = 0
+            unknown = True
+        else:
+            baseline_exp *= nodes
     pressure_exp = sum(expected_by_scenario(cfg).values())
-    return {"baseline": baseline_exp, "pressure": pressure_exp}
+    return {
+        "baseline": baseline_exp,
+        "pressure": pressure_exp,
+        "topology_unknown": unknown,
+    }
 
 
 def progress(
@@ -150,8 +163,16 @@ def progress(
                 )
                 out["eta_minutes"] = round(remaining / 60)
     elif phase == "DONE":
-        out["overall_pct"] = 100
-        out["phase_pct"] = 100
+        # НЕ рисуем 100% по одному лишь маркеру в логе. Маркер
+        # «=== PRESSURE DONE ... ===» печатается run-stage-*.sh безусловно,
+        # чем бы харнесс ни кончился: серия, упавшая на первом же плече,
+        # показывала «Прогон завершён ✓ 100%» при трети собранных строк.
+        # Считаем фактический процент; 100% — только если строки реально есть.
+        out["overall_pct"] = round(100 * done_overall / total_exp)
+        out["phase_pct"] = out["overall_pct"]
+        if done_overall < total_exp:
+            out["incomplete"] = True
+            out["missing_rows"] = total_exp - done_overall
         key = "pressure" if "pressure" in starts else "baseline"
         s, e = starts.get(key), ends.get(key)
         if s is not None and e is not None and e >= s:
@@ -179,11 +200,17 @@ def run_plan(cfg: dict, phase: str, baselines: dict, results: dict, report: dict
                 profiles.append(v)
     b_reps = cfg.get("baseline", {}).get("repetitions", 5)
     per_node = cfg.get("baseline", {}).get("per_node", True)
-    nodes_n = max(worker_node_count(cfg), 1) if per_node else 1
-    b_exp = len(profiles) * b_reps * nodes_n
+    # None = топология неизвестна (kubectl не ответил). Не подставляем 1:
+    # объём эталонов тогда занижается в N раз и незаконченный этап выглядит
+    # пройденным. Показываем «узлов ?» и не считаем этап.
+    nodes_n = worker_node_count(cfg) if per_node else 1
+    b_exp = len(profiles) * b_reps * (nodes_n or 0)
     parts = [ru(len(profiles), "профиль", "профиля", "профилей")]
     if per_node:
-        parts.append(ru(nodes_n, "узел", "узла", "узлов"))
+        parts.append(
+            ru(nodes_n, "узел", "узла", "узлов") if nodes_n
+            else "узлов ? (нет связи с кластером)"
+        )
     parts.append(ru(b_reps, "повторение", "повторения", "повторений"))
     b_detail = " × ".join(parts)
 

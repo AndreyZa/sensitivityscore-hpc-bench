@@ -8,6 +8,28 @@
 # Живёт в bench-namespace, потому что читает PVC harness-results, куда пишет
 # in-cluster харнесс (harness/deploy/job-*.yaml) — PVC не пересекает границу
 # неймспейса.
+#
+# ЧЕГО ЭТОТ МАНИФЕСТ ПОКА НЕ УМЕЕТ (проверять на вводе прод-стенда, §C):
+#
+#  1. PVC harness-results объявлен ReadWriteOnce (harness/deploy/pvc.yaml), а
+#     дефолтный в k0s local-path-провижнер делает том НОДО-ЛОКАЛЬНЫМ. Том
+#     привязывается к узлу, где встал под харнесса, а харнесс-Job'ы ни к чему
+#     не прибиты и садятся на bench. Страница же прибита к ss-system — и
+#     смонтировать том с чужого узла не сможет, останется Pending навсегда.
+#     Решать вместе с пиннингом самих Job'ов (им тоже нечего делать на
+#     измерительных узлах) — либо оба на ss-system, либо сетевой том (RWX).
+#
+#  2. --log=/data/series.log и --config=/data/config.yaml НИКТО не пишет:
+#     in-cluster харнесс логирует в stdout (kubectl logs), а конфиг вшит в его
+#     образ. Пути к parquet верны, остальные — нет, поэтому в кластере страница
+#     покажет пустой хвост лога и, без конфига, вообще не нарисует прогресс-бар
+#     (см. плашку «Конфиг серии не прочитан»). Нужно либо смонтировать конфиг
+#     ConfigMap'ом, либо заставить Job писать лог на PVC.
+#
+#  3. Под страницы живёт в bench-namespace постоянно, а preflight серии требует
+#     этот namespace ПУСТЫМ («N чужих подов в bench») — на проде нужно либо
+#     исключить app=statusserver из подсчёта, либо вынести страницу в
+#     sensitivityscore-system и дать ей том иначе.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -25,6 +47,38 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
+---
+# Вторая половина того, что делает cluster.py: kubectl_snapshot() перечисляет
+# Job'ы и поды-агрессоры в bench-неймспейсе (секция «Текущее состояние
+# кластера»). Одних прав на nodes не хватало: секция молча показывала бы текст
+# ошибки Forbidden вместо живых задач, а голый `except` в cluster.py превращал
+# бы это в пустой список.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: statusserver-bench-reader
+  namespace: sensitivityscore-bench
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: statusserver-bench-reader
+  namespace: sensitivityscore-bench
+subjects:
+  - kind: ServiceAccount
+    name: statusserver
+    namespace: sensitivityscore-bench
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: statusserver-bench-reader
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -75,6 +129,12 @@ spec:
             - --port=8787
           ports:
             - {name: http, containerPort: 8787}
+          env:
+            # Дублирует ENV из statusserver/Dockerfile — намеренно: если образ
+            # когда-нибудь пересоберут без этой строки, страница здесь начнёт
+            # молча падать с SIGSEGV. Дефолтный memory pool Arrow роняет процесс
+            # на pd.read_parquet из тред-обработчика (подробности — в Dockerfile).
+            - {name: ARROW_DEFAULT_MEMORY_POOL, value: system}
           # Страница нужна во время многочасовой серии и не должна с неё
           # ничего отбирать: лимит держим маленьким и прибиваем к ss-system.
           resources:
@@ -90,10 +150,25 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: ["ALL"]}
+          # Пробы бьют по /healthz, а НЕ по «/». «/» собирает весь снимок:
+          # читает лог, оба parquet и делает до трёх вызовов kubectl — на
+          # холодном кэше топологии это дольше дефолтного timeoutSeconds: 1,
+          # и readinessProbe выводила исправный под из Endpoints, то есть сама
+          # же и делала страницу недоступной. /healthz не читает ничего.
           readinessProbe:
-            httpGet: {path: /, port: 8787}
+            httpGet: {path: /healthz, port: 8787}
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+          # Живость: до этого её не было вовсе, и повисший процесс (страница
+          # отвечает 200 на всё, но собрать снимок не может) остался бы в
+          # Endpoints навсегда.
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8787}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
       volumes:
         # Тот же том, куда пишет in-cluster харнесс. readOnly не только в
         # volumeMounts, но и здесь: страницу держат открытой во время серии,

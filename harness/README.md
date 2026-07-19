@@ -174,19 +174,25 @@ make harness-logs-incluster JOB=harness-pressure
 ## Мониторинг прогресса (HTTP-эндпойнт)
 
 Статус-сервер живёт отдельным пакетом `../statusserver/` (см. его
-`__init__.py`): локальная страница статуса идущего прогона — фаза, прогресс
-и ETA, план эксперимента, таблица размещения по планировщикам, живые
+[README](../statusserver/README.md)): страница статуса идущего прогона — фаза,
+прогресс и ETA, план эксперимента, таблица размещения по планировщикам, живые
 Job'ы/агрессоры, хвост лога. Только чтение.
 
+Поднимается контейнером через docker compose и **при старте любого прогона
+сама**: и через `make series`, и при ручном запуске `run-stage-<серия>.sh`
+(вызов вшит в шапку каждого скрипта). Идемпотентно — если нужная страница уже
+отвечает, контейнер не трогается.
+
 ```bash
-# из корня репозитория (зависимости — venv харнесса):
-harness/.venv/bin/python -m statusserver \
-    --log harness/stage-pressure.log --config harness/config-stage.yaml \
-    --results harness/results/results-stage.parquet \
-    --baselines harness/results/baselines-stage.parquet
-# -> http://localhost:8787  (HTML, автообновление 10с; /json — для скриптов)
-# локально: SERIES=<имя> docker compose -f statusserver/docker-compose.yaml up -d --build
+make status-page SERIES=<имя>       # поднять вручную (напр. посмотреть законченную серию)
+make series-status SERIES=<имя>     # состояние страницы: жива? та ли серия?
+make status-page-down               # погасить (make series-stop её НЕ гасит)
+# -> http://localhost:8787   (HTML; /json — для скриптов, /healthz — для проб)
 ```
+
+Хостовым питоном страница больше не запускается: она умирала с SIGSEGV на
+чтении parquet (дефолтный аллокатор Arrow, а не версия python, как считалось
+сначала) — разбор в README пакета.
 
 ## Проверка без реального запуска
 

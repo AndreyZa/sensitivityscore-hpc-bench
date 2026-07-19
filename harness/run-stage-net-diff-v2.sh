@@ -15,6 +15,12 @@ set -x
 cd "$(dirname "$0")" || exit 1
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/timeweb-stage} REDIS_ADDR=localhost:16379
 
+# Статус-страница прогона (контейнер, docker compose). Здесь — чтобы она
+# поднималась и при РУЧНОМ запуске этого скрипта, а не только через
+# `make series`. Идемпотентно: если нужная страница уже отвечает, ничего не
+# делает. Падение страницы на прогон не влияет.
+../scripts/run-series.sh page net-diff-v2 || true
+
 # sink для стрима жертв (пиннут на w8); ждём Ready перед эталонами.
 kubectl apply -f ../k8s/net-sink/sink-stage-v2.yaml
 kubectl -n sensitivityscore-bench wait --for=condition=Ready pod/ss-sink --timeout=120s

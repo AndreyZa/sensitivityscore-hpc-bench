@@ -34,7 +34,7 @@ PY=harness/.venv/bin/python
 ACTION=${1:-}
 SERIES=${2:-}
 [ -z "$ACTION" ] || [ -z "$SERIES" ] && {
-    echo "использование: $0 start|preflight|status|stop <серия>  (напр. placebo, mixed-calib)"; exit 2; }
+    echo "использование: $0 start|preflight|page|status|stop <серия>  (напр. placebo, mixed-calib)"; exit 2; }
 
 CONFIG=harness/config-stage-$SERIES.yaml
 RUNSCRIPT=harness/run-stage-$SERIES.sh
@@ -76,6 +76,104 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Подъём статус-страницы. Отдельная функция и отдельный экшен `page`, потому
+# что стартовать прогон можно не только через `make series`: ручным
+# harness/run-stage-<имя>.sh, целями make pilot / run-all / run-config-a. Пока
+# подъём был зашит внутрь start(), все эти пути оставляли оператора либо без
+# страницы, либо — хуже — со страницей ПРЕДЫДУЩЕЙ серии на том же порту.
+#
+# Страница — контейнер, а не хостовый питон: на хосте она умирала с SIGSEGV.
+# Причина, вопреки прежнему объяснению, не в версии python, а в дефолтном
+# аллокаторе pyarrow (см. ARROW_DEFAULT_MEMORY_POOL в statusserver/Dockerfile);
+# в контейнере он выключен.
+status_page_up() {
+    local port=${STATUS_PORT:-8787}
+    local buildlog=harness/.statuspage-$SERIES.log
+
+    # Соглашение об именах здесь не сплошное: исторические pressure/baseline
+    # ходят не в config-stage-pressure.yaml (такого файла нет), а в
+    # config-stage.yaml с логом stage-pressure.log. Для compose это «серия по
+    # умолчанию» — пустой SERIES. Остальные серии называются единообразно.
+    local cseries=$SERIES
+    case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
+    # Лог, который ДОЛЖЕН быть у нужной нам страницы, — по нему сверяем,
+    # что на порту отвечает не контейнер предыдущей серии.
+    local logpat="stage-${cseries:-pressure}\.log"
+
+    command -v docker >/dev/null 2>&1 || {
+        echo "WARN: docker не найден — статус-страница пропущена (серию это не трогает)"
+        return 0; }
+
+    # Идемпотентность: функцию зовут и start(), и сам harness/run-stage-<имя>.sh
+    # (чтобы страница поднималась и при ручном запуске скрипта серии). Если
+    # нужная страница уже отвечает — выходим сразу, не трогая контейнер:
+    # пересборка на ходу перезапустила бы страницу посреди прогона.
+    if docker inspect ss-status --format '{{.State.Status}}' 2>/dev/null | grep -q running \
+       && docker inspect ss-status --format '{{json .Args}}' 2>/dev/null \
+          | grep -q -- "$logpat" \
+       && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        ok "статус-страница уже поднята: http://localhost:$port"
+        return 0
+    fi
+
+    # Пути к parquet берём из конфига, а не из соглашения об именах: секция
+    # output — единственный источник правды, и compose не должен её дублировать.
+    local results baselines
+    { read -r results; read -r baselines; } < <(results_paths) 2>/dev/null || true
+
+    # kubeconfig ОБЯЗАН существовать как файл. Если его нет, docker молча
+    # создаёт на его месте ПУСТУЮ ДИРЕКТОРИЮ — и это уже случалось: под
+    # $HOME/.kube/configs/timeweb-stage появился каталог, после чего хостовый
+    # kubectl стал падать с «is a directory» на любой команде. Подставляем
+    # /dev/null (файл существует всегда) и говорим вслух, что кластера не
+    # будет: страница без секции кластера лучше, чем сломанный kubectl.
+    local kcfg=${KUBECONFIG%%:*}
+    if [ ! -f "$kcfg" ]; then
+        echo "WARN: kubeconfig '$kcfg' не найден — секции кластера на странице не будет"
+        echo "      (укажите KUBECONFIG=<файл>; каталог вместо файла ломает kubectl и на хосте)"
+        kcfg=/dev/null
+    fi
+
+    # Вывод сборки НЕ в /dev/null: при провале build compose выходит, не
+    # тронув контейнеры, и на порту продолжает жить страница прошлой серии —
+    # WARN и работающая страница одновременно читаются как «ложная тревога».
+    if ! SERIES="$cseries" STAND="${STAND:-STAGE}" STATUS_PORT="$port" \
+         RESULTS="$results" BASELINES="$baselines" KUBECONFIG="$kcfg" \
+         docker compose -f statusserver/docker-compose.yaml up -d --build \
+         > "$buildlog" 2>&1; then
+        echo "WARN: статус-страница не поднялась (серию это не трогает)"
+        echo "      причина — хвост $buildlog:"
+        tail -20 "$buildlog" | sed 's/^/      /'
+        return 0
+    fi
+
+    # `up -d` возвращает 0, как только контейнер СОЗДАН: python ещё
+    # импортирует pandas/pyarrow и сокет не забинден. Без ожидания «ok» врал
+    # на холодной машине, а мгновенно упавший контейнер вообще не отличался
+    # от здорового.
+    for _ in $(seq 30); do
+        curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null && break
+        sleep 1
+    done
+    if ! curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        echo "WARN: страница не отвечает за 30 с (серию это не трогает)"
+        docker compose -f statusserver/docker-compose.yaml ps 2>&1 | sed 's/^/      /'
+        docker compose -f statusserver/docker-compose.yaml logs --tail=20 2>&1 | sed 's/^/      /'
+        return 0
+    fi
+
+    # Ответ на порту ещё не значит «наша серия»: там мог остаться контейнер
+    # прошлой (restart: unless-stopped переживает и остановку серии, и
+    # перезагрузку хоста). Сверяем по фактическим аргументам контейнера.
+    if ! docker inspect ss-status --format '{{json .Args}}' 2>/dev/null \
+         | grep -q -- "$logpat"; then
+        echo "WARN: на порту $port отвечает страница ДРУГОЙ серии — данные не те!"
+        echo "      docker compose -f statusserver/docker-compose.yaml down && повторить"
+        return 0
+    fi
+    ok "статус-страница: http://localhost:$port"
+}
+
 preflight() {
     echo "=== preflight: серия $SERIES ==="
     [ -f "$CONFIG" ]    || { echo "FAIL: нет $CONFIG"; exit 1; }
@@ -271,18 +369,7 @@ start() {
     echo "$pid" > "$PIDFILE"
     ok "серия запущена: pid $pid, лог $LOG"
 
-    # Страница поднимается контейнером, а не хостовым питоном. Прежний
-    # statusserver/run-stage.sh запускал её из venv харнесса, и на macOS с
-    # python 3.14 сервер СЕГФОЛТИЛСЯ через несколько секунд (код 139, пустой
-    # лог). В контейнере с 3.12 та же страница на тех же данных живёт.
-    if command -v docker >/dev/null 2>&1; then
-        SERIES="$SERIES" docker compose -f statusserver/docker-compose.yaml \
-            up -d --build >/dev/null 2>&1 \
-            && ok "статус-страница: http://localhost:8787" \
-            || echo "WARN: статус-страница не поднялась (серию это не трогает)"
-    else
-        echo "WARN: docker не найден — статус-страница пропущена (серию это не трогает)"
-    fi
+    status_page_up
 
     # setsid не умеет bash-функции — вотчдог перезапускается как скрытый
     # экшен этого же скрипта в собственной сессии.
@@ -335,7 +422,31 @@ for path, label in zip(sys.argv[1:], ("результаты", "эталоны"))
     except Exception:
         print(f"{label}: файла ещё нет")
 EOF
-    echo "страница: http://localhost:8787"
+    # Состояние страницы, а не просто её адрес: печатать URL безусловно
+    # значило выдавать мёртвый (или показывающий чужую серию) контейнер за
+    # рабочую страницу.
+    local port=${STATUS_PORT:-8787}
+    echo "--- статус-страница ---"
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "docker не найден — страница не поднималась"
+    elif ! docker inspect ss-status >/dev/null 2>&1; then
+        echo "не запущена (поднять: make status-page SERIES=$SERIES)"
+    else
+        local state args cseries
+        cseries=$SERIES
+        case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
+        state=$(docker inspect ss-status --format '{{.State.Status}} (код {{.State.ExitCode}}, рестартов {{.RestartCount}})')
+        args=$(docker inspect ss-status --format '{{json .Args}}')
+        echo "контейнер: $state"
+        if grep -q -- "stage-${cseries:-pressure}\.log" <<<"$args"; then
+            echo "серия:     $SERIES — совпадает"
+        else
+            echo "серия:     !!! контейнер показывает ДРУГУЮ серию, цифрам на странице не верить"
+        fi
+        curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null \
+            && echo "адрес:     http://localhost:$port" \
+            || echo "адрес:     не отвечает на http://localhost:$port"
+    fi
 }
 
 stop() {
@@ -367,6 +478,9 @@ case "$ACTION" in
     # Отдельно от start: проверить стенд, ничего не запуская. Раньше единственным
     # способом узнать, готов ли кластер, было стартовать многочасовую серию.
     preflight) preflight ;;
+    # Поднять только статус-страницу. Нужен тем путям запуска, которые идут
+    # мимо start(): ручной harness/run-stage-<имя>.sh, make pilot/run-all.
+    page) status_page_up ;;
     __watchdog) watchdog "${3:?нужен pid серии}" ;;
-    *) echo "неизвестное действие: $ACTION (start|preflight|status|stop)"; exit 2 ;;
+    *) echo "неизвестное действие: $ACTION (start|preflight|page|status|stop)"; exit 2 ;;
 esac

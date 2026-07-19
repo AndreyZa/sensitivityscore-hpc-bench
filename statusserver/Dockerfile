@@ -15,12 +15,20 @@ FROM python:3.12-slim
 # k0s стенда (1.35); если kubectl не окажется — страница живёт дальше с
 # пустой секцией кластера, это заложено в cluster.py как best-effort.
 ARG KUBECTL_VERSION=v1.35.0
-ARG TARGETARCH=amd64
+# TARGETARCH БЕЗ значения по умолчанию: его подставляет BuildKit (arm64
+# локально, amd64 при --platform linux/amd64). Со значением =amd64 kubectl
+# качался x86-64 даже в «нативный» локальный образ, и работал он только
+# потому, что Docker Desktop держит binfmt/qemu в VM (замерено: 0.19 с против
+# 0.055 с у нативного бинаря). На arm64-рантайме без binfmt — Colima без qemu,
+# arm64-Linux-хост, podman — был бы «exec format error», а cluster.py ловит
+# это голым except и молча показал бы кластер из нуля узлов.
+ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && curl -fsSLo /usr/local/bin/kubectl \
         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client >/dev/null \
     && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -29,6 +37,21 @@ WORKDIR /app
 # Без этого stdout блочно буферизуется (в контейнере он не TTY), и `docker logs`
 # молчит даже когда сервер что-то печатает — отлаживать приходится вслепую.
 ENV PYTHONUNBUFFERED=1
+
+# ПРИЧИНА молчаливых падений страницы (SIGSEGV, код 139, пустой лог).
+# Дефолтный memory pool Arrow (на arm64-сборке pyarrow это mimalloc) роняет
+# процесс на pd.read_parquet, вызванном из тред-обработчика ThreadingHTTPServer.
+# Воспроизведено: 60 ПОСЛЕДОВАТЕЛЬНЫХ запросов к странице на реальном parquet
+# серии -> exit 139, в docker logs только стартовая строка; трейсбек виден лишь
+# под PYTHONFAULTHANDLER=1 и указывает на pyarrow/parquet/core.py:1590 через
+# statusserver/data.py:51. С системным аллокатором те же 300 запросов
+# (200 последовательных + 100 конкурентных) проходят без падения.
+#
+# Это же объясняет «сегфолт на хосте с python 3.14», ради которого страницу и
+# унесли в контейнер: интерпретатор был ни при чём — подпись (139 + пустой лог)
+# одна и та же, а виноват pyarrow. Контейнер с 3.12 падал ровно так же, просто
+# реже попадался.
+ENV ARROW_DEFAULT_MEMORY_POOL=system
 
 # Зависимости отдельным слоем — правка кода страницы не тянет пересборку pip.
 COPY statusserver/requirements.txt statusserver/requirements.txt

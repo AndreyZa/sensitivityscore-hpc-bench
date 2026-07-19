@@ -8,6 +8,12 @@
 set -x
 cd "$(dirname "$0")"
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/timeweb-stage} REDIS_ADDR=localhost:16379
+
+# Статус-страница прогона (контейнер, docker compose). Здесь — чтобы она
+# поднималась и при РУЧНОМ запуске этого скрипта, а не только через
+# `make series`. Идемпотентно: если нужная страница уже отвечает, ничего не
+# делает. Падение страницы на прогон не влияет.
+../scripts/run-series.sh page pressure || true
 export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 \
        HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=300000 \
        HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=2Gi \

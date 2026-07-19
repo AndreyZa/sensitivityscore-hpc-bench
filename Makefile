@@ -169,18 +169,24 @@ image-aggressor: ## Собрать образ LLC/membw-агрессора (stre
 image-statusserver: ## Собрать образ статус-страницы
 	docker build --platform $(IMAGE_PLATFORM) -f statusserver/Dockerfile -t $(STATUSSERVER_IMAGE) .
 
+# Локально страница поднимается ТОЛЬКО через compose. Прежняя цель делала
+# `docker run` с $(STATUSSERVER_IMAGE) — образом под linux/amd64, то есть
+# воспроизводила ровно ту эмуляцию, ради ухода от которой compose и собирает
+# нативный statusserver:local. Вдобавок она занимала имя ss-status и потому
+# убивала страницу ИДУЩЕЙ серии, а дублированный список --log/--config/...
+# расходился с compose. Оставлен алиас, чтобы старая команда не молчала.
+.PHONY: status-page
+status-page: ## Поднять статус-страницу локально (compose): make status-page SERIES=<имя>
+	@STATUS_PORT=$${STATUS_PORT:-8787} SERIES="$(SERIES)" \
+		bash scripts/run-series.sh page "$(or $(SERIES),stage)"
+
+.PHONY: status-page-down
+status-page-down: ## Погасить статус-страницу (series-stop её НЕ трогает)
+	docker compose -f statusserver/docker-compose.yaml down
+
 .PHONY: statusserver-docker
-statusserver-docker: ## Поднять страницу локально в контейнере: make statusserver-docker [SERIES=<имя>]
-	docker rm -f ss-status >/dev/null 2>&1 || true
-	docker run -d --name ss-status -p 8787:8787 \
-		-v $(CURDIR):/repo:ro -v $${KUBECONFIG:-$$HOME/.kube/config}:/kube/config:ro \
-		-e KUBECONFIG=/kube/config $(STATUSSERVER_IMAGE) \
-		--log=/repo/harness/stage-$(or $(SERIES),pressure).log \
-		--config=/repo/harness/config-stage$(if $(SERIES),-$(SERIES),).yaml \
-		--results=/repo/harness/results/results-stage$(if $(SERIES),-$(SERIES),).parquet \
-		--baselines=/repo/harness/results/baselines-stage$(if $(SERIES),-$(SERIES),).parquet \
-		--report=/repo/analysis/report-stage$(if $(SERIES),-$(SERIES),) --scope=full --stand="STAGE (docker)"
-	@echo "страница: http://localhost:8787   (логи: docker logs -f ss-status)"
+statusserver-docker: status-page ## Устаревшее имя цели status-page
+	@echo "note: цель переименована в 'make status-page'"
 
 .PHONY: statusserver-deploy
 statusserver-deploy: ## Развернуть страницу в кластере (ss-system, PVC харнесса read-only)
