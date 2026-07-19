@@ -130,6 +130,31 @@ print(len(list(r.scan_iter(match='node:metrics:*'))))" 2>/dev/null)
     [ "${nkeys:-0}" -ge 2 ] || fail "в Redis меньше 2 ключей node:metrics:* — агент не пишет?"
     ok "redis :$REDIS_PORT жив, node:metrics ключей: $nkeys"
 
+    # Контракт имён полей: сначала по исходникам (расхождение трёх копий),
+    # затем по ЖИВЫМ данным (развёрнутый образ агента старше исходников —
+    # такой version skew уже случался, см. node_pressure.py). Оба отказа
+    # молчаливые: читатели подставляют 0.0, планировщик раздаёт одинаковый
+    # score, плечо A-sensitivityscore вырождается в default, а серия честно
+    # отрабатывает часы и выдаёт «различий нет».
+    "$PY" scripts/check-redis-contract.py >/dev/null 2>&1 \
+        || fail "контракт Redis-полей нарушен — python3 scripts/check-redis-contract.py"
+    (cd harness && ../"$PY" - "../contract/redis-fields.yaml" <<EOF
+import sys, yaml, redis
+spec = yaml.safe_load(open(sys.argv[1]))
+want = set(spec["node_metrics"]["sources"]["scheduler_reader"]["fields"])
+r = redis.Redis(port=$REDIS_PORT, decode_responses=True)
+bad = []
+for key in r.scan_iter(match="node:metrics:*"):
+    missing = want - set(r.hgetall(key))
+    if missing:
+        bad.append(f"{key}: нет {sorted(missing)}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+EOF
+    ) || fail "живой агент не пишет поля, которые читает планировщик (образ агента старше исходников?)"
+    ok "контракт Redis-полей цел (исходники + живые данные)"
+
     local leftovers
     leftovers=$(kubectl -n $BENCH_NS get pods --no-headers 2>/dev/null | wc -l)
     [ "$leftovers" -eq 0 ] || fail "$leftovers чужих подов в $BENCH_NS (эталонам нужен пустой кластер) — make harness-clean-jobs"

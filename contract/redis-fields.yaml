@@ -1,0 +1,79 @@
+# Контракт имён полей Redis между агентом, планировщиком и харнессом.
+#
+# Зачем отдельный файл. Имена полей захардкожены в трёх местах, в двух
+# репозиториях и на двух языках: пишет агент (Go), читают планировщик (Go,
+# форк scheduler-plugins) и харнесс (Python). Все три читателя по осознанному
+# решению подставляют 0.0 на отсутствующее поле — иначе version skew агента
+# ронял бы regret всей серии в NaN (см. node_pressure.py). Цена этого решения:
+# переименование поля в одном месте НЕ вызывает ошибку, а тихо превращает
+# давление в нули. Планировщик тогда раздаёт всем узлам одинаковый score,
+# плечо A-sensitivityscore вырождается в default, серия честно отрабатывает
+# часы и выдаёт «различий между планировщиками нет» — результат, неотличимый
+# от научного вывода.
+#
+# Проверяется: scripts/check-redis-contract.py (make check-contract), и он же
+# зовётся перед стартом серии.
+#
+# Инвариант: множество читаемых полей ⊆ множество записываемых.
+
+node_metrics:
+  # Горячий путь планировщика: агент пишет с TTL, планировщик читает на Score().
+  key_prefix: "node:metrics:"
+  sources:
+    agent_writer:
+      path: metrics-agent/pkg/redisclient/writer.go
+      role: writes
+      fields:
+        - llc_miss_rate
+        - llc_misses_per_sec
+        - numa_remote_ratio
+        - net_bw
+        - net_pressure
+        - io_iops
+        - io_pressure
+        - ts
+    scheduler_reader:
+      path: pkg/sensitivityscore/redis_source.go
+      repo: scheduler-plugins
+      role: reads
+      fields:
+        - llc_miss_rate
+        - numa_remote_ratio
+        - net_pressure
+        - io_pressure
+    harness_reader:
+      path: harness/submit/node_pressure.py
+      role: reads
+      fields:
+        - llc_miss_rate
+        - numa_remote_ratio
+        - net_pressure
+        - io_pressure
+
+job_metrics:
+  # История за жизнь задачи: агент накапливает суммы, харнесс делит на samples.
+  key_prefix: "job:metrics:"
+  sources:
+    agent_writer:
+      path: metrics-agent/pkg/redisclient/writer.go
+      role: writes
+      fields:
+        - llc_miss_rate_sum
+        - numa_remote_ratio_sum
+        - net_bw_sum
+        - net_pressure_sum
+        - io_iops_sum
+        - io_pressure_sum
+        - samples
+        - ts
+    harness_reader:
+      path: harness/submit/redis_metrics.py
+      role: reads
+      fields:
+        - llc_miss_rate_sum
+        - numa_remote_ratio_sum
+        - net_bw_sum
+        - net_pressure_sum
+        - io_iops_sum
+        - io_pressure_sum
+        - samples
