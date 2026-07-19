@@ -832,14 +832,26 @@ ch-forward: ## Проброс in-cluster ClickHouse на localhost:$(CH_PROD_POR
 # B1/B2 из docs/«Аудит и план работ». Оба умеют --self-test: проверяют себя на
 # данных с известным ответом, иначе «эффекта нет» неотличимо от «скрипт не
 # умеет его находить».
+#
+# Источник: RUN_LABEL=<метка> -> ClickHouse (реальные серии живут там, не в
+# parquet); иначе RESULTS_FILE=<parquet>. CH_ANALYSIS_* берут дом-агрегатор
+# по умолчанию (localhost:8123 через make ch-tunnel).
+CH_ANALYSIS_HOST ?= $(CH_HOME_HOST)
+CH_ANALYSIS_PORT ?= $(CH_HOME_PORT)
+ch_analysis_src = $(if $(RUN_LABEL),\
+	--clickhouse --stand $(or $(STAND),stage) --run-label $(RUN_LABEL) \
+	--ch-host $(CH_ANALYSIS_HOST) --ch-port $(CH_ANALYSIS_PORT) \
+	--ch-database $(CH_DATABASE) --ch-user $(CH_USER) --ch-password "$(CH_PASSWORD)",\
+	--results ../$(RESULTS_FILE))
+
 .PHONY: twin-contrast
-twin-contrast: venv-analysis ## Контраст двойников на штормовом узле (B1): make twin-contrast PAIR=high-s-net:net-insensitive RESULTS_FILE=<parquet>
+twin-contrast: venv-analysis ## Контраст двойников (B1): make twin-contrast RUN_LABEL=stage-net-diff [PAIR=..] | RESULTS_FILE=<parquet>
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py \
-		--results ../$(RESULTS_FILE) --pair $(or $(PAIR),high-s-net:net-insensitive)
+		$(ch_analysis_src) --pair $(or $(PAIR),high-s-net:net-insensitive)
 
 .PHONY: drift-check
-drift-check: venv-analysis ## Внутрисессионный дрейф стенда (B2): make drift-check RESULTS_FILE=<parquet>
-	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --results ../$(RESULTS_FILE)
+drift-check: venv-analysis ## Внутрисессионный дрейф стенда (B2): make drift-check RUN_LABEL=stage-llc | RESULTS_FILE=<parquet>
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py $(ch_analysis_src)
 
 .PHONY: analysis-self-test
 analysis-self-test: venv-analysis ## Самопроверка скриптов B1/B2 на данных с известным ответом

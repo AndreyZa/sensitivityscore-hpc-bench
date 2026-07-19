@@ -200,10 +200,12 @@ def main() -> int:
 
     if args.clickhouse:
         from clickhouse_source import load_from_clickhouse
-        df, _ = load_from_clickhouse(
+        df = load_from_clickhouse(
+            "results",
             host=args.ch_host, port=args.ch_port, database=args.ch_database,
             user=args.ch_user, password=args.ch_password,
-            stand=args.stand, run_label=args.run_label,
+            stand=args.stand,
+            run_labels=[args.run_label] if args.run_label else None,
         )
     elif args.results:
         from load import load_results
