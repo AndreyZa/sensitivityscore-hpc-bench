@@ -73,14 +73,24 @@ DEFAULT_PAIRS = {
 }
 
 
-def storm_nodes_for(df: pd.DataFrame, axis: str) -> pd.Series:
+def storm_nodes_for(df: pd.DataFrame, axis: str,
+                    explicit: str | None = None) -> pd.Series:
     """Штормовой узел на каждую (rep) — из данных, а не из догадки.
 
-    Предпочтение колонке storm_nodes: это ФАКТ ПОСТАНОВКИ эксперимента (куда
-    харнесс поставил агрессоров). Её нет у серий, снятых до её появления —
-    тогда узел выводится по максимуму ИЗМЕРЕННОГО давления нужной оси, что
-    слабее (шторм мог не состояться), поэтому такой вывод помечается.
+    Приоритет: --storm-node (оператор берёт узел из конфига серии, storms[].node)
+    -> колонка storm_nodes (факт постановки, пишется с 19.07) -> вывод по
+    максимуму ИЗМЕРЕННОГО давления оси.
+
+    Вывод по давлению ОПАСЕН на оси net: чувствительная жертва сама льёт
+    трафик (профиль high-s-net шлёт 2 ГБ наружу) и поднимает net_pressure
+    СВОЕГО узла выше штормового. Тогда «штормовым» объявляется узел, где
+    жертва и работала, контраст вырождается в разницу профилей на чистом
+    узле (их эталоны 49 и 28 с -> ×1.7), а настоящий шторм в выборку не
+    попадает. Признак вырождения — storm_share_sensitive == 1.0 во всех
+    плечах; он проверяется в main() и печатается предупреждением.
     """
+    if explicit:
+        return pd.Series(explicit, index=sorted(df["rep"].dropna().unique()), dtype=object)
     if "storm_nodes" in df.columns and df["storm_nodes"].astype(str).str.len().gt(0).any():
         # Берём первый узел списка: сценарии стенда штормят один узел.
         return (df.groupby("rep")["storm_nodes"].agg(
@@ -118,11 +128,12 @@ def bootstrap_ratio_ci(a: np.ndarray, b: np.ndarray, n_boot: int = 10000,
 
 
 def contrast_one_arm(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
-                     value_col: str = "makespan_s") -> dict:
+                     value_col: str = "makespan_s",
+                     storm_node: str | None = None) -> dict:
     """Контраст на штормовом узле внутри ОДНОГО плеча, на уровне повторений."""
-    storm = storm_nodes_for(df, axis)
-    inferred = not ("storm_nodes" in df.columns
-                    and df["storm_nodes"].astype(str).str.len().gt(0).any())
+    storm = storm_nodes_for(df, axis, explicit=storm_node)
+    inferred = not (storm_node or ("storm_nodes" in df.columns
+                    and df["storm_nodes"].astype(str).str.len().gt(0).any()))
     out = {
         "n_reps_sensitive": 0, "n_reps_twin": 0,
         "ratio": float("nan"), "ci_lo": float("nan"), "ci_hi": float("nan"),
@@ -168,12 +179,13 @@ def contrast_one_arm(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
 
 
 def twin_contrast(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
-                  value_col: str = "makespan_s") -> pd.DataFrame:
+                  value_col: str = "makespan_s",
+                  storm_node: str | None = None) -> pd.DataFrame:
     """По плечу на строку. Плечи НЕ объединяются: попадание на штормовой узел
     в плече sensitivityscore выбирал сам планировщик."""
     rows = []
     for config, arm in df.groupby("config", dropna=False):
-        res = contrast_one_arm(arm, sensitive, twin, axis, value_col)
+        res = contrast_one_arm(arm, sensitive, twin, axis, value_col, storm_node)
         rows.append({"config": config, **res})
     return pd.DataFrame(rows).sort_values("config").reset_index(drop=True)
 
@@ -227,6 +239,23 @@ def _self_test() -> int:
           f"помечен как выведенный={r['storm_node_inferred']}")
     ok &= passed
 
+    # 4б. Самодавление жертвы: чувствительная сама поднимает давление своей оси
+    # на СВОЁМ узле выше штормового (реальный случай оси net — 2 ГБ egress).
+    # Вывод по давлению тогда указывает на узел жертвы и вырождает контраст;
+    # явный --storm-node обязан вернуть правильный ответ.
+    dfs = frame(1.7).drop(columns=["storm_nodes"]).copy()
+    victim_self = (dfs["profile"] == "high-s-net")
+    dfs.loc[dfs["node"] == "w1", "net_pressure"] = 0.5   # шторм умеренный по счётчику
+    dfs.loc[victim_self, "net_pressure"] = 0.99          # жертва «шумит» громче шторма
+    dfs = dfs[~(victim_self & (dfs["node"] == "w1"))]    # на штормовой узел не попала ни разу
+    r_bad = twin_contrast(dfs, "high-s-net", "net-insensitive", "net").iloc[0]
+    r_ok = twin_contrast(dfs, "high-s-net", "net-insensitive", "net", storm_node="w1").iloc[0]
+    passed = bool(r_bad["storm_share_sensitive"] == 1.0 and np.isnan(r_ok["ratio"]))
+    print(f"  {'OK ' if passed else 'НЕТ'} самодавление жертвы: вывод по давлению вырождается "
+          f"(доля «на шторме»={r_bad['storm_share_sensitive']:.2f}), "
+          f"--storm-node честно говорит «данных нет» (ratio={r_ok['ratio']})")
+    ok &= passed
+
     # 5. Плечи не смешиваются.
     two = pd.concat([frame(1.7), frame(1.0).assign(config="A-sensitivityscore")])
     r = twin_contrast(two, "high-s-net", "net-insensitive", "net")
@@ -250,6 +279,8 @@ def main() -> int:
     p.add_argument("--ch-user", default="default"), p.add_argument("--ch-password", default="")
     p.add_argument("--pair", help="чувствительный:двойник, напр. high-s-net:net-insensitive")
     p.add_argument("--axis", help="ось шторма (net|io|llc|numa); по умолчанию — из известных пар")
+    p.add_argument("--storm-node", help="узел шторма из конфига серии (storms[].node) — "
+                                        "факт постановки; сильнее вывода по давлению")
     p.add_argument("--self-test", action="store_true")
     args = p.parse_args()
 
@@ -279,7 +310,7 @@ def main() -> int:
         p.error("укажи --results <файл> или --clickhouse")
 
     df = df[~df["approximation"].astype(str).str.startswith(("error:", "missing"))]
-    res = twin_contrast(df, sensitive, twin, axis)
+    res = twin_contrast(df, sensitive, twin, axis, storm_node=args.storm_node)
     if res.empty:
         print("нет пригодных строк")
         return 1
@@ -290,6 +321,18 @@ def main() -> int:
         print("\nВНИМАНИЕ: у части плеч штормовой узел ВЫВЕДЕН по максимуму измеренного\n"
               "давления (колонки storm_nodes в этих данных нет) — это слабее, чем факт\n"
               "постановки: шторм мог не состояться, и тогда узел выбран по шуму.")
+        # Вырождение вывода: жертва сама создаёт давление своей оси (net —
+        # 2 ГБ egress, io — запись файла), и «штормовым» становится её
+        # собственный узел. Признак — чувствительный профиль «на шторме» в
+        # КАЖДОМ повторе КАЖДОГО плеча, включая плечо, которое его оттуда
+        # уводит. Тогда сравниваются профили на чистом узле, а не под штормом.
+        shares = res["storm_share_sensitive"].dropna()
+        if len(shares) and (shares >= 0.999).all():
+            print("\nВЫРОЖДЕНИЕ ВЫВОДА: чувствительный профиль оказался «на шторме» в 100%\n"
+                  "повторов ВСЕХ плеч — так не бывает даже у слепого планировщика. Скорее\n"
+                  "всего узел выведен по СОБСТВЕННОМУ давлению жертвы, и контраст измеряет\n"
+                  "разницу профилей, а не эффект шторма. Перезапусти с --storm-node <узел>\n"
+                  "из конфига серии (storms[].node).")
     default_arm = res[res["config"].astype(str).str.endswith("default")]
     if not default_arm.empty:
         r = default_arm.iloc[0]
