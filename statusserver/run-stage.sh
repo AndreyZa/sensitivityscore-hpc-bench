@@ -31,11 +31,21 @@ nohup harness/.venv/bin/python -m statusserver \
     --scope "$SCOPE" \
     --stand "$STAND" \
     --port "$PORT" > statusserver/server.out 2>&1 &
-sleep 1
-if curl -sf "http://localhost:$PORT/" > /dev/null; then
-    echo "OK: http://localhost:$PORT ($LOG)"
-else
-    echo "не поднялся — см. statusserver/server.out"
-    tail -5 statusserver/server.out
-    exit 1
-fi
+# Ждём готовности циклом, а не фиксированной секундой. На прогретой машине
+# сервер поднимается за ~0.5 с, но при ХОЛОДНОМ старте (свежий venv, pandas и
+# pyarrow ещё не в page cache) импорт занимает несколько секунд — и проверка
+# через sleep 1 объявляла «не поднялся», хотя сервер вставал сразу после.
+# Врала она дважды: процесс запущен через nohup и продолжал жить, то есть
+# страница по факту работала, а оператор видел WARN и шёл смотреть пустой
+# server.out. Хуже всего это било в самом начале серии — когда машина как раз
+# холоднее всего.
+for _ in $(seq 1 40); do
+    if curl -sf "http://localhost:$PORT/" > /dev/null 2>&1; then
+        echo "OK: http://localhost:$PORT ($LOG)"
+        exit 0
+    fi
+    sleep 0.5
+done
+echo "не поднялся за 20 с — см. statusserver/server.out"
+tail -5 statusserver/server.out
+exit 1
