@@ -25,9 +25,11 @@ export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 
        HARNESS_OVERRIDE_HIGH_S_IO_IO_INTERVAL_SECONDS=0 \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_TOTAL_BURSTS=16 \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-io-sensitivity.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) rc=$? ==="
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+rc=$?
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-io-sensitivity.yaml --pressure --scenarios io-sensitivity
-echo "=== PRESSURE DONE $(date +%H:%M:%S) rc=$? ==="
+rc=$?
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="

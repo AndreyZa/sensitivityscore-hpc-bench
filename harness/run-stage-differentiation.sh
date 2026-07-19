@@ -26,9 +26,11 @@ export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 
        HARNESS_OVERRIDE_IO_INSENSITIVE_CPU=500m HARNESS_OVERRIDE_IO_INSENSITIVE_THREADS=2 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_PRIMARIES=300000 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_REQ=384Mi HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_LIM=2Gi
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-differentiation.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) rc=$? ==="
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+rc=$?
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-differentiation.yaml --pressure --scenarios differentiation
-echo "=== PRESSURE DONE $(date +%H:%M:%S) rc=$? ==="
+rc=$?
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="

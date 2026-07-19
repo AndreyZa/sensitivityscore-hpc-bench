@@ -47,6 +47,14 @@ services:
       - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
     environment:
       KUBECONFIG: /kube/config
+      # Часовой пояс хоста. Маркеры фаз харнесс пишет по локальному времени
+      # ("=== BASELINE START 02:14:32 ==="), а контейнер по умолчанию живёт в
+      # UTC — прогон, начатый в 02:14 MSK, выглядел стартовавшим 21 час назад
+      # («идёт 21 ч 02 мин, осталось 21456 мин»). Новые логи несут epoch в
+      # самом маркере и от TZ не зависят; эта переменная нужна для старых
+      # логов и для того, чтобы время на странице совпадало с временем в
+      # терминале оператора.
+      TZ: ${TZ:-Europe/Moscow}
     command:
       - --log=/repo/harness/stage-${SERIES:-pressure}.log
       - --config=/repo/harness/config-stage${SERIES:+-${SERIES}}.yaml

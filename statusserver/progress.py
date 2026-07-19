@@ -10,10 +10,21 @@ from .cluster import worker_node_count
 from .labels import ru, scenario_label, scenario_victim_count
 
 
-def _marker_ts(hms: str) -> float | None:
-    """Unix-время маркера лога. В маркере только время суток, без даты; если
-    момент вышел в будущем — событие было до полуночи: минус сутки, иначе
-    elapsed < 0 и ETA уезжает в прошлое."""
+def _marker_ts(hms: str, epoch: str | None = None) -> float | None:
+    """Unix-время маркера лога.
+
+    Предпочитаем epoch из самого маркера: он абсолютен и не зависит ни от
+    часового пояса контейнера, ни от даты. Без него остаётся время суток, а
+    оно двусмысленно — и это уже стреляло: харнесс пишет по локальному времени
+    хоста (MSK), страница живёт в контейнере с UTC, и прогон, начатый в 02:14
+    MSK, выглядел для неё стартовавшим 21 час назад — «идёт 21 ч, осталось
+    21456 мин». Разбор по времени суток оставлен только для логов, снятых до
+    появления epoch."""
+    if epoch:
+        try:
+            return float(epoch)
+        except ValueError:
+            pass
     try:
         ts = time.mktime(
             time.strptime(f"{time.strftime('%Y-%m-%d')} {hms}", "%Y-%m-%d %H:%M:%S")
@@ -32,10 +43,10 @@ def run_phase(log_lines_all: list[str]) -> tuple[str, dict[str, float], dict[str
     starts: dict[str, float] = {}
     ends: dict[str, float] = {}
     for l in log_lines_all:
-        m = re.search(r"=== (BASELINE|PRESSURE) (START|DONE) (\d\d:\d\d:\d\d)", l)
+        m = re.search(r"=== (BASELINE|PRESSURE) (START|DONE) (\d\d:\d\d:\d\d)(?: epoch=(\d+))?", l)
         if m:
             ph, kind = m.group(1).lower(), m.group(2)
-            ts = _marker_ts(m.group(3))
+            ts = _marker_ts(m.group(3), m.group(4))
             if kind == "START":
                 phase = ph
                 if ts is not None:

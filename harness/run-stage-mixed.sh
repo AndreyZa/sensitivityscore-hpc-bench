@@ -22,6 +22,7 @@ export HARNESS_OVERRIDE_HIGH_S_CPU=500m HARNESS_OVERRIDE_HIGH_S_THREADS=2 \
        HARNESS_OVERRIDE_HIGH_S_NET_PRIMARIES=300000 \
        HARNESS_OVERRIDE_HIGH_S_NET_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_NET_MEM_LIM=2Gi \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-mixed.yaml --pressure --scenarios mixed3
-echo "=== PRESSURE DONE $(date +%H:%M:%S) rc=$? ==="
+rc=$?
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="

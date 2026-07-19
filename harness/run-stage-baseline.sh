@@ -18,6 +18,6 @@ export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 
        HARNESS_OVERRIDE_HIGH_S_NET_PRIMARIES=300000 \
        HARNESS_OVERRIDE_HIGH_S_NET_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_NET_MEM_LIM=2Gi \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) ==="
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) ==="

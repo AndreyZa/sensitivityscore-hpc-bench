@@ -40,9 +40,11 @@ export HARNESS_OVERRIDE_HIGH_S_IO_CPU=32 HARNESS_OVERRIDE_HIGH_S_IO_THREADS=32 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_PRIMARIES=5000000 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_REQ=8Gi HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_LIM=16Gi
 
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-prod-smoke.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) rc=$? ==="
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+rc=$?
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-prod-smoke.yaml --pressure --scenarios smoke
-echo "=== PRESSURE DONE $(date +%H:%M:%S) rc=$? ==="
+rc=$?
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="

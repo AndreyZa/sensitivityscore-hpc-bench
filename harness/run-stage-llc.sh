@@ -20,9 +20,9 @@ export HARNESS_OVERRIDE_HIGH_S_CPU=500m HARNESS_OVERRIDE_HIGH_S_THREADS=2 \
        HARNESS_OVERRIDE_HIGH_S_PRIMARIES=300000 \
        HARNESS_OVERRIDE_HIGH_S_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_MEM_LIM=1Gi \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-llc.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) ==="
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-llc.yaml --pressure --scenarios llc
-echo "=== PRESSURE DONE $(date +%H:%M:%S) ==="
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) ==="

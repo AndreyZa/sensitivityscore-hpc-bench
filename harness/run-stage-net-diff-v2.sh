@@ -38,12 +38,14 @@ export HARNESS_OVERRIDE_HIGH_S_NET_CPU=500m HARNESS_OVERRIDE_HIGH_S_NET_THREADS=
        HARNESS_OVERRIDE_NET_INSENSITIVE_MEM_REQ=384Mi HARNESS_OVERRIDE_NET_INSENSITIVE_MEM_LIM=2Gi
 # NET_TIMEOUT в entrypoint дефолтит 600с — под штормом 2ГБ ~104с, запас есть.
 
-echo "=== BASELINE START $(date +%H:%M:%S) ==="
+echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-net-diff-v2.yaml --baseline
-echo "=== BASELINE DONE $(date +%H:%M:%S) rc=$? ==="
-echo "=== PRESSURE START $(date +%H:%M:%S) ==="
+rc=$?
+echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-stage-net-diff-v2.yaml --pressure --scenarios net-diff-v2
-echo "=== PRESSURE DONE $(date +%H:%M:%S) rc=$? ==="
+rc=$?
+echo "=== PRESSURE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
 
 # Прибрать sink (следующая серия ждёт пустой namespace).
 kubectl -n sensitivityscore-bench delete -f ../k8s/net-sink/sink-stage-v2.yaml --ignore-not-found --wait=false
