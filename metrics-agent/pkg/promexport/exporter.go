@@ -136,10 +136,11 @@ func New(nodeName string) *Exporter {
 		pmuMultiplex: gauge("ss_agent_pmu_multiplex_ratio",
 			"Share of the sampling window the PMU counters were actually scheduled on hardware, worst pod of the "+
 				"last tick (running/enabled). 1 = no multiplexing. Below 1 the kernel time-sliced the events and "+
-				"the agent scaled the raw counts up by enabled/running to compensate - the numbers are corrected "+
-				"but no longer directly measured. The number of open events grows with the number of pods, i.e. "+
-				"with the experimental variable, so a low ratio biases llc_misses_per_sec exactly where load is "+
-				"highest. Alert below 0.9 (SSPMUMultiplexed). Stays 1 in synthetic mode - no counters were open."),
+				"the agent scales the raw counts up by enabled/running - but measured on real hardware that "+
+				"extrapolation is unbiased only on average: at a 0.58 duty cycle the same workload came out "+
+				"between -3% and +1831% of its uncontended value. Treat this gauge as a VALIDITY GATE for the "+
+				"cache axis, not as reassurance that the numbers were fixed; the only real remedy is fewer "+
+				"simultaneously open events. Alert below 0.9 (SSPMUMultiplexed). Stays 1 in synthetic mode."),
 		psiAvailable: gauge("ss_agent_psi_available",
 			"1 when the kernel exposes cgroup io.pressure (PSI). 0 means the IO axis is effectively off - "+
 				"Debian/RHEL builds need psi=1 on the kernel cmdline."),
