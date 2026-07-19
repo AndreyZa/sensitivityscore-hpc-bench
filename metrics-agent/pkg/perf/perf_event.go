@@ -104,10 +104,11 @@ func OpenCgroupCounter(cgroupFD int, name string, typ uint32, config uint64) (*C
 	c := &Counter{name: name, fds: make([]int, 0, len(cpus))}
 	for _, cpu := range cpus {
 		attr := unix.PerfEventAttr{
-			Type:   typ,
-			Config: config,
-			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
-			Bits:   unix.PerfBitDisabled | unix.PerfBitInherit,
+			Type:        typ,
+			Config:      config,
+			Size:        uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:        unix.PerfBitDisabled | unix.PerfBitInherit,
+			Read_format: readFormat,
 		}
 		// cpu MUST be >= 0 for PERF_FLAG_PID_CGROUP (cgroup events are per-CPU;
 		// cpu == -1 => EINVAL). groupFD=-1 (standalone). The first arg is the
@@ -157,10 +158,11 @@ func OpenCgroupCounterPair(cgroupFD int, num, den eventSpec) (*Counter, *Counter
 	}
 	for _, cpu := range cpus {
 		leaderAttr := unix.PerfEventAttr{
-			Type:   num.typ,
-			Config: num.config,
-			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
-			Bits:   unix.PerfBitDisabled | unix.PerfBitInherit,
+			Type:        num.typ,
+			Config:      num.config,
+			Size:        uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:        unix.PerfBitDisabled | unix.PerfBitInherit,
+			Read_format: readFormat,
 		}
 		leaderFD, err := unix.PerfEventOpen(&leaderAttr, cgroupFD, cpu, -1, unix.PERF_FLAG_PID_CGROUP)
 		if err != nil {
@@ -169,10 +171,11 @@ func OpenCgroupCounterPair(cgroupFD int, num, den eventSpec) (*Counter, *Counter
 		numC.fds = append(numC.fds, leaderFD)
 
 		memberAttr := unix.PerfEventAttr{
-			Type:   den.typ,
-			Config: den.config,
-			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
-			Bits:   unix.PerfBitInherit, // NOT disabled: follows the leader
+			Type:        den.typ,
+			Config:      den.config,
+			Size:        uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
+			Bits:        unix.PerfBitInherit, // NOT disabled: follows the leader
+			Read_format: readFormat,
 		}
 		memberFD, err := unix.PerfEventOpen(&memberAttr, cgroupFD, cpu, leaderFD, unix.PERF_FLAG_PID_CGROUP)
 		if err != nil {
@@ -255,26 +258,110 @@ func NodeLoadMissesCounter(cgroupFD int) (*Counter, error) {
 			unix.PERF_COUNT_HW_CACHE_RESULT_MISS))
 }
 
-// Read returns the current cumulative counter value, summed across every
-// per-CPU fd — the cgroup's total activity regardless of which CPU it ran on.
-func (c *Counter) Read() (uint64, error) {
-	var total uint64
-	buf := make([]byte, 8)
+// readFormat is set on every event this package opens: the kernel then returns
+// three u64 instead of one — value, time_enabled, time_running.
+//
+// Why it is not optional. When more events are open than the PMU has physical
+// counters, the kernel time-slices them (multiplexing) but still returns the
+// RAW count — as if the event had been on the PMU for the whole window. On a
+// bench node the number of open events is proportional to the number of pods,
+// i.e. to our experimental variable: the denser the node, the more the counter
+// under-reports, so llc_misses_per_sec can FALL as load grows — the signal
+// inverts exactly in the regime H1 tests. Without these two fields there is no
+// way to tell that from data, only to suspect it.
+const readFormat = unix.PERF_FORMAT_TOTAL_TIME_ENABLED | unix.PERF_FORMAT_TOTAL_TIME_RUNNING
+
+// readSize is the byte size of the read(2) result under readFormat: three u64.
+const readSize = 24
+
+// Reading is one counter read: the value the kernel returned plus how long the
+// event was scheduled. Enabled is the window the event was supposed to count,
+// Running the part of it the event actually spent on the PMU; Enabled ==
+// Running means no multiplexing.
+type Reading struct {
+	Value   uint64
+	Enabled uint64
+	Running uint64
+}
+
+// Scaled is the value corrected for multiplexing: value * enabled/running, the
+// scaling perf(1) itself applies. Running == 0 (event never got onto the PMU
+// in this window) yields 0 — the honest answer, since nothing was measured.
+func (r Reading) Scaled() uint64 {
+	if r.Running == 0 {
+		return 0
+	}
+	if r.Running >= r.Enabled {
+		return r.Value
+	}
+	return uint64(float64(r.Value) * float64(r.Enabled) / float64(r.Running))
+}
+
+// parseReading decodes the three little-endian u64 of a readFormat read.
+func parseReading(buf []byte) (Reading, error) {
+	if len(buf) < readSize {
+		return Reading{}, fmt.Errorf("short read (%d bytes, want %d)", len(buf), readSize)
+	}
+	u64 := func(off int) uint64 {
+		var v uint64
+		for i := off + 7; i >= off; i-- {
+			v = v<<8 | uint64(buf[i])
+		}
+		return v
+	}
+	return Reading{Value: u64(0), Enabled: u64(8), Running: u64(16)}, nil
+}
+
+// ReadFull returns the counter summed across every per-CPU fd, with each fd's
+// value scaled by its OWN enabled/running before summing — the fds are
+// scheduled independently, so a single node-wide ratio applied afterwards
+// would be wrong. Enabled/Running of the result are the sums, which is what
+// the node-level multiplexing ratio is computed from.
+func (c *Counter) ReadFull() (Reading, error) {
+	var total Reading
+	buf := make([]byte, readSize)
 	for _, fd := range c.fds {
 		n, err := unix.Read(fd, buf)
 		if err != nil {
-			return 0, fmt.Errorf("read perf counter %s: %w", c.name, err)
+			return Reading{}, fmt.Errorf("read perf counter %s: %w", c.name, err)
 		}
-		if n != 8 {
-			return 0, fmt.Errorf("read perf counter %s: short read (%d bytes)", c.name, n)
+		r, err := parseReading(buf[:n])
+		if err != nil {
+			return Reading{}, fmt.Errorf("read perf counter %s: %w", c.name, err)
 		}
-		var v uint64
-		for i := 7; i >= 0; i-- {
-			v = v<<8 | uint64(buf[i])
-		}
-		total += v
+		total.Value += r.Scaled()
+		total.Enabled += r.Enabled
+		total.Running += r.Running
 	}
 	return total, nil
+}
+
+// Read returns the current cumulative counter value, summed across every
+// per-CPU fd and corrected for multiplexing — the cgroup's total activity
+// regardless of which CPU it ran on.
+func (c *Counter) Read() (uint64, error) {
+	r, err := c.ReadFull()
+	if err != nil {
+		return 0, err
+	}
+	return r.Value, nil
+}
+
+// MultiplexRatio is running/enabled over the counter's fds: 1.0 = the event sat
+// on the PMU the whole time, < 1 = the kernel time-sliced it and the raw counts
+// were scaled up to compensate. Below ~0.9 the scaling is doing heavy lifting
+// and the numbers deserve a caveat (see the SSPMUMultiplexed alert). Returns 1
+// when nothing was measured yet — no evidence of multiplexing is not evidence
+// of it.
+func (r Reading) MultiplexRatio() float64 {
+	if r.Enabled == 0 {
+		return 1
+	}
+	ratio := float64(r.Running) / float64(r.Enabled)
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
 }
 
 func (c *Counter) Enable() error  { return c.ioctlAll(unix.PERF_EVENT_IOC_ENABLE) }

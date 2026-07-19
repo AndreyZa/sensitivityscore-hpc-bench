@@ -32,6 +32,11 @@ type RatioSampler struct {
 	lastNum uint64
 	lastDen uint64
 	primed  bool
+
+	// Доля окна, которую события реально простояли на PMU (см. Reading.
+	// MultiplexRatio). Берётся с лидера группы: член группы планируется вместе
+	// с ним, поэтому одного числа на пару достаточно.
+	lastRatio float64
 }
 
 // counterPair opens the two counters for one RatioSampler flavor against an
@@ -86,10 +91,12 @@ func NewNUMARemoteRatioSampler(cgroupPath string) (*RatioSampler, error) {
 // sampler should be Close()d and re-created by the caller — the counters may
 // be in an undefined state (e.g. the pod's cgroup was torn down mid-read).
 func (s *RatioSampler) SampleDeltas() (deltaNum, deltaDen uint64, ok bool, err error) {
-	curNum, err := s.num.Read()
+	numReading, err := s.num.ReadFull()
 	if err != nil {
 		return 0, 0, false, err
 	}
+	s.lastRatio = numReading.MultiplexRatio()
+	curNum := numReading.Value
 	curDen, err := s.den.Read()
 	if err != nil {
 		return 0, 0, false, err
@@ -105,6 +112,18 @@ func (s *RatioSampler) SampleDeltas() (deltaNum, deltaDen uint64, ok bool, err e
 		return 0, 0, false, nil
 	}
 	return deltaNum, deltaDen, true, nil
+}
+
+// MultiplexRatio — доля тикового окна, которую счётчики этой пары простояли на
+// PMU по последнему чтению: 1.0 — мультиплексирования нет, меньше — ядро
+// крутило события по очереди, а сырые числа домножены на enabled/running.
+// Значение до первого чтения — 1: отсутствие свидетельства о мультиплексировании
+// не есть свидетельство его отсутствия, и обратное занизило бы метрику узла.
+func (s *RatioSampler) MultiplexRatio() float64 {
+	if s.lastRatio == 0 && !s.primed {
+		return 1
+	}
+	return s.lastRatio
 }
 
 // Ratio is the num/den convenience for one sampler's deltas. deltaDen == 0

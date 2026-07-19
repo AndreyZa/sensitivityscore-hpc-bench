@@ -90,3 +90,78 @@ func TestLLCPairRealHardware(t *testing.T) {
 		t.Fatalf("misses (%d) wildly exceed references (%d)", misses, refs)
 	}
 }
+
+// Мультиплексирование: ядро крутит события по очереди и возвращает СЫРОЕ
+// число, как будто счётчик стоял на PMU всё окно. Домножение на
+// enabled/running — та же поправка, что делает perf(1); без неё узловое
+// давление падает при уплотнении узла, то есть сигнал инвертируется ровно
+// там, где проверяется H1 (пункт A5 аудита).
+func TestReadingScaled(t *testing.T) {
+	cases := []struct {
+		name    string
+		reading Reading
+		want    uint64
+	}{
+		{"без мультиплексирования", Reading{Value: 1000, Enabled: 500, Running: 500}, 1000},
+		{"половина окна — вдвое вверх", Reading{Value: 1000, Enabled: 1000, Running: 500}, 2000},
+		{"четверть окна — вчетверо", Reading{Value: 250, Enabled: 4000, Running: 1000}, 1000},
+		{"счётчик не попал на PMU", Reading{Value: 1234, Enabled: 1000, Running: 0}, 0},
+		{"running > enabled (округление ядра)", Reading{Value: 700, Enabled: 999, Running: 1000}, 700},
+		{"нулевое окно", Reading{}, 0},
+	}
+	for _, c := range cases {
+		if got := c.reading.Scaled(); got != c.want {
+			t.Errorf("%s: Scaled() = %d, ожидалось %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestReadingMultiplexRatio(t *testing.T) {
+	cases := []struct {
+		name    string
+		reading Reading
+		want    float64
+	}{
+		{"полное окно", Reading{Enabled: 1000, Running: 1000}, 1.0},
+		{"половина", Reading{Enabled: 1000, Running: 500}, 0.5},
+		{"ничего не измерено", Reading{Enabled: 1000, Running: 0}, 0.0},
+		{"до первого чтения", Reading{}, 1.0},
+		{"running > enabled клампится", Reading{Enabled: 900, Running: 1000}, 1.0},
+	}
+	for _, c := range cases {
+		if got := c.reading.MultiplexRatio(); got != c.want {
+			t.Errorf("%s: MultiplexRatio() = %v, ожидалось %v", c.name, got, c.want)
+		}
+	}
+}
+
+// parseReading читает три little-endian u64 подряд — формат ответа read(2)
+// при PERF_FORMAT_TOTAL_TIME_ENABLED|RUNNING.
+func TestParseReading(t *testing.T) {
+	buf := make([]byte, readSize)
+	put := func(off int, v uint64) {
+		for i := 0; i < 8; i++ {
+			buf[off+i] = byte(v >> (8 * i))
+		}
+	}
+	put(0, 0xDEADBEEF)
+	put(8, 5_000_000_000)
+	put(16, 2_500_000_000)
+
+	got, err := parseReading(buf)
+	if err != nil {
+		t.Fatalf("parseReading: %v", err)
+	}
+	want := Reading{Value: 0xDEADBEEF, Enabled: 5_000_000_000, Running: 2_500_000_000}
+	if got != want {
+		t.Errorf("parseReading() = %+v, ожидалось %+v", got, want)
+	}
+	if r := got.MultiplexRatio(); r != 0.5 {
+		t.Errorf("ratio = %v, ожидалось 0.5", r)
+	}
+	// Короткий ответ — ошибка, а не молчаливые нули: 8 байт вместо 24 значат,
+	// что событие открыто без readFormat, и поправку применить не к чему.
+	if _, err := parseReading(buf[:8]); err == nil {
+		t.Error("parseReading(8 байт) должен вернуть ошибку")
+	}
+}

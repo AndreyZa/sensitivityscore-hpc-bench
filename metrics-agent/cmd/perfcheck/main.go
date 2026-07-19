@@ -67,13 +67,29 @@ func main() {
 		}
 	}
 
-	misses, err := counter.Read()
+	reading, err := counter.ReadFull()
 	if err != nil {
 		fmt.Printf("[perfcheck] FAILED to read counter: %v\n", err)
 		os.Exit(1)
 	}
+	misses := reading.Value
 
 	fmt.Printf("[perfcheck] SUCCESS: PERF_COUNT_HW_CACHE_MISSES = %d\n", misses)
+
+	// Мультиплексирование: сколько окна счётчик реально простоял на PMU. Здесь
+	// открыт ровно один счётчик, поэтому в норме ratio = 1.000; заметно меньше
+	// единицы на пустом узле означает, что PMU уже занята кем-то ещё (другой
+	// профайлер, соседняя ВМ через vPMU) — на такой машине измерения кэш-оси
+	// придётся оговаривать. Настоящая проверка — под нагрузкой стенда, где
+	// событий открыто по числу подов (алерт SSPMUMultiplexed).
+	ratio := reading.MultiplexRatio()
+	fmt.Printf("[perfcheck] PMU multiplex ratio = %.3f (enabled=%d ns, running=%d ns)\n",
+		ratio, reading.Enabled, reading.Running)
+	if ratio < 0.999 {
+		fmt.Println("[perfcheck] NOTE: counter was time-sliced even with a single event open —")
+		fmt.Println("[perfcheck] raw counts get scaled by enabled/running, so cache-axis numbers")
+		fmt.Println("[perfcheck] on this host rest on extrapolation, not direct measurement.")
+	}
 	if misses == 0 {
 		fmt.Println("[perfcheck] WARNING: reading is exactly zero even after real memory activity —")
 		fmt.Println("[perfcheck] this can mean the counter is opened but not actually backed by real")

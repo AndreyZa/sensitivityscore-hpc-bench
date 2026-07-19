@@ -52,6 +52,7 @@ type Exporter struct {
 	writeErrors  prometheus.Counter
 
 	pmuHardware   prometheus.Gauge
+	pmuMultiplex  prometheus.Gauge
 	netCalibrated prometheus.Gauge
 	llcCalibrated prometheus.Gauge
 	psiAvailable  prometheus.Gauge
@@ -132,6 +133,13 @@ func New(nodeName string) *Exporter {
 		llcCalibrated: gauge("ss_agent_llc_calibrated",
 			"1 when LLC_REFERENCE_MISSES_PER_SEC is set. 0 means ss_node_llc_miss_rate is the raw, "+
 				"load-inverting ratio."),
+		pmuMultiplex: gauge("ss_agent_pmu_multiplex_ratio",
+			"Share of the sampling window the PMU counters were actually scheduled on hardware, worst pod of the "+
+				"last tick (running/enabled). 1 = no multiplexing. Below 1 the kernel time-sliced the events and "+
+				"the agent scaled the raw counts up by enabled/running to compensate - the numbers are corrected "+
+				"but no longer directly measured. The number of open events grows with the number of pods, i.e. "+
+				"with the experimental variable, so a low ratio biases llc_misses_per_sec exactly where load is "+
+				"highest. Alert below 0.9 (SSPMUMultiplexed). Stays 1 in synthetic mode - no counters were open."),
 		psiAvailable: gauge("ss_agent_psi_available",
 			"1 when the kernel exposes cgroup io.pressure (PSI). 0 means the IO axis is effectively off - "+
 				"Debian/RHEL builds need psi=1 on the kernel cmdline."),
@@ -146,6 +154,12 @@ func (e *Exporter) SetEnvironment(pmuHardware bool, netRefMbps, llcRefMps float6
 	e.netCalibrated.Set(b2f(netRefMbps > 0))
 	e.llcCalibrated.Set(b2f(llcRefMps > 0))
 }
+
+// SetPMUMultiplexRatio публикует долю окна, которую счётчики реально простояли
+// на PMU (худший под тика). Отдельный сеттер, а не поле Publish: величина
+// относится к достоверности сбора, а не к вектору давления, и в синтетическом
+// режиме не выставляется вовсе.
+func (e *Exporter) SetPMUMultiplexRatio(ratio float64) { e.pmuMultiplex.Set(ratio) }
 
 // SetPSIAvailable выставляется по факту первого чтения io.pressure, а не на
 // старте: PSI определяется наличием файла, и агент узнаёт об этом только когда

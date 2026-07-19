@@ -397,6 +397,12 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		nodeDeltas   podDeltas
 		syntheticSum float64
 		sampledPods  int
+		// Худший (наименьший) коэффициент мультиплексирования среди подов
+		// этого тика: если хоть у одного пода счётчики стояли на PMU лишь
+		// часть окна, узловой агрегат уже опирается на домноженные числа.
+		// Минимум, а не среднее: одна проблемная группа не должна прятаться
+		// за десятком благополучных.
+		worstMultiplex = 1.0
 	)
 
 	for _, p := range pods {
@@ -450,6 +456,11 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		}
 
 		sampledPods++
+		if ps.llc != nil {
+			if r := ps.llc.MultiplexRatio(); r < worstMultiplex {
+				worstMultiplex = r
+			}
+		}
 		nodeDeltas.llcNum += deltas.llcNum
 		nodeDeltas.llcDen += deltas.llcDen
 		nodeDeltas.numaNum += deltas.numaNum
@@ -501,6 +512,12 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 	// дашборд продолжает показывать оси, а сам факт отказа виден в
 	// ss_agent_redis_write_errors_total.
 	exporter.SetPSIAvailable(psiOK)
+	// В синтетическом режиме PMU не открывается вовсе — коэффициент не о чем
+	// сообщать, и 1.0 там означал бы «мультиплексирования нет», хотя счётчиков
+	// просто не было.
+	if synth == nil {
+		exporter.SetPMUMultiplexRatio(worstMultiplex)
+	}
 	exporter.Publish(nodeAgg, sampledPods)
 
 	if err := writer.WriteNodeMetrics(ctx, nodeName, nodeAgg); err != nil {
