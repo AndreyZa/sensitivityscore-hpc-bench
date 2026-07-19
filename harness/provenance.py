@@ -62,17 +62,23 @@ def harness_commit(repo: Path | None = None) -> str:
     return f"{head}-dirty" if dirty else head
 
 
-def config_sha256(config_path: str | Path) -> str:
-    """sha256 файла конфига серии — ловит правку конфига между прогонами.
+def config_sha256(cfg: dict) -> str:
+    """sha256 РАЗРЕШЁННОГО конфига серии — ловит правку между прогонами.
 
-    Не заменяет запись самих параметров, но отвечает на вопрос «тот ли это
-    конфиг, что и в прошлый раз» однозначно и дёшево.
+    Считается по итоговому словарю, а не по файлу серии: с появлением
+    `extends` (config_loader.py) файл серии больше не определяет прогон
+    целиком — правка родителя изменила бы поведение, не тронув хеш. Хешируем
+    то, что реально управляло прогоном.
+
+    Канонизация (sort_keys) нужна, чтобы перестановка ключей не создавала
+    «другой» конфиг; default=str — на случай не-JSON типов из YAML (даты).
     """
     try:
-        return hashlib.sha256(Path(config_path).read_bytes()).hexdigest()[:16]
-    except OSError as exc:
-        log.warning("провенанс: не прочитан конфиг %s (%s)", config_path, exc)
+        canon = json.dumps(cfg, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as exc:
+        log.warning("провенанс: конфиг не канонизируется (%s)", exc)
         return ""
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
 
 def calibration(namespace: str, configmap: str = "metrics-agent-calibration") -> str:
@@ -121,11 +127,11 @@ def score_weights(namespace: str, configmap: str = "sensitivity-config") -> str:
         return raw[:200]
 
 
-def collect(config_path: str | Path, system_namespace: str) -> dict[str, str]:
+def collect(cfg: dict, system_namespace: str) -> dict[str, str]:
     """Постоянная в пределах серии часть провенанса — собрать один раз."""
     prov = {
         "harness_commit": harness_commit(),
-        "config_sha256": config_sha256(config_path),
+        "config_sha256": config_sha256(cfg),
         "workload_image": "",  # заполняется на строку: digest из imageID пода
         "calibration": calibration(system_namespace),
         "score_weights": score_weights(system_namespace),

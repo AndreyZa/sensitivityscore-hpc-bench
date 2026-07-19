@@ -29,34 +29,11 @@
 #   python run_experiment.py --config config-stage.yaml --baseline
 #   python run_experiment.py --config config-stage.yaml --pressure --scenarios io
 
-configs:
-  - A
-
-scheduler_variants:
-  - default
-  - sensitivityscore
-  # Контрольное плечо H1-trimaran (load-aware, но не interference-aware):
-  # профиль trimaran задеплоен на STAGE, metrics-server у k0s из коробки,
-  # collector читает метрики (проверено в логах). На STAGE Trimaran особенно
-  # показателен: --hdd-агрессоры потребляют заметный CPU, так что частично
-  # он шторм «видит» через утилизацию — если sensitivityscore всё равно
-  # лучше, IO-сигнал незаменим; если сравнимы — честно так и напишем.
-  - trimaran
-
-# Ноды, на которые НЕ ставить поды (nodeAffinity NotIn, без cordon/taint).
-# С 14.07.2026 кластер сжат до PMU-тройки worker-8/9/10 (первичная тройка
-# w5/w6/w7 удалена; серия io+net собрана до сжатия и заархивирована).
-# Список пуст — в игре все текущие ноды; ручка оставлена на будущее.
-exclude_nodes: []
+extends: config-stage-base.yaml
 
 profiles:
   - low-s      # io=low  — контраст для fingerprint
   - high-s-io  # io=high — жертва IO-сценария
-
-overcommit_ratios: [1.0] # batch-матрица не в фокусе стенда
-node_capacity_jobs: 1     # 2 vCPU на ноду — держим по одному job на ноду
-repetitions: 5
-cooldown_seconds: 20
 
 # Абляция под ТЕКУЩУЮ IO/Net-серию: LLC=0 — это выбор области, а не «PMU нет»
 # (LLC на STAGE измерим, см. шапку файла); NUMA=0 честно (1 домен). Измеримы
@@ -69,9 +46,6 @@ score_weights:
   net: 1.0
   io: 1.0
 
-backends:
-  A: k8s
-
 kubernetes:
   namespace: sensitivityscore-bench
   # Где живут Redis, планировщик и ConfigMap'ы калибровок/весов —
@@ -79,14 +53,6 @@ kubernetes:
   system_namespace: sensitivityscore-system
   job_timeout_seconds: 900
   poll_interval_seconds: 5
-
-slurm:
-  poll_interval_seconds: 5
-  job_timeout_seconds: 900
-
-images:
-  workload: "andreyza/geant4:11.2"
-  aggressor: "andreyza/aggressor:dev"
 
 # IO pressure-сценарий — единственный на этом стенде. Диск-агрессор на одном
 # воркере (второй остаётся чистым), поток high-s-io жертв через планировщик
@@ -152,19 +118,7 @@ aggressor:
   mem_request: "32Mi"
   mem_limit: "512Mi"
 
-baseline:
-  # per_node (дефолт true): каждый профиль пинуется на КАЖДУЮ worker-ноду —
-  # ноды STAGE аппаратно неоднородны (пересозданный worker-7 в ~1.9x
-  # медленнее w5/w6 при идентичной конфигурации), общий знаменатель slowdown
-  # приписывал разницу железа интерференции (см. results-stage-final10-
-  # confounded.parquet). 3 профиля x 3 ноды x 3 репы ~ 40-50 мин.
-  repetitions: 3
-  config: A-default
-
 output:
   results_dir: "results"
   results_file: "results-stage.parquet"
   baselines_file: "baselines-stage.parquet"
-
-redis:
-  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

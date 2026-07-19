@@ -58,6 +58,7 @@ sys.path.insert(
     0, str(Path(__file__).parent)
 )  # allow `from submit import ...` / `from profiles import ...`
 
+import config_loader
 import provenance
 from profiles import PROFILES, make_job_id
 from submit import aggressors, k8s_submit, node_pressure, slurm_submit
@@ -72,10 +73,10 @@ from submit.redis_metrics import purge_job_metrics
 _PROVENANCE: dict[str, str] = {}
 
 
-def init_provenance(cfg: dict, config_path: str) -> None:
+def init_provenance(cfg: dict) -> None:
     global _PROVENANCE
     _PROVENANCE = provenance.collect(
-        config_path,
+        cfg,
         cfg.get("kubernetes", {}).get("system_namespace", "sensitivityscore-system"),
     )
 
@@ -750,10 +751,12 @@ def main():
     )
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    cfg = config_loader.load_config(args.config)
+    chain = config_loader.config_chain(args.config)
+    if len(chain) > 1:
+        log.info("конфиг: %s", " <- ".join(chain))
 
-    init_provenance(cfg, args.config)
+    init_provenance(cfg)
 
     if args.pressure and args.baseline:
         parser.error("--pressure and --baseline are mutually exclusive")

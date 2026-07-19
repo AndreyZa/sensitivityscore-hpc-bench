@@ -1,0 +1,60 @@
+# config-stage-base.yaml — общая часть конфигов серий STAGE.
+#
+# Серии подключают её через `extends: config-stage-base.yaml` и
+# переопределяют только то, чем отличаются: обычно profiles,
+# pressure_scenarios, score_weights и output. Всё, что здесь, раньше
+# дублировалось в девяти файлах — правка «общего» параметра требовала
+# девяти согласованных правок, и пропущенная делала серии несравнимыми
+# молча (конфиг остаётся валидным).
+#
+# Списки при слиянии ЗАМЕЩАЮТСЯ целиком, словари сливаются рекурсивно
+# (harness/config_loader.py).
+
+aggressor:
+  default_args: ["--stream", "2"]
+  cpu_request: "10m"
+  cpu_limit: "2"
+  mem_request: "32Mi"
+  mem_limit: "512Mi"
+
+backends:
+  A: k8s
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+configs:
+  - A
+
+cooldown_seconds: 20
+
+exclude_nodes: []
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  job_timeout_seconds: 900
+  poll_interval_seconds: 5
+
+node_capacity_jobs: 1
+
+overcommit_ratios: [1.0]
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
+
+repetitions: 5
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 900
+

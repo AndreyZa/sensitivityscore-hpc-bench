@@ -21,26 +21,13 @@
 #
 # Запуск: make series SERIES=placebo  (preflight сверит ConfigMap с весами ниже)
 
-configs:
-  - A
-
-scheduler_variants:
-  - default
-  - sensitivityscore
-  - trimaran
-
-exclude_nodes: []
+extends: config-stage-base.yaml
 
 profiles:
   - low-s
   - high-s
   - high-s-io
   - high-s-net
-
-overcommit_ratios: [1.0]
-node_capacity_jobs: 1
-repetitions: 5
-cooldown_seconds: 20
 
 score_weights:
   base:
@@ -53,22 +40,6 @@ score_weights:
     numa: 0.0
     net: 0.0
     io: 0.0
-
-backends:
-  A: k8s
-
-kubernetes:
-  namespace: sensitivityscore-bench
-  job_timeout_seconds: 900
-  poll_interval_seconds: 5
-
-slurm:
-  poll_interval_seconds: 5
-  job_timeout_seconds: 900
-
-images:
-  workload: "andreyza/geant4:11.2"
-  aggressor: "andreyza/aggressor:dev"
 
 pressure_scenarios:
   - name: placebo
@@ -88,22 +59,7 @@ pressure_scenarios:
     stabilize_seconds: 5
     repetitions: 10
 
-aggressor:
-  default_args: ["--stream", "2"]
-  cpu_request: "10m"
-  cpu_limit: "2"
-  mem_request: "32Mi"
-  mem_limit: "512Mi"
-
-baseline:
-  # Та же сессия, что и серия — дрейф между сессиями +13..23%.
-  repetitions: 3
-  config: A-default
-
 output:
   results_dir: "results"
   results_file: "results-stage-placebo.parquet"
   baselines_file: "baselines-stage-placebo.parquet"
-
-redis:
-  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

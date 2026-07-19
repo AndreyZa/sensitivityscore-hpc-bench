@@ -51,8 +51,10 @@ pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 # Пути результатов — из секции output конфига (единственный источник правды).
 results_paths() {
     "$PY" - "$CONFIG" <<'EOF'
-import sys, yaml
-cfg = yaml.safe_load(open(sys.argv[1]))
+import sys
+sys.path.insert(0, "harness")   # конфиг серии — слой поверх родителя (extends)
+from config_loader import load_config
+cfg = load_config(sys.argv[1])
 out = cfg["output"]
 print("harness/" + out["results_dir"] + "/" + out["results_file"])
 print("harness/" + out["results_dir"] + "/" + out.get("baselines_file", "baselines.parquet"))
@@ -95,9 +97,10 @@ preflight() {
     # weights.json (ConfigMap) == score_weights (конфиг серии), после
     # нормализации обоих форматов через split_weights (зеркало parseWeights).
     (cd harness && ../$PY - "../$CONFIG" <<'EOF'
-import json, subprocess, sys, yaml
+import json, subprocess, sys
+from config_loader import load_config
 from submit.node_pressure import split_weights
-cfg = yaml.safe_load(open(sys.argv[1]))
+cfg = load_config(sys.argv[1])
 sw = cfg.get("score_weights")
 if sw is None:
     sys.exit(0)  # серия на дефолтных весах — сверять нечего

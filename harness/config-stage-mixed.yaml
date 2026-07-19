@@ -26,15 +26,7 @@
 #      baselines-stage-topup.parquet, high-s-io/net из baselines-stage-topup2.parquet.
 #   3. ./run-stage-mixed.sh (только --pressure).
 
-configs:
-  - A
-
-scheduler_variants:
-  - default
-  - sensitivityscore
-  - trimaran
-
-exclude_nodes: []
+extends: config-stage-base.yaml
 
 profiles:
   - low-s      # контраст fingerprint; в pressure-потоке не участвует
@@ -42,33 +34,12 @@ profiles:
   - high-s-io
   - high-s-net
 
-overcommit_ratios: [1.0]
-node_capacity_jobs: 1
-repetitions: 5
-cooldown_seconds: 20
-
 # Все три оси. NUMA=0 честно (один домен на узел).
 score_weights:
   llc: 1.0
   numa: 0.0
   net: 1.0
   io: 1.0
-
-backends:
-  A: k8s
-
-kubernetes:
-  namespace: sensitivityscore-bench
-  job_timeout_seconds: 900
-  poll_interval_seconds: 5
-
-slurm:
-  poll_interval_seconds: 5
-  job_timeout_seconds: 900
-
-images:
-  workload: "andreyza/geant4:11.2"
-  aggressor: "andreyza/aggressor:dev"
 
 pressure_scenarios:
   - name: mixed3
@@ -104,22 +75,7 @@ pressure_scenarios:
     stabilize_seconds: 30
     repetitions: 10
 
-aggressor:
-  default_args: ["--stream", "2"]
-  cpu_request: "10m"
-  cpu_limit: "2"
-  mem_request: "32Mi"
-  mem_limit: "512Mi"
-
-baseline:
-  # Эталоны переиспользуются (см. шапку) — отдельный прогон не нужен.
-  repetitions: 3
-  config: A-default
-
 output:
   results_dir: "results"
   results_file: "results-stage-mixed.parquet"
   baselines_file: "baselines-stage-mixed.parquet"
-
-redis:
-  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"

@@ -33,9 +33,15 @@ def tail_lines(path: Path, n: int = 12) -> list[str]:
 
 def load_cfg(path: Path) -> dict:
     try:
-        import yaml
+        # Через загрузчик харнесса: конфиг серии — слой поверх родителя
+        # (extends), и плоский safe_load показал бы страницу без унаследованных
+        # значений, то есть тихо соврал бы.
+        import sys
 
-        return yaml.safe_load(path.read_text()) or {}
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "harness"))
+        from config_loader import load_config
+
+        return load_config(path) or {}
     except Exception:  # noqa: BLE001 — страница не должна падать из-за конфига
         return {}
 
