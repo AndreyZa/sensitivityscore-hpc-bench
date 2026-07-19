@@ -155,6 +155,7 @@ def error_row(
         "net_pressure": float("nan"),
         "io_iops": float("nan"),
         "io_pressure": float("nan"),
+        "samples": 0,  # error-строка: метрик нет, усреднять было нечего
         "approximation": f"error:{exc}",
         "scenario": None,
         "batch_size": None,
@@ -222,6 +223,7 @@ def run_one(
             "net_pressure": float("nan"),
             "io_iops": float("nan"),
             "io_pressure": float("nan"),
+            "samples": 0,  # dry-run: ничего не измерялось
             "approximation": "dry-run",
             "scenario": None,  # caller (run_batch / pressure arm) fills this in
             "interference_chosen": float("nan"),

@@ -544,19 +544,32 @@ submit-slurm-high-s: ## sbatch high-S скрипт (config C) напрямую
 # Python venv (harness + analysis — раздельные окружения, разные requirements)
 # ---------------------------------------------------------------------------
 
-$(HARNESS_VENV)/bin/activate: harness/requirements.txt
+# Ставим из requirements.lock, если он есть (точные версии — воспроизводимость),
+# иначе из requirements.txt (границы >=). lock — в prerequisites через wildcard,
+# чтобы его правка пересобирала venv. Регенерация lock: make deps-lock.
+$(HARNESS_VENV)/bin/activate: harness/requirements.txt $(wildcard harness/requirements.lock)
 	$(PYTHON) -m venv $(HARNESS_VENV)
 	$(HARNESS_VENV)/bin/pip install --quiet --upgrade pip
-	$(HARNESS_VENV)/bin/pip install --quiet -r harness/requirements.txt
+	@if [ -f harness/requirements.lock ]; then \
+		echo "  harness: из requirements.lock (точные версии)"; \
+		$(HARNESS_VENV)/bin/pip install --quiet -r harness/requirements.lock; \
+	else \
+		$(HARNESS_VENV)/bin/pip install --quiet -r harness/requirements.txt; \
+	fi
 	touch $(HARNESS_VENV)/bin/activate
 
 .PHONY: venv-harness
 venv-harness: $(HARNESS_VENV)/bin/activate ## Создать/обновить venv для harness/
 
-$(ANALYSIS_VENV)/bin/activate: analysis/requirements.txt
+$(ANALYSIS_VENV)/bin/activate: analysis/requirements.txt $(wildcard analysis/requirements.lock)
 	$(PYTHON) -m venv $(ANALYSIS_VENV)
 	$(ANALYSIS_VENV)/bin/pip install --quiet --upgrade pip
-	$(ANALYSIS_VENV)/bin/pip install --quiet -r analysis/requirements.txt
+	@if [ -f analysis/requirements.lock ]; then \
+		echo "  analysis: из requirements.lock (точные версии — важно для p-значений)"; \
+		$(ANALYSIS_VENV)/bin/pip install --quiet -r analysis/requirements.lock; \
+	else \
+		$(ANALYSIS_VENV)/bin/pip install --quiet -r analysis/requirements.txt; \
+	fi
 	touch $(ANALYSIS_VENV)/bin/activate
 
 .PHONY: venv-analysis
@@ -743,14 +756,36 @@ ch-tunnel: ## Поднять SSH-туннель к ПК-агрегатору (CH
 ch-tunnel-close: ## Закрыть SSH-туннель к ПК-агрегатору
 	@ssh -S $(CH_SOCK) -O exit $(CH_SSH) 2>/dev/null && echo "туннель закрыт" || echo "туннель не найден"
 
-$(CH_VENV)/bin/activate: db/clickhouse/requirements.txt
+$(CH_VENV)/bin/activate: db/clickhouse/requirements.txt $(wildcard db/clickhouse/requirements.lock)
 	$(PYTHON) -m venv $(CH_VENV)
 	$(CH_VENV)/bin/pip install --quiet --upgrade pip
-	$(CH_VENV)/bin/pip install --quiet -r db/clickhouse/requirements.txt
+	@if [ -f db/clickhouse/requirements.lock ]; then \
+		echo "  clickhouse: из requirements.lock (точные версии)"; \
+		$(CH_VENV)/bin/pip install --quiet -r db/clickhouse/requirements.lock; \
+	else \
+		$(CH_VENV)/bin/pip install --quiet -r db/clickhouse/requirements.txt; \
+	fi
 	touch $(CH_VENV)/bin/activate
 
 .PHONY: venv-clickhouse
 venv-clickhouse: $(CH_VENV)/bin/activate ## Создать/обновить venv для загрузчика ClickHouse
+
+# Фиксирует то, что СТОИТ в venv сейчас. Чтобы ОБНОВИТЬ зависимости: удалить
+# нужный requirements.lock, пересоздать venv (он тогда поставит из .txt свежие
+# версии) и снова прогнать эту цель.
+.PHONY: deps-lock
+deps-lock: ## Зафиксировать requirements.lock из текущих venv (воспроизводимость отчётов)
+	@for d in harness analysis db/clickhouse; do \
+		test -x $$d/.venv/bin/pip || { echo "нет $$d/.venv — сначала make venv-*"; exit 1; }; \
+		{ echo "# requirements.lock — точные версии, на которых получены результаты"; \
+		  echo "# (снимок $$(date +%Y-%m-%d)). requirements.txt задаёт границы (>=), этот файл"; \
+		  echo "# фиксирует реально стоявшее: иначе scipy/numpy через год дадут другие p"; \
+		  echo "# (scipy меняет режим Манна-Уитни и обработку связок между версиями)."; \
+		  echo "# venv-цели ставят из него, если он есть. Регенерация: make deps-lock."; \
+		  $$d/.venv/bin/pip freeze | grep '==' | sort -f; \
+		} > $$d/requirements.lock; \
+		echo "  $$d: $$(grep -c '==' $$d/requirements.lock) пакетов -> $$d/requirements.lock"; \
+	done
 
 .PHONY: ch-schema
 ch-schema: venv-clickhouse ## Применить schema.sql на приёмнике: make ch-schema CH_HOST=<хост>

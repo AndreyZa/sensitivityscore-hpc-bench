@@ -72,6 +72,12 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
         "net_pressure": float("nan"),
         "io_iops": float("nan"),
         "io_pressure": float("nan"),
+        # Число тиков, усреднённых в метрики этой строки. 0 в возврате empty
+        # (агент не дал данных) неотличимо от «не измерено» — и это верно.
+        # В валидной строке samples>=1; малое samples = задача жила несколько
+        # тиков вместе с инициализацией, и её S смещён — теперь это ВИДНО в
+        # строке, а не теряется (S = <dim>_sum / samples, см. ниже).
+        "samples": 0,
     }
 
     try:
@@ -121,4 +127,9 @@ def fetch_job_metrics(redis_addr: str, job_id: str, node: str) -> dict:
         "io_iops": lifetime_mean("io_iops_sum"),
         "io_pressure": lifetime_mean("io_pressure_sum"),
         "approximation": fields.get("approximation", ""),
+        # Знаменатель усреднения выше — в строку результата: позволяет
+        # отфильтровать задачи, чей S посчитан по слишком малому числу тиков
+        # (короткая жизнь, инициализация доминирует). Раньше жил только в
+        # Redis-хеше и в parquet не доезжал.
+        "samples": samples,
     }

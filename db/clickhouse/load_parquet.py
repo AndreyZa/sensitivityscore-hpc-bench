@@ -38,7 +38,7 @@ INSERT_COLUMNS = [
     "submit_ts", "start_ts", "end_ts", "llc_miss_rate", "numa_remote_ratio",
     "net_bw", "net_pressure", "io_iops", "io_pressure", "interference_chosen",
     "placement_regret", "sensitivity_llc", "sensitivity_numa", "sensitivity_net",
-    "sensitivity_io", "approximation", "source_file",
+    "sensitivity_io", "approximation", "source_file", "samples",
     # Провенанс (harness/provenance.py); в parquet до его введения этих
     # колонок нет — добираются пустыми через _BACKFILL_DEFAULTS.
     "harness_commit", "config_sha256", "workload_image", "calibration", "score_weights",
@@ -52,7 +52,7 @@ REQUIRED_PARQUET_COLUMNS = {
     "start_ts", "end_ts", "llc_miss_rate", "numa_remote_ratio", "net_bw",
     "net_pressure", "io_iops", "io_pressure", "interference_chosen",
     "placement_regret", "sensitivity_llc", "sensitivity_numa", "sensitivity_net",
-    "sensitivity_io", "approximation",
+    "sensitivity_io", "approximation", "samples",
     "harness_commit", "config_sha256", "workload_image", "calibration", "score_weights",
     "profile_overrides", "storm_nodes",
 }
@@ -90,6 +90,8 @@ _BACKFILL_DEFAULTS = {
     "sensitivity_llc": "", "sensitivity_numa": "", "sensitivity_net": "", "sensitivity_io": "",
     "scenario": "",
     "batch_size": 1, "batch_index": 0,
+    # 0 = колонки не было в этом поколении parquet (samples не записывался).
+    "samples": 0,
     # Пустой провенанс = «серия снята до его введения, восстановить нельзя».
     "harness_commit": "", "config_sha256": "", "workload_image": "",
     "calibration": "", "score_weights": "", "profile_overrides": "", "storm_nodes": "",
@@ -142,6 +144,7 @@ def coerce_rows(df: pd.DataFrame, stand: str, run_label: str, source_file: str) 
             _s(r["sensitivity_io"]),
             _s(r["approximation"]),
             source_file,
+            _int(r["samples"], 0),
             _s(r["harness_commit"]),
             _s(r["config_sha256"]),
             _s(r["workload_image"]),
