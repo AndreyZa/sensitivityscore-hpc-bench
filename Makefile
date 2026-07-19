@@ -753,18 +753,29 @@ $(CH_VENV)/bin/activate: db/clickhouse/requirements.txt
 venv-clickhouse: $(CH_VENV)/bin/activate ## Создать/обновить venv для загрузчика ClickHouse
 
 .PHONY: ch-schema
-ch-schema: ## Применить schema.sql на ПК-агрегаторе (нужен clickhouse-client; CH_HOST=<PC>)
-	clickhouse-client --host $(CH_HOST) --multiquery < db/clickhouse/schema.sql
+ch-schema: venv-clickhouse ## Применить schema.sql на приёмнике: make ch-schema CH_HOST=<хост>
+	$(CH_VENV)/bin/python db/clickhouse/apply_sql.py \
+		--host $(CH_HOST) --port $(CH_PORT) --user $(CH_USER) \
+		--password "$(CH_PASSWORD)" \
+		db/clickhouse/schema.sql
 
 # schema.sql создаёт таблицы через IF NOT EXISTS и потому не меняет уже
 # существующие — новые колонки накатываются миграциями.
+# Схема и миграции идут по HTTP тем же клиентом, что и загрузка (8123).
+# Раньше здесь был clickhouse-client на порту 9000 — НАТИВНЫЙ протокол: через
+# SSH-туннель к домашнему агрегатору (make ch-tunnel пробрасывает 8123) цель не
+# работала в принципе, а сам бинарь ставится отдельно от venv.
 .PHONY: ch-migrate
-ch-migrate: ## Накатить миграции схемы на приёмник: make ch-migrate CH_HOST=<хост>
-	@for m in db/clickhouse/migrations/*.sql; do \
-		echo "-> $$m"; \
-		clickhouse-client --host $(CH_HOST) --port 9000 --multiquery < "$$m" || exit 1; \
-	done
-	@echo "миграции применены"
+ch-migrate: venv-clickhouse ## Накатить миграции схемы на приёмник: make ch-migrate CH_HOST=<хост>
+	$(CH_VENV)/bin/python db/clickhouse/apply_sql.py \
+		--host $(CH_HOST) --port $(CH_PORT) --user $(CH_USER) \
+		--password "$(CH_PASSWORD)" \
+		db/clickhouse/migrations/*.sql
+
+.PHONY: ch-migrate-dry
+ch-migrate-dry: venv-clickhouse ## Разобрать миграции, не подключаясь к приёмнику
+	$(CH_VENV)/bin/python db/clickhouse/apply_sql.py --dry-run \
+		db/clickhouse/migrations/*.sql
 
 .PHONY: ch-load
 ch-load: venv-clickhouse ## Залить results+baselines в ClickHouse: make ch-load CH_HOST=<PC> STAND=<s> RUN_LABEL=<l>
