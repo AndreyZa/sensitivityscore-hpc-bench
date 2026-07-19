@@ -8,11 +8,15 @@
 #   make series-preflight SERIES=<имя>  проверить стенд, ничего не запуская
 #   make series-stop SERIES=<имя>     остановить серию и удалить её поды
 #
-# Конвенция имён (SERIES=placebo -> «stage-placebo»):
-#   конфиг     harness/config-stage-<имя>.yaml
-#   скрипт     harness/run-stage-<имя>.sh      (эталоны + серия одной сессией)
-#   лог        harness/stage-<имя>.log         (старый ротируется с меткой времени)
+# Конвенция имён (STAND=stage по умолчанию, SERIES=placebo -> «stage-placebo»):
+#   конфиг     harness/config-<стенд>-<имя>.yaml
+#   скрипт     harness/run-<стенд>-<имя>.sh    (эталоны + серия одной сессией)
+#   лог        harness/<стенд>-<имя>.log       (старый ротируется с меткой времени)
 #   результаты harness/results/<из секции output конфига> (старые ротируются)
+#
+# Стенд задаётся STAND=<имя> (stage | prod): STAND=prod make series SERIES=smoke
+# возьмёт harness/config-prod-smoke.yaml и положит отчёт в report-prod-smoke.
+# KUBECONFIG по умолчанию тоже зависит от стенда — см. ниже.
 #
 # Preflight проверяет то, что харнесс проверить не может или узнаёт слишком
 # поздно: доступность кластера, готовность агентов и планировщика, СОВПАДЕНИЕ
@@ -24,7 +28,17 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 1
-export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/timeweb-stage}
+
+# Стенд: определяет префикс всех имён (конфиг, скрипт, лог, каталог отчёта) и
+# kubeconfig по умолчанию. Значение по умолчанию — stage, поэтому все команды
+# STAGE работают как раньше, без указания STAND.
+STAND=${STAND:-stage}
+case "$STAND" in
+    stage) DEFAULT_KUBECONFIG=$HOME/.kube/configs/timeweb-stage ;;
+    prod)  DEFAULT_KUBECONFIG=$HOME/.kube/configs/prod ;;
+    *)     echo "неизвестный STAND='$STAND' (ожидается stage|prod)"; exit 2 ;;
+esac
+export KUBECONFIG=${KUBECONFIG:-$DEFAULT_KUBECONFIG}
 
 SYS_NS=sensitivityscore-system
 BENCH_NS=sensitivityscore-bench
@@ -36,9 +50,9 @@ SERIES=${2:-}
 [ -z "$ACTION" ] || [ -z "$SERIES" ] && {
     echo "использование: $0 start|preflight|page|status|stop <серия>  (напр. placebo, mixed-calib)"; exit 2; }
 
-CONFIG=harness/config-stage-$SERIES.yaml
-RUNSCRIPT=harness/run-stage-$SERIES.sh
-LOG=harness/stage-$SERIES.log
+CONFIG=harness/config-$STAND-$SERIES.yaml
+RUNSCRIPT=harness/run-$STAND-$SERIES.sh
+LOG=harness/$STAND-$SERIES.log
 PIDFILE=harness/.series-$SERIES.pid
 WDPIDFILE=harness/.series-$SERIES.watchdog.pid
 STALLFLAG=harness/.series-$SERIES.stalled
@@ -78,7 +92,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Подъём статус-страницы. Отдельная функция и отдельный экшен `page`, потому
 # что стартовать прогон можно не только через `make series`: ручным
-# harness/run-stage-<имя>.sh, целями make pilot / run-all / run-config-a. Пока
+# harness/run-<стенд>-<имя>.sh, целями make pilot / run-all / run-config-a. Пока
 # подъём был зашит внутрь start(), все эти пути оставляли оператора либо без
 # страницы, либо — хуже — со страницей ПРЕДЫДУЩЕЙ серии на том же порту.
 #
@@ -91,14 +105,14 @@ status_page_up() {
     local buildlog=harness/.statuspage-$SERIES.log
 
     # Соглашение об именах здесь не сплошное: исторические pressure/baseline
-    # ходят не в config-stage-pressure.yaml (такого файла нет), а в
-    # config-stage.yaml с логом stage-pressure.log. Для compose это «серия по
+    # ходят не в config-<стенд>-pressure.yaml (такого файла нет), а в
+    # config-<стенд>.yaml с логом <стенд>-pressure.log. Для compose это «серия по
     # умолчанию» — пустой SERIES. Остальные серии называются единообразно.
     local cseries=$SERIES
     case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
     # Лог, который ДОЛЖЕН быть у нужной нам страницы, — по нему сверяем,
     # что на порту отвечает не контейнер предыдущей серии.
-    local logpat="stage-${cseries:-pressure}\.log"
+    local logpat="$STAND-${cseries:-pressure}\.log"
 
     command -v docker >/dev/null 2>&1 || {
         echo "WARN: docker не найден — статус-страница пропущена (серию это не трогает)"
@@ -137,7 +151,9 @@ status_page_up() {
     # Вывод сборки НЕ в /dev/null: при провале build compose выходит, не
     # тронув контейнеры, и на порту продолжает жить страница прошлой серии —
     # WARN и работающая страница одновременно читаются как «ложная тревога».
-    if ! SERIES="$cseries" STAND="${STAND:-STAGE}" STATUS_PORT="$port" \
+    # Подпись стенда в шапке страницы — заглавными (STAGE/PROD): STAND здесь
+    # уже всегда задан, а страница показывает его как есть.
+    if ! SERIES="$cseries" STAND="$(printf %s "$STAND" | tr "[:lower:]" "[:upper:]")" STATUS_PORT="$port" \
          RESULTS="$results" BASELINES="$baselines" KUBECONFIG="$kcfg" \
          docker compose -f statusserver/docker-compose.yaml up -d --build \
          > "$buildlog" 2>&1; then
@@ -352,15 +368,15 @@ watchdog() {
     if grep -q "PRESSURE DONE" "$LOG" 2>/dev/null; then
         echo "WATCHDOG $(date '+%F %T'): серия $SERIES завершена (PRESSURE DONE)." >> "$LOG"
         # Отчёт H1 (Манн-Уитни+Холм+δ, графики) — панель «Анализ» статус-
-        # страницы читает analysis/report-stage-<серия>/. Генерируется здесь,
+        # страницы читает analysis/report-<стенд>-<серия>/. Генерируется здесь,
         # ПОСЛЕ выхода процесса серии (кластер уже свободен); неудача отчёта
         # серию не трогает — данные в parquet/ClickHouse, отчёт повторим руками.
         local results baselines
         { read -r results; read -r baselines; } < <(results_paths)
         if (cd analysis && .venv/bin/python analyze.py \
                 --results "../$results" --baselines "../$baselines" \
-                --outdir "report-stage-$SERIES") >> "$LOG" 2>&1; then
-            echo "WATCHDOG $(date '+%F %T'): отчёт готов — analysis/report-stage-$SERIES (статус-страница «Анализ»)." >> "$LOG"
+                --outdir "report-$STAND-$SERIES") >> "$LOG" 2>&1; then
+            echo "WATCHDOG $(date '+%F %T'): отчёт готов — analysis/report-$STAND-$SERIES (статус-страница «Анализ»)." >> "$LOG"
         else
             echo "WATCHDOG ERROR $(date '+%F %T'): отчёт не собрался (см. выше) — повторить: make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines" >> "$LOG"
         fi
@@ -474,7 +490,7 @@ EOF
         state=$(docker inspect ss-status --format '{{.State.Status}} (код {{.State.ExitCode}}, рестартов {{.RestartCount}})')
         args=$(docker inspect ss-status --format '{{json .Args}}')
         echo "контейнер: $state"
-        if grep -q -- "stage-${cseries:-pressure}\.log" <<<"$args"; then
+        if grep -q -- "$STAND-${cseries:-pressure}\.log" <<<"$args"; then
             echo "серия:     $SERIES — совпадает"
         else
             echo "серия:     !!! контейнер показывает ДРУГУЮ серию, цифрам на странице не верить"
@@ -515,7 +531,7 @@ case "$ACTION" in
     # способом узнать, готов ли кластер, было стартовать многочасовую серию.
     preflight) preflight ;;
     # Поднять только статус-страницу. Нужен тем путям запуска, которые идут
-    # мимо start(): ручной harness/run-stage-<имя>.sh, make pilot/run-all.
+    # мимо start(): ручной harness/run-<стенд>-<имя>.sh, make pilot/run-all.
     page) status_page_up ;;
     __watchdog) watchdog "${3:?нужен pid серии}" ;;
     *) echo "неизвестное действие: $ACTION (start|preflight|page|status|stop)"; exit 2 ;;

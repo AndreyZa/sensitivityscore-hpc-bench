@@ -1,0 +1,60 @@
+# config-prod-smoke.yaml — ПЕРВАЯ серия на прод-стенде: проверка сквозного
+# пути, а не гипотез. Задача — убедиться, что задача доезжает до узла, агент
+# пишет давление, планировщик его читает, результаты складываются в parquet и
+# ClickHouse, а статус-страница показывает прогресс. Никаких выводов о H1 по
+# ней не делается: повторений мало, веса ещё не откалиброваны.
+#
+# Запуск:  STAND=prod make series-preflight SERIES=smoke
+#          STAND=prod make series SERIES=smoke PILOT=1
+#
+# <FILL> перед запуском: имена узлов (`kubectl get nodes`) в storms[].node.
+#
+# Что смотреть глазами после прогона:
+#   * harness/prod-smoke.log — фазы BASELINE/PRESSURE, rc=0;
+#   * статус-страница — узлы, давление осей, размещение задач;
+#   * make calibration-show — калибровки НЕ пустые (иначе Net-ось выключена,
+#     а llc_miss_rate вернулся к сырому инвертирующему ratio);
+#   * ss_agent_pmu_multiplex_ratio в Prometheus — если метрики ещё нет,
+#     значит пункт A5 плана не закрыт, и кэш-ось на 128 потоках доверия
+#     не заслуживает (см. docs/Аудит и план работ.md).
+
+extends: config-prod-base.yaml
+
+# Два профиля: чувствительный к диску и его близнец. Пара нужна уже на смоуке —
+# она сразу показывает, различает ли скоринг задачи, и стоит ли шторм вообще
+# хоть чего-то на этом железе (на NVMe цена дисковой оси может оказаться
+# близкой к нулю — в отличие от облачного тома STAGE).
+profiles:
+  - high-s-io
+  - io-insensitive
+
+# Смоук: минимум повторений, чтобы уложиться в один сеанс.
+repetitions: 2
+baseline:
+  repetitions: 2
+  config: A-default
+
+pressure_scenarios:
+  - name: smoke
+    victims:
+      - { profile: high-s-io, count: 2 }
+      - { profile: io-insensitive, count: 2 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 30
+    aggressors_per_node: [2]
+    storms:
+      - node: "<FILL-bench-node-2>"     # имя из kubectl get nodes
+        mode: stress
+        args: ["--hdd", "4", "--hdd-bytes", "4g"]
+        per_node: 2
+        toxic_for: [high-s-io]
+    # На bare-metal шторму нужно дольше выйти на режим: 384 ГБ page cache
+    # заполняются не мгновенно, и первые секунды диск ещё не под давлением.
+    stabilize_seconds: 60
+    repetitions: 2
+
+output:
+  results_dir: "results"
+  results_file: "results-prod-smoke.parquet"
+  baselines_file: "baselines-prod-smoke.parquet"

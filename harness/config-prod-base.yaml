@@ -1,0 +1,108 @@
+# config-prod-base.yaml — общая часть конфигов серий ПРОД-стенда (3× Dell R760,
+# 2× Xeon Platinum 8462Y+: 64 ядра / 128 потоков и 2 NUMA-домена на узел,
+# 384 ГБ RAM, bare-metal). Аналог config-stage-base.yaml; серии подключают
+# через `extends: config-prod-base.yaml` и переопределяют только своё
+# (profiles, pressure_scenarios, score_weights, output).
+#
+# Списки при слиянии ЗАМЕЩАЮТСЯ целиком, словари сливаются рекурсивно
+# (harness/config_loader.py).
+#
+# ─────────────────────────────────────────────────────────────────────────
+# ЗАПОЛНИТЬ ПЕРЕД ПЕРВОЙ СЕРИЕЙ (отмечено <FILL>):
+#   1. Имена узлов — как их видит kubectl (`kubectl get nodes`), а НЕ адреса
+#      из inventory/hosts.yml провижининга. Подставляются в exclude_nodes
+#      (если нужно) и в storms[].node конфигов серий.
+#   2. Калибровки датчиков — не здесь, а в ConfigMap
+#      metrics-agent-calibration: `make calibration-apply
+#      NET_REFERENCE_MBPS=<из netcheck §1б> LLC_REFERENCE_MISSES_PER_SEC=<из
+#      perfcheck §1а>`; проверить — `make calibration-show`.
+#   3. Веса осей: значения ниже — ЗАГЛУШКА (равные веса, как defaultWeights
+#      плагина). Реальные цены осей на железе другие: диск подешевеет (NVMe
+#      вместо облачного тома), кэш впервые проявится (полные ядра вместо
+#      квоты 500m), включится NUMA. Порядок: снять калибровочную серию ->
+#      analysis/calibrate_axis_costs.py -> вписать сюда и в ConfigMap
+#      sensitivity-config. До калибровки серии считать разведочными.
+# ─────────────────────────────────────────────────────────────────────────
+
+aggressor:
+  default_args: ["--stream", "2"]
+  # Заявки генератора намеренно мизерные: узел со штормом обязан выглядеть
+  # свободным для планировщика без модели интерференции (условие всех серий).
+  # Лимит CPU выше, чем на STAGE: на 128 потоках шторму нужно больше ядер,
+  # чтобы создать давление, сопоставимое с долей узла у жертвы.
+  cpu_request: "10m"
+  cpu_limit: "8"
+  mem_request: "32Mi"
+  mem_limit: "4Gi"
+
+backends:
+  A: k8s
+
+baseline:
+  repetitions: 3
+  config: A-default
+
+configs:
+  - A
+
+# Пауза между повторениями. На bare-metal остаточный page cache после
+# дискового шторма живёт дольше (384 ГБ RAM), поэтому больше, чем на STAGE.
+cooldown_seconds: 60
+
+# <FILL> если какой-то из bench-узлов временно выведен из эксперимента;
+# системный узел и control-plane исключать не нужно — их закрывает taint
+# node-role.kubernetes.io/ss-system:NoSchedule (см. bootstrap-cluster.sh).
+exclude_nodes: []
+
+images:
+  workload: "andreyza/geant4:11.2"
+  aggressor: "andreyza/aggressor:dev"
+
+kubernetes:
+  namespace: sensitivityscore-bench
+  # Задачи на полных ядрах считаются дольше, чем на квоте 500m STAGE, а
+  # N_PRIMARIES профилей вырастет — таймаут с запасом.
+  job_timeout_seconds: 2400
+  poll_interval_seconds: 5
+
+# Сколько задач одновременно на узел. На STAGE было 1 (2 vCPU на узел);
+# на 64 ядрах узел вмещает несколько задач — и именно здесь впервые станет
+# измеримой цена скученности (на STAGE +2.6%/сосед). Значение подобрать по
+# профилю: node_capacity_jobs × G4_THREADS не должно превышать ядра узла.
+node_capacity_jobs: 2
+
+overcommit_ratios: [1.0]
+
+redis:
+  addr: "redis.sensitivityscore-system.svc.cluster.local:6379"
+
+repetitions: 10
+
+scheduler_variants:
+  - default
+  - sensitivityscore
+  - trimaran
+
+# Порядок плеч фиксирован во всех сериях STAGE (trimaran всегда последний),
+# из-за чего позиция в прогоне слита с личностью планировщика. Дрейфа там не
+# нашли (B2: значимого тренда нет в 10 сериях из 11), но на проде вопрос
+# снимается дёшево — рандомизацией порядка. См. пункт B2 плана работ.
+
+slurm:
+  poll_interval_seconds: 5
+  job_timeout_seconds: 2400
+
+# ЗАГЛУШКА до калибровки на железе: равные веса всех осей, базовая цена = 0
+# (прежнее поведение плагина). Первая же серия покажет, что это не так —
+# ровно как кэш-серия на STAGE.
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+  sensitivity:
+    llc: 1.0
+    numa: 1.0
+    net: 1.0
+    io: 1.0
