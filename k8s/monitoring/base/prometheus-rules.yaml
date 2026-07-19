@@ -58,6 +58,38 @@ data:
               summary: "LLC-ось на {{ $labels.node }} не откалибрована"
               description: "llc_miss_rate — сырой ratio, инвертируется под нагрузкой. Снять llc_misses_per_sec под 2x stress-ng --stream и выставить LLC_REFERENCE_MISSES_PER_SEC."
 
+          # Зеркало SSLLCUncalibrated: там ось не откалибрована и это видно,
+          # здесь калибровка ЕСТЬ, но не от этого железа. Референс со STAGE
+          # (15e6 промахов/с на 2 vCPU в KVM) на R760 (2x Xeon 8462Y+, 128
+          # потоков) занижен на полтора-два порядка: отношение выходит за
+          # единицу, clamp01 прибивает его ровно к 1.0 на КАЖДОМ узле, и ось
+          # превращается в константу. В отличие от net_pressure=0, который
+          # честно означает «оси нет», насыщенная единица врёт правдоподобной
+          # шкалой: агент Running, PMU честный, ss_agent_llc_calibrated=1, на
+          # дашборде «высокое давление» — а вклад оси в ранжирование нулевой.
+          - alert: SSLLCAxisSaturated
+            expr: min by (node) (min_over_time(ss_node_llc_miss_rate[30m])) >= 0.999
+            for: 10m
+            labels: {severity: critical}
+            annotations:
+              summary: "LLC-ось на {{ $labels.node }} прибита к насыщению (1.0)"
+              description: "llc_miss_rate полчаса не опускался ниже 0.999 — LLC_REFERENCE_MISSES_PER_SEC занижен для этого железа (референс с другого стенда?). Ось не различает узлы. Пересчитать: снять llc_misses_per_sec под 2x stress-ng --stream и make calibration-apply."
+
+          # Оси, вырожденные в КОНСТАНТУ (любую, не только 1.0). Аппаратные
+          # счётчики не повторяются бит в бит: нулевая дисперсия за час
+          # означает не «стабильную нагрузку», а упор в clamp01 сверху либо
+          # снизу — то есть ось перестала быть сигналом. Ловит и завышенный
+          # референс (всё вжато в ~0), который отдельным порогом не поймать.
+          - alert: SSAxisDegenerate
+            expr: |
+              stddev_over_time(ss_node_llc_miss_rate[1h]) == 0
+              and on(node) max by (node) (ss_agent_llc_calibrated) == 1
+            for: 15m
+            labels: {severity: warning}
+            annotations:
+              summary: "LLC-ось на {{ $labels.node }} — константа (нулевая дисперсия за час)"
+              description: "Значение не меняется вообще: признак упора в clamp01 сверху (референс занижен) или снизу (завышен). Ось не вносит вклада в Score(), но выглядит рабочей."
+
           - alert: SSNetUncalibrated
             expr: max by (node) (ss_agent_net_calibrated) == 0
             for: 15m
