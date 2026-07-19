@@ -145,24 +145,32 @@ rotate() {
     echo "  ..: $f -> $f.$stamp"
 }
 
+# Размер лога через wc -c, а не stat: у stat ключ размера различается между
+# GNU (-c %s) и BSD/macOS (-f %z). Прежний `stat -c %s ... || echo 0` на macOS
+# молча возвращал 0 ВСЕГДА, поэтому размер «не менялся» и вотчдог объявлял
+# зависшей любую здоровую серию. wc -c есть в POSIX и ведёт себя одинаково.
+log_size() {
+    wc -c < "$LOG" 2>/dev/null | tr -d ' ' || echo 0
+}
+
 watchdog() {
     # Прогресс = рост лога. Порог 20 мин > job_timeout (15 мин): даже
     # намертво зависшая жертва даёт строку об ошибке раньше срабатывания.
     # Свой алерт из прогресса исключается (размер перечитывается после
     # записи), флаг гасит повтор — одна запись на эпизод зависания.
     local main_pid=$1 last_size last_change now size
-    last_size=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+    last_size=$(log_size)
     last_change=$(date +%s)
     while kill -0 "$main_pid" 2>/dev/null; do
         sleep 300
-        size=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+        size=$(log_size)
         now=$(date +%s)
         if [ "$size" != "$last_size" ]; then
             last_size=$size; last_change=$now; rm -f "$STALLFLAG"
         elif [ $((now - last_change)) -ge 1200 ] && [ ! -e "$STALLFLAG" ]; then
             echo "WATCHDOG ERROR $(date '+%F %T'): лог не растёт $(((now - last_change) / 60)) мин — серия зависла? kubectl get pods -n $BENCH_NS" >> "$LOG"
             touch "$STALLFLAG"
-            last_size=$(stat -c %s "$LOG")
+            last_size=$(log_size)
         fi
     done
     if grep -q "PRESSURE DONE" "$LOG" 2>/dev/null; then
@@ -236,11 +244,22 @@ status() {
     "$PY" - "$results" "$baselines" <<'EOF' 2>/dev/null || true
 import sys
 import pandas as pd
+# Ошибки помечаются префиксом error: в колонке approximation
+# (run_experiment.py:140). Колонки status в схеме нет — прежняя проверка
+# по ней всегда давала 0, то есть статус серии не мог показать ни одной
+# ошибки. Заодно считаем missing: строка без метрик тоже не годится.
 for path, label in zip(sys.argv[1:], ("результаты", "эталоны")):
     try:
         df = pd.read_parquet(path)
-        errors = int((df.get("status", pd.Series(dtype=str)) == "error").sum())
-        print(f"{label}: {len(df)} строк" + (f" ({errors} error!)" if errors else ""))
+        appr = df.get("approximation", pd.Series(dtype=str)).astype(str)
+        errors = int(appr.str.startswith("error:").sum())
+        missing = int((appr == "missing").sum())
+        flags = []
+        if errors:
+            flags.append(f"{errors} error!")
+        if missing:
+            flags.append(f"{missing} без метрик")
+        print(f"{label}: {len(df)} строк" + (f" ({', '.join(flags)})" if flags else ""))
     except Exception:
         print(f"{label}: файла ещё нет")
 EOF

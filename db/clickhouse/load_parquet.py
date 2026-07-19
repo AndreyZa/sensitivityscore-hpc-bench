@@ -137,6 +137,53 @@ def coerce_rows(df: pd.DataFrame, stand: str, run_label: str, source_file: str) 
     return rows
 
 
+def _guard_run_label(client, table: str, source_file: str, n_rows: int, args) -> None:
+    """Не дать одной серии молча затереть другую под тем же run_label.
+
+    ReplacingMergeTree схлопывает по ключу сортировки, а не по серии: если
+    прогон перезалить с МЕНЬШИМ числом повторов под той же меткой, лишние
+    строки прошлого прогона останутся и смешаются с новыми — SELECT ... FINAL
+    вернёт химеру из двух серий, и по данным это не отличить.
+
+    Повторная заливка того же файла с тем же числом строк безвредна (так
+    работает долив второго приёмника после сбоя, make ch-load-all) — её
+    пропускаем молча. Расхождение — это либо переиспользованная метка, либо
+    перегнанная серия: останавливаемся и требуем решения человека.
+    """
+    if args.allow_existing:
+        return
+    try:
+        rs = client.query(
+            f"SELECT source_file, count() FROM {args.database}.{table} FINAL "
+            "WHERE stand = {s:String} AND run_label = {l:String} GROUP BY source_file",
+            parameters={"s": args.stand, "l": args.run_label},
+        ).result_rows
+    except Exception as e:
+        # Таблицы ещё нет (первая заливка) — это норма. Но так же выглядела бы
+        # и опечатка в самом запросе, а тихо отключившаяся защита хуже её
+        # отсутствия: печатаем, чтобы поломка была видна.
+        print(f"  ВНИМАНИЕ: проверка занятости run_label не выполнена ({e}) — заливаю без неё")
+        return
+    existing = {str(r[0]): int(r[1]) for r in rs}
+    if not existing:
+        return
+    prev = existing.get(source_file)
+    if prev == n_rows:
+        return  # тот же файл того же размера — идемпотентный долив
+    what = (f"тот же файл, но было {prev} строк, а заливается {n_rows}"
+            if prev is not None
+            else f"под этой меткой уже лежат другие файлы: {', '.join(sorted(existing))}")
+    raise SystemExit(
+        f"ERROR: stand={args.stand} run_label={args.run_label} в {table} уже занят — {what}.\n"
+        f"       Перезаливка под той же меткой оставит строки прошлого прогона.\n"
+        f"       Взять новую метку (--run-label), либо, если это осознанная\n"
+        f"       перезаливка, сначала удалить старое:\n"
+        f"         ALTER TABLE {args.database}.{table} DELETE "
+        f"WHERE stand='{args.stand}' AND run_label='{args.run_label}'\n"
+        f"       и повторить с --allow-existing."
+    )
+
+
 def _load_one(path: Path, table: str, args) -> int:
     df = pd.read_parquet(path)
     rows = coerce_rows(df, args.stand, args.run_label, path.name)
@@ -165,6 +212,7 @@ def _load_one(path: Path, table: str, args) -> int:
             host=args.host, port=args.port, username=args.user,
             password=args.password, database=args.database,
         )
+        _guard_run_label(client, table, path.name, len(rows), args)
         client.insert(table, rows, column_names=INSERT_COLUMNS)
     except OperationalError as e:
         raise SystemExit(f"ERROR: нет связи с ClickHouse {args.host}:{args.port} — {e}")
@@ -186,6 +234,8 @@ def main() -> int:
     p.add_argument("--password", default="")
     p.add_argument("--database", default="sensitivityscore")
     p.add_argument("--dry-run", action="store_true", help="прочитать+привести, не подключаясь к ClickHouse")
+    p.add_argument("--allow-existing", action="store_true",
+                   help="разрешить заливку поверх занятой пары (stand, run_label)")
     args = p.parse_args()
 
     if not args.results and not args.baselines:
