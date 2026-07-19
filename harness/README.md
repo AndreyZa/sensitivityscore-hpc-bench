@@ -185,7 +185,7 @@ harness/.venv/bin/python -m statusserver \
     --results harness/results/results-stage.parquet \
     --baselines harness/results/baselines-stage.parquet
 # -> http://localhost:8787  (HTML, автообновление 10с; /json — для скриптов)
-# для STAGE есть готовый ./statusserver/run-stage.sh
+# локально: SERIES=<имя> docker compose -f statusserver/docker-compose.yaml up -d --build
 ```
 
 ## Проверка без реального запуска

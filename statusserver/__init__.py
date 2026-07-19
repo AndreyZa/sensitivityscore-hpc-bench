@@ -25,7 +25,8 @@
         --results harness/results/results-stage.parquet \
         --baselines harness/results/baselines-stage.parquet \
         --report analysis/report-stage --stand "STAGE (Timeweb k0s)"
-Для STAGE есть готовый ./statusserver/run-stage.sh (перезапускает сервер).
+Локально страница поднимается контейнером:
+    SERIES=<имя> docker compose -f statusserver/docker-compose.yaml up -d --build
 Затем открыть http://localhost:8787 (из WSL2 виден и в Windows-браузере).
 
 Модули: labels (подписи и словоформы), cluster (kubectl-снимки стенда),

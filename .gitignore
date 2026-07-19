@@ -37,3 +37,6 @@ kubeconfig*
 # служебные файлы кнопки make series
 harness/.series-*
 harness/.redis-pf.*
+
+# генерируется make series PILOT=1
+harness/.pilot-*.sh

@@ -1,0 +1,6 @@
+# Страница читает parquet (pandas+pyarrow) и конфиг серии (PyYAML).
+# Держим отдельно от harness/requirements.txt: там ещё kubernetes-клиент,
+# jinja2 и redis, которые странице не нужны и раздували бы образ.
+pandas>=2.2.0
+pyarrow>=15.0.0
+PyYAML>=6.0

@@ -1,0 +1,55 @@
+# Статус-страница прогона локально, в контейнере.
+#
+# Заменяет прежний run-stage.sh, который запускал сервер хостовым питоном из
+# venv харнесса. Причина замены не в удобстве: на macOS с python 3.14 сервер
+# СЕГФОЛТИТСЯ через несколько секунд после старта (код выхода 139, пустой лог —
+# ни трейсбека, ни строчки). В контейнере с python 3.12 та же страница на тех
+# же данных работает стабильно. Хостовый запуск был просто ненадёжен, и
+# чинить в нём было нечего.
+#
+# Репозиторий монтируется read-only: страница только читает, и возможности
+# испортить идущий прогон у неё быть не должно.
+#
+#   SERIES=net-diff docker compose -f statusserver/docker-compose.yaml up -d
+#   docker compose -f statusserver/docker-compose.yaml logs -f
+#   docker compose -f statusserver/docker-compose.yaml down
+#
+# SERIES выбирает, за какой серией смотреть; без него — файлы по умолчанию
+# (stage-pressure).
+services:
+  statusserver:
+    # Тег локальный и собирается ЗДЕСЬ, под архитектуру машины. Образ для
+    # кластера (make image-statusserver) собирается под linux/amd64 — на
+    # Apple Silicon он идёт под эмуляцией, и это не теоретическая беда:
+    # контейнер молча выходил и переставал отвечать на опубликованном порту.
+    # Локально нужен нативный, в кластере — amd64; это разные образы.
+    image: statusserver:local
+    container_name: ss-status
+    build:
+      context: ..
+      dockerfile: statusserver/Dockerfile
+    ports:
+      - "${STATUS_PORT:-8787}:8787"
+    volumes:
+      - ..:/repo:ro
+      # kubeconfig — для секции кластера (statusserver/cluster.py). Без него
+      # страница живёт дальше, просто без узлов: в cluster.py это best-effort.
+      - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
+    environment:
+      KUBECONFIG: /kube/config
+    command:
+      - --log=/repo/harness/stage-${SERIES:-pressure}.log
+      - --config=/repo/harness/config-stage${SERIES:+-${SERIES}}.yaml
+      - --results=/repo/harness/results/results-stage${SERIES:+-${SERIES}}.parquet
+      - --baselines=/repo/harness/results/baselines-stage${SERIES:+-${SERIES}}.parquet
+      - --report=/repo/analysis/report-stage${SERIES:+-${SERIES}}
+      - --scope=full
+      - --stand=${STAND:-STAGE}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8787/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

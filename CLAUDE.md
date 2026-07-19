@@ -28,6 +28,11 @@
     `python run_experiment.py` run doesn't need the image.) Changes to
     `harness/tests/**`, `harness/deploy/**`, run-stage-*.sh or README →
     NO rebuild.
+  - statusserver image inputs: `statusserver/*.py`, `statusserver/Dockerfile`,
+    `statusserver/requirements.txt`, `harness/config_loader.py` (страница
+    читает конфиг серии через него) → `make image-statusserver` then
+    `docker push andreyza/statusserver:dev`. Локальный запуск собирает свой
+    нативный образ через compose и в пуше не нуждается.
   - aggressor image inputs: `aggressor/Dockerfile` only →
     `make image-aggressor` then `docker push andreyza/aggressor:dev`
     (pressure-scenario stress pods).

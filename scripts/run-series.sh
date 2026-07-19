@@ -42,7 +42,7 @@ LOG=harness/stage-$SERIES.log
 PIDFILE=harness/.series-$SERIES.pid
 WDPIDFILE=harness/.series-$SERIES.watchdog.pid
 STALLFLAG=harness/.series-$SERIES.stalled
-REPORT=analysis/report-stage-$SERIES
+# Путь отчёта страница выводит сама из SERIES (statusserver/docker-compose.yaml).
 
 fail() { echo "FAIL: $*"; [ "${FORCE:-0}" = "1" ] && echo "      (FORCE=1 — продолжаю)" || exit 1; }
 ok()   { echo "  ok: $*"; }
@@ -245,14 +245,44 @@ start() {
     rotate "$results"
     rotate "$baselines"
 
-    new_session nohup bash "$RUNSCRIPT" >> "$LOG" 2>&1 &
+    # PILOT=1 — смоук самой ОБВЯЗКИ (preflight, вотчдог, статус-страница) без
+    # многочасовой серии: одна точка плана вместо эталонов и полного
+    # pressure-прогона. Окружение берётся из того же run-скрипта, что и у
+    # настоящей серии: там живут оверрайды дозы (CPU/THREADS/PRIMARIES/MEM),
+    # без которых на 2-vCPU узлах задачи вообще не влезают — смоук на других
+    # значениях проверял бы не тот путь. Строки export склеиваются по
+    # переносам и выполняются, сам скрипт при этом НЕ запускается.
+    if [ "${PILOT:-0}" = "1" ]; then
+        ok "PILOT=1 — одна точка плана вместо полной серии"
+        local piloted="harness/.pilot-$SERIES.sh"
+        {
+            echo '#!/bin/bash'
+            echo 'cd "$(dirname "$0")"'
+            sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUNSCRIPT" | grep '^export '
+            echo 'echo "=== PRESSURE START $(date +%H:%M:%S) (PILOT) ==="'
+            echo ".venv/bin/python run_experiment.py --config $(basename "$CONFIG") --pilot"
+            echo 'echo "=== PRESSURE DONE $(date +%H:%M:%S) (PILOT) ==="'
+        } > "$piloted"
+        new_session nohup bash "$piloted" >> "$LOG" 2>&1 &
+    else
+        new_session nohup bash "$RUNSCRIPT" >> "$LOG" 2>&1 &
+    fi
     local pid=$!
     echo "$pid" > "$PIDFILE"
     ok "серия запущена: pid $pid, лог $LOG"
 
-    LOG="$LOG" CONFIG="$CONFIG" RESULTS="$results" BASELINES="$baselines" \
-        REPORT="$REPORT" SCOPE=full ./statusserver/run-stage.sh \
-        || echo "WARN: статус-страница не поднялась (серию это не трогает)"
+    # Страница поднимается контейнером, а не хостовым питоном. Прежний
+    # statusserver/run-stage.sh запускал её из venv харнесса, и на macOS с
+    # python 3.14 сервер СЕГФОЛТИЛСЯ через несколько секунд (код 139, пустой
+    # лог). В контейнере с 3.12 та же страница на тех же данных живёт.
+    if command -v docker >/dev/null 2>&1; then
+        SERIES="$SERIES" docker compose -f statusserver/docker-compose.yaml \
+            up -d --build >/dev/null 2>&1 \
+            && ok "статус-страница: http://localhost:8787" \
+            || echo "WARN: статус-страница не поднялась (серию это не трогает)"
+    else
+        echo "WARN: docker не найден — статус-страница пропущена (серию это не трогает)"
+    fi
 
     # setsid не умеет bash-функции — вотчдог перезапускается как скрытый
     # экшен этого же скрипта в собственной сессии.

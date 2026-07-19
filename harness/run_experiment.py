@@ -578,8 +578,19 @@ def build_plan(cfg: dict, pilot: bool, only_configs: list[str] | None) -> list[t
 
     if pilot:
         # Single plan point, 3 reps, config A only (checklist item 9).
+        #
+        # Профиль берём ИЗ КОНФИГА, а не "high-s" жёстко. Оверрайды дозы в
+        # run-скриптах заданы под профили конкретной серии
+        # (HARNESS_OVERRIDE_HIGH_S_NET_* у net-серий, HIGH_S_* у llc), и пилот
+        # с чужим профилем подал бы неоткалиброванные requests — на 2-vCPU
+        # узлах такая задача просто виснет в Pending, то есть смоук проверял бы
+        # не тот путь, что настоящая серия.
         pilot_configs = [c for c in configs if c.startswith("A")] or configs[:1]
-        return [(c, "high-s", 2.0, rep) for c in pilot_configs for rep in range(3)]
+        profiles = cfg.get("profiles") or ["high-s"]
+        pilot_profile = profiles[0]
+        log.info("pilot: конфигурации %s, профиль %s (из конфига серии)",
+                 pilot_configs, pilot_profile)
+        return [(c, pilot_profile, 2.0, rep) for c in pilot_configs for rep in range(3)]
 
     plan = []
     for config in configs:
