@@ -5,6 +5,7 @@
 #
 #   make series SERIES=<имя>          запустить (preflight + фон + вотчдог)
 #   make series-status SERIES=<имя>   состояние идущей/законченной серии
+#   make series-preflight SERIES=<имя>  проверить стенд, ничего не запуская
 #   make series-stop SERIES=<имя>     остановить серию и удалить её поды
 #
 # Конвенция имён (SERIES=placebo -> «stage-placebo»):
@@ -33,7 +34,7 @@ PY=harness/.venv/bin/python
 ACTION=${1:-}
 SERIES=${2:-}
 [ -z "$ACTION" ] || [ -z "$SERIES" ] && {
-    echo "использование: $0 start|status|stop <серия>  (напр. placebo, mixed-calib)"; exit 2; }
+    echo "использование: $0 start|preflight|status|stop <серия>  (напр. placebo, mixed-calib)"; exit 2; }
 
 CONFIG=harness/config-stage-$SERIES.yaml
 RUNSCRIPT=harness/run-stage-$SERIES.sh
@@ -47,6 +48,19 @@ fail() { echo "FAIL: $*"; [ "${FORCE:-0}" = "1" ] && echo "      (FORCE=1 — п
 ok()   { echo "  ok: $*"; }
 
 pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+# Своя сессия для фоновых процессов. setsid — из util-linux, на macOS его нет:
+# без подмены `new_session nohup ...` падал с «command not found», port-forward к
+# Redis не поднимался и preflight валился на ровном месте, а серия не
+# запускалась вовсе. Perl есть в базовой системе и на macOS, и на Linux.
+# Новая сессия нужна не для красоты: серия останавливается через
+# `kill -TERM -- -<pid>`, то есть по группе процессов, а без своей сессии в
+# группу попал бы и вызывающий shell.
+if command -v setsid >/dev/null 2>&1; then
+    new_session() { setsid "$@"; }
+else
+    new_session() { perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or die $!;' -- "$@"; }
+fi
 
 # Пути результатов — из секции output конфига (единственный источник правды).
 results_paths() {
@@ -118,7 +132,7 @@ EOF
 
     if ! "$PY" -c "import redis; redis.Redis(port=$REDIS_PORT, socket_connect_timeout=2).ping()" 2>/dev/null; then
         echo "  ..: поднимаю port-forward redis :$REDIS_PORT"
-        setsid nohup kubectl -n $SYS_NS port-forward svc/redis $REDIS_PORT:6379 \
+        new_session nohup kubectl -n $SYS_NS port-forward svc/redis $REDIS_PORT:6379 \
             > harness/.redis-pf.log 2>&1 &
         echo $! > harness/.redis-pf.pid
         sleep 3
@@ -231,7 +245,7 @@ start() {
     rotate "$results"
     rotate "$baselines"
 
-    setsid nohup bash "$RUNSCRIPT" >> "$LOG" 2>&1 &
+    new_session nohup bash "$RUNSCRIPT" >> "$LOG" 2>&1 &
     local pid=$!
     echo "$pid" > "$PIDFILE"
     ok "серия запущена: pid $pid, лог $LOG"
@@ -242,7 +256,7 @@ start() {
 
     # setsid не умеет bash-функции — вотчдог перезапускается как скрытый
     # экшен этого же скрипта в собственной сессии.
-    setsid nohup bash "$0" __watchdog "$SERIES" "$pid" >/dev/null 2>&1 &
+    new_session nohup bash "$0" __watchdog "$SERIES" "$pid" >/dev/null 2>&1 &
     echo $! > "$WDPIDFILE"
     ok "вотчдог: алерт в лог, если тишина >20 мин"
     echo
@@ -320,6 +334,9 @@ case "$ACTION" in
     start)  start ;;
     status) status ;;
     stop)   stop ;;
+    # Отдельно от start: проверить стенд, ничего не запуская. Раньше единственным
+    # способом узнать, готов ли кластер, было стартовать многочасовую серию.
+    preflight) preflight ;;
     __watchdog) watchdog "${3:?нужен pid серии}" ;;
-    *) echo "неизвестное действие: $ACTION (start|status|stop)"; exit 2 ;;
+    *) echo "неизвестное действие: $ACTION (start|preflight|status|stop)"; exit 2 ;;
 esac

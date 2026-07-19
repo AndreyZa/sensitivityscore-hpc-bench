@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import logging
 import subprocess
 from pathlib import Path
@@ -35,7 +36,23 @@ PROVENANCE_COLUMNS = (
     "workload_image",
     "calibration",
     "score_weights",
+    "profile_overrides",
 )
+
+
+def profile_overrides() -> str:
+    """Активные HARNESS_OVERRIDE_* -> "HIGH_S_PRIMARIES=40000;HIGH_S_THREADS=2".
+
+    Это та самая дыра, ради которой стоит отдельная колонка: доза нагрузки
+    (N_PRIMARIES, THREADS, число burst'ов) задаётся переменной окружения в
+    run-скрипте и в конфиг не попадает. Две серии io-sensitivity с дозой,
+    отличающейся вдвое, давали parquet, неразличимые по содержимому — а
+    именно доза определяет измеряемое cˢ. Хеша конфига здесь мало: нужны
+    сами значения, иначе по данным не восстановить, что было подано.
+    """
+    prefix = "HARNESS_OVERRIDE_"
+    items = sorted((k[len(prefix):], v) for k, v in os.environ.items() if k.startswith(prefix))
+    return ";".join(f"{k}={v}" for k, v in items)
 
 
 def _run(cmd: list[str], timeout: int = 15) -> str:
@@ -135,8 +152,10 @@ def collect(cfg: dict, system_namespace: str) -> dict[str, str]:
         "workload_image": "",  # заполняется на строку: digest из imageID пода
         "calibration": calibration(system_namespace),
         "score_weights": score_weights(system_namespace),
+        "profile_overrides": profile_overrides(),
     }
-    missing = [k for k, v in prov.items() if not v and k != "workload_image"]
+    optional = ("workload_image", "profile_overrides")
+    missing = [k for k, v in prov.items() if not v and k not in optional]
     if missing:
         log.warning("провенанс собран не полностью: пусто %s", missing)
     else:

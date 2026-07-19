@@ -552,6 +552,11 @@ series: venv-harness ## Прогнать серию под ключ: make series
 	@test -n "$(SERIES)" || { echo "укажи серию: make series SERIES=<имя> (config-stage-<имя>.yaml)"; exit 1; }
 	./scripts/run-series.sh start $(SERIES)
 
+.PHONY: series-preflight
+series-preflight: venv-harness ## Проверить стенд перед серией, ничего не запуская: make series-preflight SERIES=<имя>
+	@test -n "$(SERIES)" || { echo "укажи серию: make series-preflight SERIES=<имя>"; exit 1; }
+	@./scripts/run-series.sh preflight $(SERIES)
+
 .PHONY: series-status
 series-status: ## Состояние серии: фазы, ошибки, строки результатов: make series-status SERIES=<имя>
 	@test -n "$(SERIES)" || { echo "укажи серию: make series-status SERIES=<имя>"; exit 1; }

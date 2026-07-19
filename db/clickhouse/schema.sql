@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.results
     workload_image     LowCardinality(String) DEFAULT '',  -- разрешённый digest образа, не тег
     calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
+    profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.baselines
     workload_image     LowCardinality(String) DEFAULT '',  -- разрешённый digest образа, не тег
     calibration        LowCardinality(String) DEFAULT '',  -- llc=<N>;net=<M> на момент прогона
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
+    profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
