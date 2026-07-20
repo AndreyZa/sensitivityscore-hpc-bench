@@ -12,51 +12,82 @@ import time
 _STAND_CACHE: dict = {"ts": 0.0, "data": {}}
 STAND_TTL_SECONDS = 300  # топология кластера меняется редко
 
+# 6 секунд не хватало: API облачного стенда под нагрузкой серии отвечает
+# медленнее, и `kubectl get nodes` регулярно упирался в таймаут. Ценой был не
+# один пустой список, а весь блок — исключение уносило и bench-узлы, после
+# чего страница честно, но пугающе писала «kubectl недоступен» посреди
+# исправного прогона (наблюдалось 20.07 на серии ablation).
+KUBECTL_TIMEOUT_SECONDS = 20
+
+
+def _kubectl(args: list[str], timeout: int = KUBECTL_TIMEOUT_SECONDS) -> tuple[bool, str, str]:
+    """kubectl без исключений наружу: (успех, stdout, причина неудачи).
+
+    Каждый вызов отдельно — медленный ответ на один запрос не должен стирать
+    результат остальных."""
+    try:
+        r = subprocess.run(["kubectl", *args], capture_output=True, text=True,
+                           timeout=timeout)
+        if r.returncode == 0:
+            return True, r.stdout, ""
+        return False, "", r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "код возврата != 0"
+    except subprocess.TimeoutExpired:
+        return False, "", f"kubectl не ответил за {timeout} с"
+    except Exception as e:  # noqa: BLE001 — страница статуса не должна падать
+        return False, "", str(e)
+
 
 def stand_info(label: str = "") -> dict:
     """API-сервер + ноды кластера. Кэш на STAND_TTL_SECONDS — не дёргать API
-    каждые 10с; подпись стенда подставляется поверх кэша при каждом вызове."""
+    каждые 10с; подпись стенда подставляется поверх кэша при каждом вызове.
+
+    При неудачном опросе показываются ПРОШЛЫЕ значения из кэша: топология
+    стенда за прогон не меняется, и «узлы те же, что десять минут назад»
+    ближе к истине, чем «узлов нет». Причина неудачи не проглатывается —
+    она уезжает в stand_error и видна на странице."""
     now = time.time()
     if now - _STAND_CACHE["ts"] >= STAND_TTL_SECONDS or not _STAND_CACHE["data"]:
+        prev = _STAND_CACHE["data"]
         data: dict = {}
-        try:
-            r = subprocess.run(
-                ["kubectl", "config", "view", "--minify",
-                 "-o", "jsonpath={.clusters[0].cluster.server}"],
-                capture_output=True, text=True, timeout=6,
-            )
-            data["server"] = r.stdout.strip() or "(kubectl недоступен)"
-            r = subprocess.run(
-                ["kubectl", "get", "nodes", "--no-headers", "-o",
-                 "custom-columns=N:.metadata.name,V:.status.nodeInfo.kubeletVersion,"
-                 "K:.status.nodeInfo.kernelVersion,CPU:.status.allocatable.cpu,"
-                 "MEM:.status.allocatable.memory"],
-                capture_output=True, text=True, timeout=6,
-            )
-            rows = (
-                [l.split() for l in r.stdout.strip().splitlines()]
-                if r.returncode == 0 else []
-            )
-            # Измерительные узлы — по ролям (node-role.kubernetes.io/*,
-            # ставятся scripts/bootstrap-cluster.sh), тем же селектором, что
-            # у харнесса (k8s_submit.list_worker_nodes): системный узел
-            # ss-system и control-plane в счёт эталонов не входят.
-            r = subprocess.run(
-                ["kubectl", "get", "nodes",
-                 "--selector=!node-role.kubernetes.io/control-plane,"
-                 "!node-role.kubernetes.io/ss-system",
-                 "-o", "jsonpath={.items[*].metadata.name}"],
-                capture_output=True, text=True, timeout=6,
-            )
-            bench = set(r.stdout.split()) if r.returncode == 0 else set()
-            data["bench"] = sorted(bench)
-            data["nodes"] = [
-                [row[0], ("bench" if row[0] in bench else "система")] + row[1:]
-                for row in rows if row
-            ]
-        except Exception as e:  # noqa: BLE001 — страница статуса не должна падать
-            data.setdefault("server", f"({e})")
-            data.setdefault("nodes", [])
+        problems: list[str] = []
+
+        ok, out, err = _kubectl(["config", "view", "--minify",
+                                 "-o", "jsonpath={.clusters[0].cluster.server}"])
+        data["server"] = out.strip() or prev.get("server") or "(kubectl недоступен)"
+        if not ok:
+            problems.append(f"адрес API: {err}")
+
+        ok, out, err = _kubectl(
+            ["get", "nodes", "--no-headers", "-o",
+             "custom-columns=N:.metadata.name,V:.status.nodeInfo.kubeletVersion,"
+             "K:.status.nodeInfo.kernelVersion,CPU:.status.allocatable.cpu,"
+             "MEM:.status.allocatable.memory"])
+        rows = [l.split() for l in out.strip().splitlines()] if ok else []
+        if not ok:
+            problems.append(f"список узлов: {err}")
+
+        # Измерительные узлы — по ролям (node-role.kubernetes.io/*,
+        # ставятся scripts/bootstrap-cluster.sh), тем же селектором, что
+        # у харнесса (k8s_submit.list_worker_nodes): системный узел
+        # ss-system и control-plane в счёт эталонов не входят.
+        ok, out, err = _kubectl(
+            ["get", "nodes",
+             "--selector=!node-role.kubernetes.io/control-plane,"
+             "!node-role.kubernetes.io/ss-system",
+             "-o", "jsonpath={.items[*].metadata.name}"])
+        if ok:
+            bench = sorted(set(out.split()))
+        else:
+            bench = list(prev.get("bench") or [])
+            problems.append(f"измерительные узлы: {err}")
+        data["bench"] = bench
+
+        data["nodes"] = [
+            [row[0], ("bench" if row[0] in set(bench) else "система")] + row[1:]
+            for row in rows if row
+        ] or list(prev.get("nodes") or [])
+        if problems:
+            data["stand_error"] = "; ".join(problems)
         _STAND_CACHE.update(ts=now, data=data)
     return {**_STAND_CACHE["data"], "label": label}
 
