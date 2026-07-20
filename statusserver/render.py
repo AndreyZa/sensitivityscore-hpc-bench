@@ -132,13 +132,21 @@ def money_section(res: dict) -> str:
     if not scs:
         return "<p class='dim'>строк основной серии ещё нет</p>"
     parts: list[str] = []
+    any_costly = any_nominal = False
     for sc in sorted(scs):
         info = scs[sc]
         arms = info["arms"]
         ordered = [a for a in ARM_ORDER if a in arms] + [
             a for a in arms if a not in ARM_ORDER
         ]
-        nominal = bool(info.get("nominal"))
+        # «Номинальный» счётчик (совпадение с объявленной осью) оставлен только
+        # для некалиброванных стендов: он не различает планировщики, потому что
+        # занимать узел дешёвой оси — не ошибка. Как только цены осей известны,
+        # считаем попадания на ДОРОГОЙ узел, и счётчик снова содержателен.
+        costly = info.get("costly_axis") or ""
+        nominal = bool(info.get("nominal")) and not costly
+        any_costly = any_costly or bool(costly)
+        any_nominal = any_nominal or nominal
         pcts = [arms[a]["storm_pct"] for a in ordered if arms[a]["storm_pct"] is not None]
         best = min(pcts) if pcts else None
         regs = [arms[a]["regret"] for a in ordered if arms[a]["regret"] is not None]
@@ -153,8 +161,12 @@ def money_section(res: dict) -> str:
             f"{esc(info['storm_node'].replace('worker-', 'w-'))}{prog}</small></h3>"
         )
 
-        storm_col = ("задач на узел своей оси¹" if nominal
-                     else "задач на перегруженный узел")
+        if costly:
+            storm_col = f"задач на дорогой узел ({esc(costly)})¹"
+        elif nominal:
+            storm_col = "задач на узел своей оси¹"
+        else:
+            storm_col = "задач на перегруженный узел"
         head = (f"<tr><th>планировщик</th><th>{storm_col}</th>"
                 "<th>время выполнения, с</th><th>ошибка размещения</th></tr>")
         body = []
@@ -202,19 +214,44 @@ def money_section(res: dict) -> str:
             ]
             good = hero_pct == best
             verdict = "✓ лучший результат" if good else "△ пока не лучший"
+            where = f"дорогой узел ({esc(costly)})" if costly else "перегруженный узел"
+            reg_tail = ""
+            hero_reg = arms.get(HERO_ARM, {}).get("regret")
+            if costly and hero_reg is not None:
+                reg_regs = ", ".join(
+                    f"{arm_label(a)} — {arms[a]['regret']}"
+                    for a in ordered
+                    if a != HERO_ARM and arms[a]["regret"] is not None
+                )
+                reg_tail = (f"; ошибка размещения <b>{hero_reg}</b>"
+                            f"{f' ({reg_regs})' if reg_regs else ''}")
             parts.append(
-                f"<p class='takeaway'>SensitivityScore направил на перегруженный "
-                f"узел <b>{hero_pct}%</b> задач ({', '.join(others) or '—'}) "
+                f"<p class='takeaway'>SensitivityScore направил на {where} "
+                f"<b>{hero_pct}%</b> задач ({', '.join(others) or '—'}){reg_tail} "
                 f"<span class='{'good' if good else 'warn'}'>{verdict}</span></p>"
             )
+    footnote = ""
+    if any_costly:
+        footnote = (
+            "¹ В смешанном сценарии перегружены ВСЕ узлы, поэтому считать "
+            "«попал в шторм» бессмысленно: узлы дешёвых осей занимать выгодно. "
+            "Считаются попадания только на дорогой узел — тот, чей шторм по "
+            "калибровке (score_weights.base) бьёт по любой задаче узла.<br>"
+        )
+    elif any_nominal:
+        footnote = (
+            "¹ Счётчик «на узел своей оси» — справочный: он лишь сверяет узел "
+            "с ОБЪЯВЛЕННОЙ осью задачи и потому почти не различает "
+            "планировщики. Цены осей на этом стенде не откалиброваны "
+            "(score_weights.base) — иначе здесь считались бы попадания на "
+            "дорогой узел. Судите по ошибке размещения и времени.<br>"
+        )
     parts.append(
         "<p class='note dim'>«Ошибка размещения» показывает, насколько "
         "выбранный узел хуже лучшего из доступных в момент решения: "
         "0 — выбран лучший узел, 1 — худший из возможных. Это главная "
         "метрика качества решения планировщика.<br>"
-        "¹ Счётчик «на узел своей оси» — справочный. Дешёвую ось (на этом "
-        "стенде — кэш) занимать выгодно, поэтому такое размещение — не "
-        "ошибка. Судите по ошибке размещения и времени.<br>"
+        + footnote +
         "Точное сравнение времени (с учётом разной скорости узлов) — в "
         "секции «Анализ» после прогона.</p>"
     )

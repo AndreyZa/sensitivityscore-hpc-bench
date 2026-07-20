@@ -22,6 +22,76 @@ def storm_nodes_by_scenario(cfg: dict) -> dict[str, set]:
     return out
 
 
+AXES = ("llc", "numa", "net", "io")
+AXIS_LABEL = {"llc": "кэш", "numa": "память", "net": "сеть", "io": "диск"}
+
+
+def costly_axis(cfg: dict) -> str | None:
+    """Самая дорогая ось по КАЛИБРОВКЕ (score_weights.base) — та, чей шторм
+    реально бьёт по любой задаче узла.
+
+    Зачем это счётчику. В смешанном сценарии перегружены ВСЕ узлы, поэтому
+    «попал в шторм» само по себе ничего не значит: на этом стенде кэш-шторм
+    при квотах 500m бесплатен (base llc = 0), сеть почти бесплатна (0.09), а
+    дисковый бьёт всех (1.0). Считать «совпадения с объявленной осью» — значит
+    записывать в ошибки намеренный и правильный выбор дешёвого узла: счётчик
+    получался одинаковым у всех планировщиков и ничего не различал. Дорогой
+    узел — единственный, попадание на который действительно платное.
+
+    None, если весов нет или все базовые цены равны (различать нечего)."""
+    weights = cfg.get("score_weights") or {}
+    base = weights.get("base") if isinstance(weights, dict) else None
+    if not isinstance(base, dict):
+        return None
+    costs = {a: float(base.get(a, 0.0) or 0.0) for a in AXES}
+    top = max(costs, key=lambda a: costs[a])
+    others = [c for a, c in costs.items() if a != top]
+    if costs[top] <= 0 or all(c == costs[top] for c in others):
+        return None
+    return top
+
+
+# Зеркало extractSensitivityVector плагина (и SENSITIVITY_VALUE харнесса):
+# в строках результата чувствительность лежит СЛОВОМ, а не числом.
+SENSITIVITY_VALUE = {"high": 1.0, "medium": 0.5}
+
+
+def profiles_sensitive_to(df, axis: str) -> set[str]:
+    """Профили, ОБЪЯВЛЕННЫЕ чувствительными по оси axis — прямо из строк
+    результата (колонка sensitivity_<ось>, то самое, что видел планировщик).
+
+    Берётся из данных, а не из harness/profiles.py: страница живёт в
+    контейнере, где модулей харнесса нет. Спрашивается именно «чувствителен
+    ли профиль к ЭТОЙ оси», а не «какая ось у него главная»: у профиля
+    high-s-io high стоит сразу на llc, numa и io, и «главная» ось из этого не
+    выводится — а вот принадлежность к io однозначна."""
+    col = f"sensitivity_{axis}"
+    if col not in df or "profile" not in df:
+        return set()
+    hot = df[df[col].astype(str).str.lower().map(SENSITIVITY_VALUE).fillna(0.0) > 0]
+    return {str(p) for p in hot["profile"].unique()}
+
+
+def costly_nodes_by_scenario(cfg: dict, costly_profiles: set[str]) -> dict[str, set]:
+    """scenario-колонка -> узлы, чей шторм бьёт по самой дорогой оси.
+
+    Ось шторма выводится через toxic_for: шторм объявлен токсичным для
+    профилей, а профиль — чувствительным по осям. Так конфигу не нужно
+    отдельное поле «ось шторма», и разметка остаётся одна."""
+    if not costly_profiles:
+        return {}
+    out: dict[str, set] = {}
+    for sc in cfg.get("pressure_scenarios", []):
+        nodes = {
+            s["node"]
+            for s in sc.get("storms", []) or []
+            if costly_profiles & set(s.get("toxic_for") or [])
+        }
+        if nodes:
+            out[f"pressure:{sc['name']}"] = nodes
+    return out
+
+
 def toxic_map_by_scenario(cfg: dict) -> dict[str, dict[str, set]]:
     """Для смешанных сценариев: scenario-колонка -> {профиль: множество
     «своих токсичных» узлов} из storms[].toxic_for. В смешанном сценарии
@@ -60,13 +130,22 @@ def pressure_results(path: Path, cfg: dict) -> dict:
             )
         storm = storm_nodes_by_scenario(cfg)
         toxic = toxic_map_by_scenario(cfg)
+        axis = costly_axis(cfg)
+        costly = costly_nodes_by_scenario(
+            cfg, profiles_sensitive_to(df, axis) if axis else set()
+        )
+        costly_label = AXIS_LABEL.get(axis or "", "")
         exp_sc = expected_by_scenario(cfg)
         scenarios: dict = {}
         if "scenario" in df and "config" in df:
             dfp = df[df["scenario"].astype(str).str.startswith("pressure:")]
             for sc, g in dfp.groupby("scenario"):
                 storm_nodes = storm.get(sc, set())
-                tox = toxic.get(sc)
+                costly_nodes = costly.get(sc, set())
+                # Смешанный сценарий с калибровкой: считаем попадания на
+                # ДОРОГОЙ узел. Номинальное совпадение с объявленной осью
+                # (toxic_for) для этого не годится — см. costly_axis.
+                tox = toxic.get(sc) if not costly_nodes else None
                 arms: dict = {}
                 for arm, ga in g.groupby("config"):
                     bad = (
@@ -75,9 +154,12 @@ def pressure_results(path: Path, cfg: dict) -> dict:
                         else pd.Series(False, index=ga.index)
                     )
                     ok = ga[ga["makespan_s"].notna() & ~bad]
-                    if tox:
-                        # Смешанный сценарий: «в шторм» = на узел, токсичный
-                        # именно для профиля этой задачи.
+                    if costly_nodes:
+                        # Есть калибровка цен осей: «в шторм» = на дорогой узел.
+                        in_storm = int(ok["node"].isin(costly_nodes).sum()) if len(ok) else 0
+                    elif tox:
+                        # Смешанный сценарий без калибровки: «в шторм» = на
+                        # узел, токсичный именно для профиля этой задачи.
                         in_storm = int(sum(
                             r.node in tox.get(r.profile, set())
                             for r in ok.itertuples()
@@ -98,11 +180,15 @@ def pressure_results(path: Path, cfg: dict) -> dict:
                     "expected": exp_sc.get(sc),
                     "done": int(len(g)),
                     "arms": arms,
-                    # Смешанный сценарий: счётчик «в шторм» — НОМИНАЛЬНОЕ
-                    # совпадение с декларированной осью; при калиброванных
-                    # ценах осей узел дешёвой оси — намеренный выбор, судить
-                    # качество надо по ошибке размещения (см. render).
+                    # Счётчик «в шторм» — НОМИНАЛЬНОЕ совпадение с
+                    # декларированной осью: различает плохо, потому что узел
+                    # дешёвой оси занимать не ошибка. Остаётся только там, где
+                    # цены осей не откалиброваны (см. costly_axis).
                     "nominal": bool(tox),
+                    # Дорогой узел найден — счётчик стал содержательным:
+                    # попадание на него платное для любой задачи.
+                    "costly_axis": costly_label if costly_nodes else "",
+                    "costly_node": ", ".join(sorted(costly_nodes)),
                 }
         out["scenarios"] = scenarios
         return out
