@@ -103,7 +103,7 @@ def collect() -> dict:
         "activity": current_activity(all_lines, profile_scenario_map(cfg)),
         "progress": progress(
             phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0),
-            exp, ARGS.scope,
+            exp, ARGS.scope, all_lines,
         ),
         "expected_rows": exp,
         "reps": {

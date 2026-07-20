@@ -125,9 +125,36 @@ def expected_rows(cfg: dict) -> dict[str, int]:
     }
 
 
+def recent_pace(log_lines: list[str], window: int = 12) -> float | None:
+    """Строк в секунду по последним `window` сабмитам лога.
+
+    Темп «за всю фазу» разваливается после любой длинной паузы: 20.07 хост
+    (ноутбук) ушёл в сон на 6.4 ч посреди серии, и страница, поделив сделанное
+    на полное время этапа, предсказала финиш в 19:32 вместо реальных ~13:30.
+    Недавнее окно к таким провалам устойчиво: пауза выпадает из него через
+    несколько сабмитов. None — когда сабмитов ещё мало, тогда остаётся оценка
+    по всей фазе."""
+    stamps: list[float] = []
+    for l in log_lines:
+        if "INFO submit: job_id=" not in l:
+            continue
+        m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", l)
+        if not m:
+            continue
+        try:
+            stamps.append(time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")))
+        except ValueError:
+            continue
+    if len(stamps) < 4:
+        return None
+    tail = stamps[-window:]
+    span = tail[-1] - tail[0]
+    return (len(tail) - 1) / span if span > 0 else None
+
+
 def progress(
     phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict,
-    scope: str = "full",
+    scope: str = "full", log_lines: list[str] | None = None,
 ) -> dict:
     """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы.
     После завершения — итоговая длительность. scope="baseline" — прогон
@@ -167,7 +194,9 @@ def progress(
                 # несравнимы по длительности, а прогон может быть и
                 # baseline-only (добор эталонов) — оценка выходила кратно
                 # завышенной. Подпись на странице говорит «этап завершится».
-                rate = cur_done / elapsed  # строк/сек в текущей фазе
+                # Темп: сначала по недавнему окну (устойчив к паузам вроде
+                # засыпания хоста), иначе — по всей фазе.
+                rate = recent_pace(log_lines or []) or cur_done / elapsed
                 remaining = max(cur_exp - cur_done, 0) / rate
                 out["eta"] = time.strftime(
                     "%H:%M", time.localtime(time.time() + remaining)
