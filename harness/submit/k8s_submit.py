@@ -75,6 +75,45 @@ def ensure_namespace(namespace: str) -> None:
 
 log = logging.getLogger(__name__)
 
+# Одиночный сбой kubectl не должен стоить точки данных. За четырёхчасовую
+# серию API облачного кластера успевает моргнуть (сброс соединения, TLS,
+# i/o timeout), а check=True превращал ЛЮБОЙ ненулевой код возврата в потерю
+# жертвы — вместе со всей её строкой, включая placement_regret. Наблюдалось
+# 20.07 на серии final: жертва v5 «упала» на опросе условий Job'а, хотя сам
+# Job через секунду спокойно удалился (значит, существовал — то есть это был
+# не NotFound, а транзиентная ошибка). Настоящая недоступность кластера сюда
+# не проваливается: она упрётся в job_timeout_seconds выше по стеку.
+KUBECTL_RETRIES = 3
+KUBECTL_RETRY_DELAY_SECONDS = 5
+
+
+def _kubectl(args: list[str], *, what: str) -> subprocess.CompletedProcess:
+    """kubectl с повтором подряд идущих сбоев и ВНЯТНОЙ ошибкой.
+
+    Прежний `check=True` поднимал CalledProcessError, у которого в тексте
+    только код возврата: stderr оставался в capture_output и терялся, так что
+    причина сбоя не восстанавливалась даже постфактум. Здесь stderr попадает
+    в сообщение."""
+    last: subprocess.CompletedProcess | None = None
+    for attempt in range(1, KUBECTL_RETRIES + 1):
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode == 0:
+            if attempt > 1:
+                log.info("%s: удалось с попытки %d", what, attempt)
+            return result
+        last = result
+        log.warning(
+            "%s: kubectl вернул %d (попытка %d из %d), stderr: %s",
+            what, result.returncode, attempt, KUBECTL_RETRIES,
+            result.stderr.strip() or "(пусто)",
+        )
+        if attempt < KUBECTL_RETRIES:
+            time.sleep(KUBECTL_RETRY_DELAY_SECONDS)
+    raise RuntimeError(
+        f"{what}: kubectl вернул {last.returncode} во всех {KUBECTL_RETRIES} "
+        f"попытках; stderr: {last.stderr.strip() or '(пусто)'}"
+    )
+
 
 def _k8s_name(job_id: str) -> str:
     """job_id -> валидное имя K8s-объекта (RFC1123). Одна точка истины:
@@ -207,7 +246,7 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
     deadline = time.time() + timeout
 
     while time.time() < deadline:
-        result = subprocess.run(
+        result = _kubectl(
             [
                 "kubectl",
                 "get",
@@ -218,9 +257,7 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
                 "-o",
                 "jsonpath={range .status.conditions[*]}{.type}={.status} {end}",
             ],
-            check=True,
-            capture_output=True,
-            text=True,
+            what=f"опрос условий Job {handle.k8s_name}",
         )
         conditions = dict(
             pair.split("=", 1) for pair in result.stdout.split() if "=" in pair
@@ -244,7 +281,7 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
     # in scheduling latency, image pull, pod startup and kubectl-wait poll
     # granularity — and was incomparable with Slurm's sacct Elapsed (pure
     # runtime), biasing every K8s-vs-Slurm comparison (H3/H4).
-    result = subprocess.run(
+    result = _kubectl(
         [
             "kubectl",
             "get",
@@ -263,9 +300,7 @@ def wait_for_completion(handle: K8sJobHandle, cfg: dict) -> None:
             "{'|'}{.items[0].status.containerStatuses[0].state.terminated.finishedAt}"
             "{'|'}{.items[0].status.containerStatuses[0].imageID}",
         ],
-        check=True,
-        capture_output=True,
-        text=True,
+        what=f"чтение пода Job {handle.k8s_name}",
     )
     node, _, rest = result.stdout.strip().partition("|")
     started_raw, _, rest = rest.partition("|")
