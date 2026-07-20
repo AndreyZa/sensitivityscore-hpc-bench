@@ -893,10 +893,17 @@ twin-contrast: venv-analysis ## Контраст двойников (B1): make t
 drift-check: venv-analysis ## Внутрисессионный дрейф стенда (B2): make drift-check RUN_LABEL=stage-llc | RESULTS_FILE=<parquet>
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py $(ch_analysis_src)
 
+.PHONY: axis-ablation
+axis-ablation: venv-analysis ## Абляция схемы весов (C3): сравнить режимы весов между сериями (нужен ch-tunnel)
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python axis_ablation.py \
+		--clickhouse --stand $(or $(STAND),stage) --ch-host $(CH_HOST) --ch-port $(CH_PORT) \
+		--out report-ablation/axis_ablation.csv
+
 .PHONY: analysis-self-test
-analysis-self-test: venv-analysis ## Самопроверка скриптов B1/B2 на данных с известным ответом
+analysis-self-test: venv-analysis ## Самопроверка скриптов B1/B2/C3 на данных с известным ответом
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py --self-test
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --self-test
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python axis_ablation.py --self-test
 
 .PHONY: ch-analyze
 ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)

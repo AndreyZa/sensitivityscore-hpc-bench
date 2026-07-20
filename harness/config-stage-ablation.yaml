@@ -1,0 +1,62 @@
+# config-stage-ablation.yaml — ТРЕТИЙ РЕЖИМ ВЕСОВ (пункт C3 аудита).
+#
+# Зачем. Абляция по уже снятым сериям (analysis/axis_ablation.py) показала,
+# что выигрыш даёт калибровка цен осей, а не размерность вектора S:
+#
+#   stage-mixed        равные оси {llc 1, net 1, io 1}, решает вектор S
+#                      -> SS ПРОИГРЫВАЕТ default 1.45 с, 19 задач из 60 на
+#                         дорогом (дисковом) узле;
+#   stage-mixed-calib  base {io 1.0, net 0.09}, sensitivity = 0
+#                      -> SS выигрывает 2.67 с, 0 задач из 60 на дорогом узле.
+#
+# Но эти два режима отличаются ДВУМЯ факторами сразу: ценами осей (равные
+# против калиброванных) И способом вклада (через чувствительность задачи
+# против базовой цены узла). Разделить их одним прогоном и призван этот
+# конфиг: цены те же, что в calib, а работают они В РЕЖИМЕ SENSITIVITY.
+#
+#   score = Σ p_a · s_a(t) · c_a      (base = 0, sensitivity = {io 1.0, net 0.09})
+#
+# ОЖИДАНИЕ, ОБЪЯВЛЕННОЕ ДО ПРОГОНА. Ждём результат БЛИЖЕ К stage-mixed, чем
+# к calib, то есть провал. Механизм: калибровка нашла α_io = 1.0 при β = 0 —
+# дисковый шторм замедляет ЛЮБУЮ задачу узла, а не только объявившую io.
+# В режиме sensitivity задача с s_io = low видит дисковый узел бесплатным,
+# и никакая величина c_io этого не исправит: цена умножается на ноль. Значит
+# на дорогой узел поедут high-s и high-s-net — ровно те профили, что поехали
+# в stage-mixed (16 и 3 задачи соответственно).
+#
+# Если ожидание НЕ подтвердится (SS выиграет как в calib) — значит дело всё
+# же в ценах, а не в способе вклада, и вывод абляции надо переписать. Это
+# предсказание фальсифицируемо, в том и смысл прогона.
+#
+# ПЕРЕД запуском:
+#   1. weights.json -> режим sensitivity (СОВПАДАЕТ со score_weights ниже):
+#      kubectl -n sensitivityscore-system patch cm sensitivity-config --type merge \
+#        -p '{"data":{"weights.json":"{\"base\": {\"llc\": 0.0, \"numa\": 0.0, \"net\": 0.0, \"io\": 0.0}, \"sensitivity\": {\"llc\": 0.0, \"numa\": 0.0, \"net\": 0.09, \"io\": 1.0}}\n"}}'
+#   2. kubectl -n sensitivityscore-system rollout restart deployment/sensitivityscore-scheduler
+#      + дождаться "sensitivity weights loaded" в логе с base = 0.
+#   3. make series SERIES=ablation
+#   4. ПОСЛЕ прогона вернуть weights.json режима calib — иначе следующая
+#      серия молча поедет на весах абляции (см. preflight: он сверяет
+#      weights.json со score_weights конфига и не даст запустить не то).
+#
+# Эталоны гоняются той же сессией: межсессионный дрейф стенда до 23% больше
+# любого эффекта, который мы тут ищем.
+
+extends: config-stage-mixed-calib.yaml
+
+score_weights:
+  base:
+    llc: 0.0
+    numa: 0.0
+    net: 0.0
+    io: 0.0
+  sensitivity:
+    llc: 0.0
+    numa: 0.0
+    net: 0.09
+    io: 1.0
+
+output:
+  results_dir: "results"
+  results_file: "results-stage-ablation.parquet"
+  baselines_file: "baselines-stage-ablation.parquet"
