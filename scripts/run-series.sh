@@ -63,6 +63,25 @@ ok()   { echo "  ok: $*"; }
 
 pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# Redis виден харнессу только через port-forward, и это единственная точка,
+# где берётся снимок давления узлов для placement_regret. Если форвард умрёт
+# посреди прогона, харнесс не падает (так задумано: сломанный метрик-пайплайн
+# не должен ронять сабмит) — он молча пишет regret=NaN. 20.07 хост ушёл в сон
+# на 6.4 ч, форвард не пережил заморозку, и МЕТРИКА РЕШЕНИЯ пропала у 120
+# строк из 180 — при этом ни лог, ни страница об этом не сказали ни слова.
+# Поэтому: проверка живости вынесена в функцию, а вотчдог поднимает форвард
+# заново и пишет в лог, что случилось.
+redis_alive() {
+    "$PY" -c "import redis; redis.Redis(port=$REDIS_PORT, socket_connect_timeout=2).ping()" 2>/dev/null
+}
+
+redis_pf_start() {
+    new_session nohup kubectl -n $SYS_NS port-forward svc/redis $REDIS_PORT:6379 \
+        > harness/.redis-pf.log 2>&1 &
+    echo $! > harness/.redis-pf.pid
+    sleep 3
+}
+
 # Своя сессия для фоновых процессов. setsid — из util-linux, на macOS его нет:
 # без подмены `new_session nohup ...` падал с «command not found», port-forward к
 # Redis не поднимался и preflight валился на ровном месте, а серия не
@@ -244,14 +263,10 @@ EOF
     ) || fail "weights.json в ConfigMap НЕ совпадает со score_weights конфига (регрет считался бы не теми весами) — kubectl patch cm sensitivity-config"
     ok "weights.json == score_weights конфига"
 
-    if ! "$PY" -c "import redis; redis.Redis(port=$REDIS_PORT, socket_connect_timeout=2).ping()" 2>/dev/null; then
+    if ! redis_alive; then
         echo "  ..: поднимаю port-forward redis :$REDIS_PORT"
-        new_session nohup kubectl -n $SYS_NS port-forward svc/redis $REDIS_PORT:6379 \
-            > harness/.redis-pf.log 2>&1 &
-        echo $! > harness/.redis-pf.pid
-        sleep 3
-        "$PY" -c "import redis; redis.Redis(port=$REDIS_PORT, socket_connect_timeout=2).ping()" 2>/dev/null \
-            || fail "redis port-forward не поднялся (harness/.redis-pf.log)"
+        redis_pf_start
+        redis_alive || fail "redis port-forward не поднялся (harness/.redis-pf.log)"
     fi
     local nkeys
     nkeys=$("$PY" -c "
@@ -357,6 +372,17 @@ watchdog() {
         sleep 300
         size=$(log_size)
         now=$(date +%s)
+        # Форвард к Redis: без него regret=NaN на всех последующих задачах,
+        # и это не видно ни в логе, ни на странице (см. redis_alive).
+        if ! redis_alive; then
+            echo "WATCHDOG ERROR $(date '+%F %T'): port-forward к Redis мёртв — placement_regret с этого момента NaN; поднимаю заново" >> "$LOG"
+            redis_pf_start
+            if redis_alive; then
+                echo "WATCHDOG $(date '+%F %T'): port-forward к Redis восстановлен" >> "$LOG"
+            else
+                echo "WATCHDOG ERROR $(date '+%F %T'): поднять port-forward не удалось (harness/.redis-pf.log)" >> "$LOG"
+            fi
+        fi
         if [ "$size" != "$last_size" ]; then
             last_size=$size; last_change=$now; rm -f "$STALLFLAG"
         elif [ $((now - last_change)) -ge 1200 ] && [ ! -e "$STALLFLAG" ]; then
