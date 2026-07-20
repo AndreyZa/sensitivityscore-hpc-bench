@@ -36,6 +36,17 @@ docker compose -f statusserver/docker-compose.yaml down
 `--build` обязателен: без него поднимется ранее собранный `statusserver:local`
 и правки страницы в контейнер не попадут.
 
+Нужен **compose v2 как плагин docker** (`docker compose`, не `docker-compose`).
+В Ubuntu он лежит в отдельном пакете, и с системным docker'ом не приезжает:
+
+```bash
+sudo apt-get install -y docker-compose-v2   # проверка: docker compose version
+```
+
+Без плагина `docker compose -f …` вырождается в `docker -f …`, и ошибка
+получается неочевидная — `unknown shorthand flag: 'f' in -f`. На прогон это не
+влияет (страница только читает), но выглядит как поломка лаунчера.
+
 Переменные: `SERIES` (какую серию смотреть), `STATUS_PORT` (порт на хосте,
 8787), `STAND` (подпись в шапке), `KUBECONFIG` (доступ к стенду),
 `RESULTS`/`BASELINES` (пути к parquet — их подставляет `run-series.sh` из
