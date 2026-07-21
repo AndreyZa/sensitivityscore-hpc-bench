@@ -33,6 +33,28 @@ make monitoring-password  # показать пароль Grafana
 make monitoring-clean     # снести (данные в hostPath на узле остаются)
 ```
 
+### Grafana без перерывов (на постоянно включённом хосте)
+
+`monitoring-open` — проброс на время работы, с Ctrl-C. Там, где Grafana должна
+быть видна из домашней сети всегда (JumpHost .72, позже PROD):
+
+```bash
+make monitoring-uptime-unit                        # только Grafana
+make monitoring-uptime-unit SERVICES="grafana prometheus"
+```
+
+Ставит шаблон `scripts/ss-forward@.service`; работу делает
+`scripts/monitoring-forward.sh` — `kubectl port-forward --address 0.0.0.0` под
+надзором. Надзор не формальный: port-forward умеет ломаться **не умирая** —
+процесс жив, сокет слушает, соединения принимаются, а туннель мёртв. Поэтому
+раз в 30 с идёт проба насквозь (`/api/health` через сам туннель), и три провала
+подряд — перезапуск. Одиночное моргание API не считается: рвать открытую
+вкладку из-за него не за что.
+
+Prometheus по умолчанию не включается — он отвечает **без авторизации**, в
+отличие от Grafana (`GF_USERS_ALLOW_SIGN_UP=false`, пароль в секрете
+`grafana-admin`). Включать осознанно, через `SERVICES=`.
+
 ## Главное ограничение: чистота измерений
 
 Стенд меряет интерференцию по LLC/NUMA/IO/Net. Любой посторонний процесс на

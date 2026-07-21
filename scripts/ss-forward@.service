@@ -1,0 +1,34 @@
+# Постоянный проброс UI мониторинга с хоста, который держат включённым.
+# Шаблон: %i — имя сервиса (grafana | prometheus).
+#
+#   sudo cp scripts/ss-forward@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ss-forward@grafana
+#   journalctl -u ss-forward@grafana -f
+#
+# Или одной командой: make monitoring-uptime-unit [SERVICES="grafana prometheus"]
+#
+# Разовый проброс на время работы — по-прежнему `make monitoring-open`; юнит
+# нужен там, где Grafana должна быть видна из домашней сети всегда.
+
+[Unit]
+Description=Проброс %i из кластера в домашнюю сеть (SensitivityScore)
+After=network-online.target
+Wants=network-online.target
+# Юнит не «падает навсегда»: без сети или с недоступным API он будет честно
+# перезапускаться, пока стенд не вернётся. Дефолтный лимит (5 стартов за 10 с)
+# погасил бы его при недоступном кластере — а вернуть потом только руками.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=andrey
+Group=andrey
+Environment=KUBECONFIG=/home/andrey/.kube/configs/timeweb-stage
+WorkingDirectory=/home/andrey/phd/sensitivityscore-hpc-bench
+ExecStart=/home/andrey/phd/sensitivityscore-hpc-bench/scripts/monitoring-forward.sh %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

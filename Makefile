@@ -318,6 +318,20 @@ monitoring-open: ## Проброс портов: Grafana :3000, Prometheus :9090
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) port-forward svc/prometheus $(PROMETHEUS_PORT):9090 & \
 	wait
 
+# Только для хоста, который держат включённым (JumpHost .72, позже PROD).
+# monitoring-open — это проброс на время работы, с Ctrl-C; здесь Grafana видна
+# из домашней сети всегда, переживает перезагрузку и обрыв туннеля.
+# Prometheus по умолчанию НЕ включаем: он без авторизации.
+.PHONY: monitoring-uptime-unit
+monitoring-uptime-unit: ## Grafana всегда доступна: systemd-юнит с надзором за туннелем
+	sudo cp scripts/ss-forward@.service /etc/systemd/system/ss-forward@.service
+	sudo systemctl daemon-reload
+	@for svc in $(or $(SERVICES),grafana); do \
+		sudo systemctl enable --now ss-forward@$$svc && \
+		echo "  ok: ss-forward@$$svc"; \
+	done
+	@echo "проверка: curl -sf -o /dev/null -w '%{http_code}\n' http://$$(hostname -I | awk '{print $$1}'):$(GRAFANA_PORT)/api/health"
+
 .PHONY: monitoring-password
 monitoring-password: ## Показать текущий пароль Grafana из секрета
 	@$(KUBECTL) -n $(MONITORING_NAMESPACE) get secret grafana-admin \
