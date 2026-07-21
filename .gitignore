@@ -20,8 +20,10 @@ harness/results/*.out
 harness/*.log
 harness/*.out
 statusserver/*.out
-analysis/report/
-analysis/report-stage*/
+# Отчёты анализа — производные от parquet/ClickHouse, пересобираются одной
+# командой. Маска общая (report*), а не перечисление: прежняя report-stage*
+# не покрыла report-ablation, и каталог светился в статусе как неотслеживаемый.
+analysis/report*/
 
 # --- OS / editor ---
 .DS_Store
