@@ -183,6 +183,18 @@ status-page: ## Поднять статус-страницу локально (c
 .PHONY: status-page-down
 status-page-down: ## Погасить статус-страницу (series-stop её НЕ трогает)
 	docker compose -f statusserver/docker-compose.yaml down
+	@systemctl is-enabled ss-status >/dev/null 2>&1 && \
+		echo "note: юнит ss-status включён — после перезагрузки страница вернётся" || true
+
+# Только для хостов, где страницу держат постоянно (JumpHost .72, позже PROD).
+# `restart: unless-stopped` не спасает от явного down + перезагрузки: возвращать
+# нечего, контейнера уже нет. Подробности — в шапке scripts/ss-status.service.
+.PHONY: status-page-unit
+status-page-unit: ## Поставить systemd-юнит: страница переживает перезагрузку хоста
+	sudo cp scripts/ss-status.service /etc/systemd/system/ss-status.service
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now ss-status
+	@systemctl status ss-status --no-pager | head -5
 
 .PHONY: statusserver-docker
 statusserver-docker: status-page ## Устаревшее имя цели status-page

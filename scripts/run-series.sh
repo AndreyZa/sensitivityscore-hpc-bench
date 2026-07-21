@@ -56,6 +56,11 @@ LOG=harness/$STAND-$SERIES.log
 PIDFILE=harness/.series-$SERIES.pid
 WDPIDFILE=harness/.series-$SERIES.watchdog.pid
 STALLFLAG=harness/.series-$SERIES.stalled
+# Параметры последней поднятой страницы. Файл читает scripts/status-page-boot.sh
+# — тот самый, что зовёт systemd-юнит ss-status.service после перезагрузки
+# хоста. Без него `docker compose up` поднял бы страницу серии ПО УМОЛЧАНИЮ, то
+# есть чужие данные на знакомом порту; молча и убедительно.
+STATUS_PAGE_ENV=harness/.status-page.env
 # Путь отчёта страница выводит сама из SERIES (statusserver/docker-compose.yaml).
 
 fail() { echo "FAIL: $*"; [ "${FORCE:-0}" = "1" ] && echo "      (FORCE=1 — продолжаю)" || exit 1; }
@@ -108,6 +113,25 @@ print("harness/" + out["results_dir"] + "/" + out.get("baselines_file", "baselin
 EOF
 }
 
+# Запомнить, с какими параметрами поднята страница. Пишем ФАКТ, а не намерение:
+# функцию зовут только там, где страница уже отвечает на /healthz и её аргументы
+# сверены с нужной серией.
+status_page_env_save() {
+    cat > "$STATUS_PAGE_ENV" <<EOF
+# Сгенерировано scripts/run-series.sh, $(date '+%F %T'). Руками не править:
+# файл перезаписывается при каждом подъёме страницы.
+#
+# Отсюда scripts/status-page-boot.sh (его зовёт ss-status.service) берёт
+# параметры compose после перезагрузки хоста, чтобы вернуть ТУ ЖЕ серию.
+SERIES='$1'
+STAND='$2'
+STATUS_PORT='$3'
+RESULTS='$4'
+BASELINES='$5'
+KUBECONFIG='$6'
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Подъём статус-страницы. Отдельная функция и отдельный экшен `page`, потому
 # что стартовать прогон можно не только через `make series`: ручным
@@ -147,18 +171,6 @@ status_page_up() {
         echo "      (серию это не трогает); поставить: sudo apt-get install -y docker-compose-v2"
         return 0; }
 
-    # Идемпотентность: функцию зовут и start(), и сам harness/run-stage-<имя>.sh
-    # (чтобы страница поднималась и при ручном запуске скрипта серии). Если
-    # нужная страница уже отвечает — выходим сразу, не трогая контейнер:
-    # пересборка на ходу перезапустила бы страницу посреди прогона.
-    if docker inspect ss-status --format '{{.State.Status}}' 2>/dev/null | grep -q running \
-       && docker inspect ss-status --format '{{json .Args}}' 2>/dev/null \
-          | grep -q -- "$logpat" \
-       && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
-        ok "статус-страница уже поднята: http://localhost:$port"
-        return 0
-    fi
-
     # Пути к parquet берём из конфига, а не из соглашения об именах: секция
     # output — единственный источник правды, и compose не должен её дублировать.
     local results baselines
@@ -176,13 +188,30 @@ status_page_up() {
         echo "      (укажите KUBECONFIG=<файл>; каталог вместо файла ломает kubectl и на хосте)"
         kcfg=/dev/null
     fi
+    # Подпись стенда в шапке страницы — заглавными (STAGE/PROD): STAND здесь
+    # уже всегда задан, а страница показывает его как есть.
+    local stand_up
+    stand_up=$(printf %s "$STAND" | tr "[:lower:]" "[:upper:]")
+
+    # Идемпотентность: функцию зовут и start(), и сам harness/run-stage-<имя>.sh
+    # (чтобы страница поднималась и при ручном запуске скрипта серии). Если
+    # нужная страница уже отвечает — выходим сразу, не трогая контейнер:
+    # пересборка на ходу перезапустила бы страницу посреди прогона. Параметры
+    # всё равно записываем: страницу могло поднять что угодно (прошлый прогон,
+    # сам юнит), а файл для восстановления после перезагрузки нужен всегда.
+    if docker inspect ss-status --format '{{.State.Status}}' 2>/dev/null | grep -q running \
+       && docker inspect ss-status --format '{{json .Args}}' 2>/dev/null \
+          | grep -q -- "$logpat" \
+       && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg"
+        ok "статус-страница уже поднята: http://localhost:$port"
+        return 0
+    fi
 
     # Вывод сборки НЕ в /dev/null: при провале build compose выходит, не
     # тронув контейнеры, и на порту продолжает жить страница прошлой серии —
     # WARN и работающая страница одновременно читаются как «ложная тревога».
-    # Подпись стенда в шапке страницы — заглавными (STAGE/PROD): STAND здесь
-    # уже всегда задан, а страница показывает его как есть.
-    if ! SERIES="$cseries" STAND="$(printf %s "$STAND" | tr "[:lower:]" "[:upper:]")" STATUS_PORT="$port" \
+    if ! SERIES="$cseries" STAND="$stand_up" STATUS_PORT="$port" \
          RESULTS="$results" BASELINES="$baselines" KUBECONFIG="$kcfg" \
          docker compose -f statusserver/docker-compose.yaml up -d --build \
          > "$buildlog" 2>&1; then
@@ -216,6 +245,7 @@ status_page_up() {
         echo "      docker compose -f statusserver/docker-compose.yaml down && повторить"
         return 0
     fi
+    status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg"
     ok "статус-страница: http://localhost:$port"
 }
 

@@ -1,0 +1,54 @@
+# Статус-страница прогона как постоянный сервис хоста.
+#
+# Нужен там, где страницу держат всегда — сейчас это JumpHost 192.168.1.72,
+# позже так же будет на площадке PROD. На рабочей машине не нужен: там страницу
+# поднимает и гасит сама серия.
+#
+# Что он добавляет к `restart: unless-stopped` в compose. Политика рестарта
+# возвращает контейнер после падения процесса, рестарта демона и перезагрузки —
+# но только пока контейнер существует. После явного `make status-page-down`,
+# `docker compose down` или `docker system prune` возвращать нечего, и страница
+# не поднимется уже никогда. Юнит закрывает ровно этот случай: при каждой
+# загрузке хоста он создаёт контейнер заново, с параметрами последней серии
+# (harness/.status-page.env, пишет scripts/run-series.sh).
+#
+# Установка (пути править под хост, если репозиторий лежит не в ~/phd):
+#
+#   sudo cp scripts/ss-status.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ss-status
+#   systemctl status ss-status
+#
+# Выключить насовсем: sudo systemctl disable --now ss-status
+# (сам контейнер это НЕ гасит — для этого make status-page-down).
+
+[Unit]
+Description=Статус-страница SensitivityScore (statusserver в docker)
+Documentation=file:///home/andrey/phd/sensitivityscore-hpc-bench/statusserver/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+# oneshot + RemainAfterExit: работа юнита — создать контейнер и убедиться, что
+# страница отвечает; дальше живёт docker, а не systemd. Держать процесс на
+# переднем плане (Type=simple) было бы обманом — юнит не является страницей.
+Type=oneshot
+RemainAfterExit=yes
+User=andrey
+Group=andrey
+# Доступ к сокету docker'а — через группу, а не через root: страница читает
+# репозиторий пользователя, и запускать её от root значило бы создавать в нём
+# файлы, которые потом не удалить обычным make.
+SupplementaryGroups=docker
+WorkingDirectory=/home/andrey/phd/sensitivityscore-hpc-bench
+ExecStart=/home/andrey/phd/sensitivityscore-hpc-bench/scripts/status-page-boot.sh
+# Первый запуск после чистки образов включает сборку statusserver:local.
+TimeoutStartSec=600
+
+# ExecStop нет намеренно. `systemctl stop ss-status` не должен гасить страницу:
+# на .72 её смотрят из домашней сети, и остановка юнита — не повод обрывать
+# картинку. Гасить страницу — явной командой make status-page-down.
+
+[Install]
+WantedBy=multi-user.target

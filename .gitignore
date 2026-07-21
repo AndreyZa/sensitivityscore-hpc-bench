@@ -39,6 +39,8 @@ kubeconfig*
 # служебные файлы кнопки make series
 harness/.series-*
 harness/.redis-pf.*
+# параметры последней поднятой страницы — состояние конкретного хоста
+harness/.status-page.env
 
 # генерируется make series PILOT=1
 harness/.pilot-*.sh
