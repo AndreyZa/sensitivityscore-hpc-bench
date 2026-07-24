@@ -678,6 +678,15 @@ def run_baseline_mode(cfg: dict, args) -> None:
     запускающего."""
     bl_cfg = cfg.get("baseline", {})
     reps = bl_cfg.get("repetitions", 5)
+    # Прогревочные прогоны на КАЖДОМ (profile, node) перед измеряемыми:
+    # программа экспериментов (§7) требует warm-up для исключения холодного
+    # кэша ФС. Первый соло-прогон на узле читает геометрию/физсписки Geant4 с
+    # холодного диска и тянет их в page cache — он систематически медленнее
+    # последующих (в серии drift_check это виден как тренд −1.7%/повтор,
+    # падающий). Прогревочные строки пишутся в parquet с approximation=
+    # "warmup" ради трассируемости, но analysis.filter_valid их отбрасывает,
+    # в знаменатели slowdown они не идут. 0 = выключено (поведение до 24.07).
+    warmup_reps = int(bl_cfg.get("warmup_reps", 0))
     config = bl_cfg.get("config", "A-default")
     profiles = baseline_profiles(cfg)
 
@@ -713,6 +722,30 @@ def run_baseline_mode(cfg: dict, args) -> None:
             # Нода — часть job_id (и Redis-ключей job:metrics): бейзлайны
             # одного профиля на разных нодах не должны коллидировать.
             node_tag = f"-{node}" if node else ""
+
+            # Прогрев ПЕРЕД измеряемыми повторами: те же профиль/узел/образ,
+            # но результат помечается warmup и в анализ не идёт. Нумерация
+            # rep отрицательная (-warmup..-1), чтобы не пересечься с job_id
+            # измеряемых повторов.
+            for w in range(warmup_reps):
+                job_id = f"{config}-{profile}-base{node_tag}-warmup{w:02d}"
+                try:
+                    row = run_one(job_id, config, profile, 1.0, -1 - w, cfg,
+                                  args.dry_run, pin_node=node)
+                    # Перезаписываем approximation: даже успешный прогрев не
+                    # должен попасть в знаменатели — filter_valid дропает warmup.
+                    row["approximation"] = "warmup"
+                except Exception as exc:  # noqa: BLE001 — прогрев не критичен
+                    log.warning("warmup %s failed (не критично): %s", job_id, exc)
+                    continue
+                row["scenario"] = "baseline"
+                row["batch_size"] = 1
+                row["batch_index"] = 0
+                rows.append(row)
+                pd.DataFrame(rows).to_parquet(baselines_path, index=False)
+                if not args.dry_run:
+                    time.sleep(cfg["cooldown_seconds"])
+
             for rep in range(reps):
                 # Свой суффикс вместо make_job_id: бейзлайн не должен
                 # коллидировать по job_id с матричными прогонами.

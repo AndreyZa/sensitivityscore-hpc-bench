@@ -85,6 +85,13 @@ def filter_valid(
       results silently)."""
     valid = df[~df["approximation"].astype(str).str.startswith("error:")]
     valid = valid[valid["makespan_s"].notna()]
+    # Прогревочные прогоны (harness: baseline.warmup_reps) намеренно медленнее
+    # измеряемых — это их работа (снять холодный кэш ФС с первого прогона). В
+    # знаменатели slowdown и в fingerprint им нельзя: дропаем как и synthetic.
+    n_warmup = int((valid["approximation"] == "warmup").sum())
+    if n_warmup:
+        print(f"[filter_valid] dropping {n_warmup} warmup rows (прогрев, не измерение)")
+        valid = valid[valid["approximation"] != "warmup"]
 
     synthetic = valid["approximation"] == "synthetic-devbox"
     n_synthetic = int(synthetic.sum())
