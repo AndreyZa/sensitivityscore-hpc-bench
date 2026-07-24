@@ -7,8 +7,8 @@
 одновременно печатала p = 3.8·10⁻⁸ как результат и объявляла его артефактом
 псевдорепликации, а раздел C1 аудита противоречил сам себе через девять строк.
 
-Схема лечения. Числа живут в ОДНОМ файле report/canonical.json; из него
-генерируется markdown-фрагмент, который вставляется в документы между
+Схема лечения. Числа живут в ОДНОМ версионируемом файле analysis/canonical.json;
+из него генерируется markdown-фрагмент, который вставляется в документы между
 маркерами; расхождение ловится проверкой --check ещё до чтения человеком.
 
     make canonical-recompute   пересчитать из ClickHouse (нужен доступ к данным)
@@ -35,8 +35,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# JSON — ИСТОЧНИК, он версионируется рядом со скриптом. Сгенерированный
+# markdown-фрагмент — производное, ему место в report/ (каталог в .gitignore).
+JSON_PATH = Path(__file__).resolve().parent / "canonical.json"
 REPORT = Path(__file__).resolve().parent / "report"
-JSON_PATH = REPORT / "canonical.json"
 MD_PATH = REPORT / "canonical.md"
 
 BEGIN = "<!-- canonical:contrasts -->"
@@ -164,7 +166,6 @@ def recompute(args) -> dict:
             "n": int(row.get("n_reps_sensitive", 0)),
         }
         print(f"  {key}: ×{out['contrasts'][key]['ratio']:.2f}")
-    REPORT.mkdir(parents=True, exist_ok=True)
     JSON_PATH.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"записано: {JSON_PATH}")
     return out
