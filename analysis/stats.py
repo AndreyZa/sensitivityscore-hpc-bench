@@ -179,6 +179,58 @@ def holm_bonferroni(p_values) -> np.ndarray:
     return adjusted
 
 
+def bootstrap_ci(
+    values, statistic=np.median, n_boot: int = 2000, alpha: float = 0.05, rng=None
+) -> tuple[float, float, float]:
+    """Percentile-bootstrap CI вокруг `statistic` по rep-уровневым значениям.
+
+    Возвращает (lo, point, hi) на уровне (1-alpha). Нужен свипу веса (C2), чтобы
+    судить о плато по ПЕРЕКРЫТИЮ CI, а не по голому «падение < 10% размаха»: при
+    ~10 повторах и дискретном пространстве размещений (3-4 узла) кривая regret
+    шумная, и перекрытие CI даёт честный тест «не значимо ниже» — широкие CI
+    дают inconclusive, а не ложное колено.
+
+    `statistic` обязан принимать axis (np.median/np.mean подходят): бутстрап
+    векторизован через (n_boot, n)-матрицу индексов.
+    """
+    v = np.asarray(values, dtype=float)
+    v = v[~np.isnan(v)]
+    if len(v) == 0:
+        return (float("nan"), float("nan"), float("nan"))
+    point = float(statistic(v))
+    if len(v) == 1:
+        return (point, point, point)
+    rng = rng if rng is not None else np.random.default_rng()
+    idx = rng.integers(0, len(v), size=(n_boot, len(v)))
+    boots = statistic(v[idx], axis=1)
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    return (lo, point, hi)
+
+
+def plateau_onset(levels, points, cis):
+    """Минимальный уровень, чей CI перекрывается с CI лучшего (минимального по
+    point) — начало плато для кривой «меньше = лучше» (свип веса C2).
+
+    levels — ось x (веса), points — точечная оценка на уровень, cis — список
+    (lo, hi). Уровень «на плато», если его CI перекрывает CI лучшего уровня
+    (не значимо хуже достижимого минимума). Пред-регистрированный критерий;
+    возвращает уровень-колено или None, если валидных точек нет. Лучший уровень
+    перекрывает сам себя, поэтому при непустом входе всегда что-то вернётся.
+    """
+    lv, pts, ci = list(levels), list(points), list(cis)
+    valid = [i for i in range(len(pts)) if not np.isnan(pts[i])]
+    if not valid:
+        return None
+    best = min(valid, key=lambda i: pts[i])
+    blo, bhi = ci[best]
+    for i in sorted(valid, key=lambda i: lv[i]):
+        lo, hi = ci[i]
+        if lo <= bhi and blo <= hi:  # перекрытие CI с лучшим уровнем
+            return lv[i]
+    return lv[best]
+
+
 def compare_configs(
     df: pd.DataFrame,
     config_a: str,

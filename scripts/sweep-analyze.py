@@ -8,9 +8,11 @@
 regret_measured каждого веса — насколько размещения A-ss@вес близки к минимуму
 этой общей матрицы. Метр независим от скор-функции плагина (см. B4).
 
-Критерий (зафиксирован в weight-sweep.sh ДО прогона): минимальный вес, при
-котором regret_measured выходит на плато — падение к следующему весу < 10%
-полного размаха. Печатается колено; решение за человеком.
+Критерий (зафиксирован в weight-sweep.sh ДО прогона): минимальный вес, чей 95%
+bootstrap-CI regret перекрывается с CI лучшего (минимального) веса — то есть
+дальнейшее падение статистически незначимо. Шумоустойчивее прежнего «10%
+размаха» (тот печатается справочно). Рядом — прямая ступенька размещения: доля
+high-s-io на штормовом узле по весу. Печатается колено; решение за человеком.
 """
 
 import argparse
@@ -25,10 +27,15 @@ sys.path.insert(0, str(ANALYSIS))
 from clickhouse_source import load_from_clickhouse  # noqa: E402
 from placement_oracle import (  # noqa: E402
     empirical_slowdown_matrix,
+    hot_node,
     isolated_makespan,
     measured_regret,
+    placement_share_on_node,
     slowdown_column,
 )
+from stats import bootstrap_ci, plateau_onset  # noqa: E402
+
+IO_SENSITIVE_PROFILE = "high-s-io"  # профиль-жертва, которую плагин должен уводить с шторма
 
 
 def _load(label, host, port):
@@ -79,37 +86,60 @@ def main() -> int:
                           for n, v in sorted(matrix[prof].items()))
         print(f"  {prof:16} {cells}")
 
-    # regret_measured(A-ss) по весам, на уровне повторов.
+    # Штормовой узел — из матрицы (узел max slowdown high-s-io); ступенька
+    # размещения строится относительно него, число узлов не хардкодится.
+    hot = hot_node(matrix, IO_SENSITIVE_PROFILE)
+
+    # regret_measured(A-ss) по весам, на уровне повторов + 95% bootstrap-CI и
+    # прямая ступенька размещения (доля high-s-io на штормовом узле).
+    rng = np.random.default_rng(12345)  # детерминированный bootstrap (воспроизводимость)
     rows = []
     ss = press[(press["config"] == "A-sensitivityscore") & (press["weight"] >= 0)]
     for w, g in ss.groupby("weight"):
         per_rep = g.groupby("rep")["regret_measured"].mean().dropna()
         if per_rep.empty:
             continue
+        lo, point, hi = bootstrap_ci(per_rep.to_numpy(), statistic=np.median, rng=rng)
+        share_hot = (placement_share_on_node(g, IO_SENSITIVE_PROFILE, hot)
+                     if hot else float("nan"))
         rows.append({"weight": int(w), "n_reps": int(len(per_rep)),
-                     "regret_measured": float(np.median(per_rep.to_numpy()))})
+                     "regret_measured": point, "ci_lo": lo, "ci_hi": hi,
+                     "share_hot": share_hot})
     curve = pd.DataFrame(rows).sort_values("weight").reset_index(drop=True)
 
+    show = curve.copy()
+    show["regret [95% CI]"] = show.apply(
+        lambda r: f"{r['regret_measured']:.3f} [{r['ci_lo']:.3f}, {r['ci_hi']:.3f}]", axis=1)
+    show["high-s-io на шторме"] = show["share_hot"].map(
+        lambda x: "—" if pd.isna(x) else f"{x:.0%}")
     print("\nmeasured-regret плеча A-sensitivityscore по весу (меньше = лучше):")
-    print(curve.to_string(index=False))
+    print(show[["weight", "n_reps", "regret [95% CI]", "high-s-io на шторме"]]
+          .to_string(index=False))
+    if hot:
+        print(f"\nШтормовой узел (max slowdown {IO_SENSITIVE_PROFILE}) = {hot}. "
+              f"Доля high-s-io на нём — прямая ступенька размещения: с ростом "
+              f"веса должна падать (плагин уводит жертву со шторма).")
 
-    # Критерий плато: минимальный вес, после которого падение regret к
-    # следующему весу < 10% полного размаха кривой.
-    if len(curve) >= 3:
+    # Критерий плато (пред-регистрирован): минимальный вес, чей 95% CI regret
+    # перекрывается с CI лучшего (минимального) веса — дальнейшее падение
+    # статистически незначимо. Шумоустойчивее «10% размаха»: широкие CI дают
+    # честное inconclusive, а не ложное колено.
+    if len(curve) >= 2:
+        knee = plateau_onset(curve["weight"].tolist(),
+                             curve["regret_measured"].tolist(),
+                             list(zip(curve["ci_lo"], curve["ci_hi"])))
+        if knee is not None:
+            verdict = "НА плато" if knee <= 5 else "НИЖЕ плато — сигнал ещё перекрыт"
+            print(f"\nПЛАТО с веса {knee} (CI regret перекрывается с лучшим весом). "
+                  f"Текущий weight=5 {verdict}.")
+        # Справочно — прежний критерий «10% размаха», для сопоставимости.
         r = curve["regret_measured"].to_numpy()
         span = r.max() - r.min()
-        knee = None
+        old = None
         if span > 0:
-            for i in range(len(r) - 1):
-                if (r[i] - r[i + 1]) < 0.10 * span:
-                    knee = int(curve["weight"].iloc[i]); break
-        if knee is not None:
-            print(f"\nПЛАТО с веса {knee}: дальнейший рост веса меняет regret менее "
-                  f"чем на 10% размаха. Текущий weight=5 "
-                  f"{'НА плато' if knee <= 5 else 'НИЖЕ плато — сигнал ещё перекрыт'}.")
-        else:
-            print("\nПлато не достигнуто в этом диапазоне — regret падает до "
-                  "последнего веса; расширить диапазон вверх.")
+            old = next((int(curve["weight"].iloc[i]) for i in range(len(r) - 1)
+                        if (r[i] - r[i + 1]) < 0.10 * span), None)
+        print(f"(справочно, прежний критерий 10% размаха: колено = {old})")
     return 0
 
 

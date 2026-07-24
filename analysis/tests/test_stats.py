@@ -21,8 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stats import (  # noqa: E402
     MIN_PAIRS_FOR_WILCOXON,
+    bootstrap_ci,
     compare_configs,
     paired_test,
+    plateau_onset,
     rep_level_series,
 )
 
@@ -103,6 +105,52 @@ def test_compare_configs_exposes_both_tests():
     assert res["wsr_paired"] is True
     assert res["wsr_p_value"] < 0.05
     assert "mw_p_value" in res  # непарный рядом для сравнения
+
+
+def test_bootstrap_ci_brackets_point_and_stays_in_range():
+    # Bootstrap-CI медианы: точка внутри [lo, hi], а сами границы — внутри
+    # диапазона данных (percentile-бутстрап не может выйти за наблюдения).
+    rng = np.random.default_rng(0)
+    lo, point, hi = bootstrap_ci([1, 2, 3, 4, 5], statistic=np.median, rng=rng)
+    assert point == 3.0
+    assert lo <= point <= hi
+    assert lo >= 1.0 and hi <= 5.0
+    assert lo < hi  # есть разброс -> ненулевая ширина
+
+
+def test_bootstrap_ci_no_variance_collapses():
+    # Нет разброса -> CI схлопывается в точку, а не падает.
+    lo, point, hi = bootstrap_ci([7.0, 7.0, 7.0, 7.0])
+    assert lo == point == hi == 7.0
+
+
+def test_bootstrap_ci_empty_is_nan():
+    lo, point, hi = bootstrap_ci([])
+    assert np.isnan(lo) and np.isnan(point) and np.isnan(hi)
+
+
+def test_plateau_onset_finds_knee_by_ci_overlap():
+    # Кривая «меньше = лучше»: высокий regret на весах 0,1, плато с веса 3.
+    # CI веса 3 перекрывает CI лучшего (вес 10), CI весов 0/1 — нет.
+    weights = [0, 1, 3, 5, 10, 20]
+    points = [1.00, 0.90, 0.20, 0.18, 0.17, 0.17]
+    cis = [(0.95, 1.05), (0.85, 0.95), (0.15, 0.25),
+           (0.13, 0.23), (0.12, 0.22), (0.12, 0.22)]
+    assert plateau_onset(weights, points, cis) == 3
+
+
+def test_plateau_onset_all_overlap_returns_smallest():
+    # Плоская шумная кривая: все CI перекрывают лучший -> плато с самого
+    # маленького веса (робастность тривиально высокая, отклик — нет).
+    weights = [0, 1, 5]
+    points = [0.20, 0.19, 0.18]
+    cis = [(0.10, 0.30), (0.09, 0.29), (0.08, 0.28)]
+    assert plateau_onset(weights, points, cis) == 0
+
+
+def test_plateau_onset_all_nan_returns_none():
+    assert plateau_onset([0, 1], [float("nan"), float("nan")],
+                         [(np.nan, np.nan), (np.nan, np.nan)]) is None
 
 
 def test_rep_level_series_keeps_rep_index():

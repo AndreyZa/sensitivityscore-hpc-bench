@@ -98,6 +98,28 @@ def empirical_slowdown_matrix(df: pd.DataFrame) -> dict[str, dict[str, float]]:
     return m
 
 
+def hot_node(matrix: dict[str, dict[str, float]], profile: str) -> str | None:
+    """Узел, где `profile` замедляется сильнее всего = штормовой узел, прочитан
+    прямо из матрицы замедления. Самодостаточно: не требует колонки storm_nodes
+    и автоматически верен при любом числе узлов (3 или 4). None, если профиля
+    нет в матрице."""
+    per_node = matrix.get(str(profile), {})
+    if not per_node:
+        return None
+    return max(per_node, key=per_node.get)
+
+
+def placement_share_on_node(df: pd.DataFrame, profile: str, node: str) -> float:
+    """Доля жертв профиля `profile`, размещённых на `node`. Прямая «ступенька»
+    размещения для свипа веса: с ростом веса плагин обязан уводить
+    io-чувствительные жертвы С штормового узла, поэтому доля должна падать.
+    NaN, если строк профиля нет."""
+    rows = df[df["profile"].astype(str) == str(profile)]
+    if rows.empty:
+        return float("nan")
+    return float((rows["node"].astype(str) == str(node)).mean())
+
+
 def measured_regret(df: pd.DataFrame, matrix: dict[str, dict[str, float]]) -> pd.Series:
     """regret_measured(job) = M[profile][node] − min_node M[profile][node].
 
@@ -239,6 +261,22 @@ def _self_test() -> int:
     ok &= passed
     print(f"  {'OK ' if passed else 'НЕТ'} независимость: вывод есть без "
           "regret плагина")
+
+    # 5. hot_node читает штормовой узел из матрицы (max slowdown = n_hot).
+    passed = hot_node(matrix, "high-s") == "n_hot"
+    ok &= passed
+    print(f"  {'OK ' if passed else 'НЕТ'} hot_node: штормовой = "
+          f"{hot_node(matrix, 'high-s')}")
+
+    # 6. Ступенька размещения: умное плечо 0% на шторме, слепое 50%.
+    sh_smart = placement_share_on_node(results[results["config"] == "A-smart"],
+                                       "high-s", "n_hot")
+    sh_blind = placement_share_on_node(results[results["config"] == "A-blind"],
+                                       "high-s", "n_hot")
+    passed = abs(sh_smart) < 1e-9 and abs(sh_blind - 0.5) < 1e-9
+    ok &= passed
+    print(f"  {'OK ' if passed else 'НЕТ'} ступенька: умное={sh_smart:.0%} на "
+          f"шторме, слепое={sh_blind:.0%}")
 
     print("\nсамопроверка:", "пройдена" if ok else "ПРОВАЛЕНА")
     return 0 if ok else 1
