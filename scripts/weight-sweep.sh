@@ -41,6 +41,21 @@ CH_PORT=${CH_PORT:-8123}
 WEIGHTS=${WEIGHTS:-"0 1 3 5 10 20"}
 REPS=${REPS:-5}
 
+# --- Оверрайды профилей под STAGE (2 vCPU / ~1.9Gi на узел). КРИТИЧНО.
+# Свип зовёт run_experiment.py напрямую, минуя run-stage-io-sensitivity.sh,
+# поэтому обязан САМ выставить те же env, что и штатный раннер. Без них
+# профиль high-s-io берёт прод-дефолт cpu=8/mem=4Gi (profiles.py) и ни один
+# под жертвы не встаёт на 2-ядерный узел — планировщик вечно держит его в
+# Pending («Insufficient cpu/memory»), а свип клинит на первом же io-плече.
+# Значения — 1:1 с harness/run-stage-io-sensitivity.sh (не менять по отдельности).
+export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 \
+       HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=300000 \
+       HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=2Gi \
+       HARNESS_OVERRIDE_HIGH_S_IO_IO_BURST_MB=32 \
+       HARNESS_OVERRIDE_HIGH_S_IO_IO_INTERVAL_SECONDS=0 \
+       HARNESS_OVERRIDE_HIGH_S_IO_IO_TOTAL_BURSTS=16 \
+       HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say()  { echo "[sweep $(date +%H:%M:%S)] $*"; }
 
