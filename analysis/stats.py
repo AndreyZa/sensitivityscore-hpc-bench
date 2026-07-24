@@ -15,7 +15,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, wilcoxon
+
+# Порог пар для парного теста. Ниже — Уилкоксон при n<~5-6 почти не имеет
+# мощности (минимальный достижимый p ограничен снизу числом пар), и падать в
+# него смысла нет: честнее отработать непарным Манна-Уитни, чем показать
+# «p=0.06» там, где парный тест просто не мог дать меньше.
+MIN_PAIRS_FOR_WILCOXON = 6
 
 
 def mann_whitney(sample_a: np.ndarray, sample_b: np.ndarray) -> dict:
@@ -39,6 +45,40 @@ def mann_whitney(sample_a: np.ndarray, sample_b: np.ndarray) -> dict:
         "p_value": p_value,
         "n_a": len(sample_a),
         "n_b": len(sample_b),
+    }
+
+
+def paired_test(series_a: pd.Series, series_b: pd.Series) -> dict:
+    """Парный тест между плечами, выровненными ПО НОМЕРУ ПОВТОРА (B3).
+
+    Дизайн парный: повтор №k обоих плеч снят в одной сессии, при одних и тех
+    же условиях стенда (соседи по гипервизору, прогрев, остаточный кэш). Тест
+    для НЕзависимых выборок (Манна-Уитни) держит всю межповторную вариацию в
+    шуме, хотя дизайн её физически исключает. Критерий Уилкоксона по парам её
+    снимает — и при n=10 это разница между «значимо» и «нет» на одном эффекте.
+
+    Выравниваем по общему множеству rep (плечо могло потерять повтор из-за
+    ошибки задачи), отбрасываем пары с NaN. Если пар < MIN_PAIRS_FOR_WILCOXON
+    или все разности нулевые — честно откатываемся на Манна-Уитни, помечая
+    paired=False, чтобы в отчёте было видно, что тест не парный.
+    """
+    a = series_a.dropna()
+    b = series_b.dropna()
+    common = a.index.intersection(b.index)
+    pa, pb = a.loc[common].to_numpy(dtype=float), b.loc[common].to_numpy(dtype=float)
+    diffs = pa - pb
+
+    if len(common) >= MIN_PAIRS_FOR_WILCOXON and np.any(diffs != 0):
+        stat, p_value = wilcoxon(pa, pb)  # two-sided по умолчанию
+        return {
+            "test": "wilcoxon", "paired": True, "p_value": float(p_value),
+            "statistic": float(stat), "n_pairs": int(len(common)),
+        }
+    # Fallback: пар мало или нет разброса — непарный тест по всем значениям.
+    mw = mann_whitney(a.to_numpy(), b.to_numpy())
+    return {
+        "test": "mannwhitney", "paired": False, "p_value": mw["p_value"],
+        "statistic": mw["u_statistic"], "n_pairs": int(len(common)),
     }
 
 
@@ -102,10 +142,19 @@ def rep_level_sample(
     and makes Mann-Whitney's p-values overconfident. One repetition = one
     independent observation; its value is the mean makespan across the batch.
     """
+    return rep_level_series(df, config, value_col).to_numpy()
+
+
+def rep_level_series(
+    df: pd.DataFrame, config: str, value_col: str = "makespan_s"
+) -> pd.Series:
+    """Как rep_level_sample, но с СОХРАНЁННЫМ индексом rep — нужно парному
+    тесту (paired_test), чтобы сопоставить повтор №k одного плеча с тем же
+    повтором другого. Голый массив rep_level_sample этот индекс теряет."""
     rows = df[df["config"] == config]
     if rows.empty:
-        return np.array([])
-    return rows.groupby("rep")[value_col].mean().to_numpy()
+        return pd.Series(dtype=float)
+    return rows.groupby("rep")[value_col].mean()
 
 
 def holm_bonferroni(p_values) -> np.ndarray:
@@ -143,8 +192,9 @@ def compare_configs(
     Samples are rep-level (see rep_level_sample): n = number of repetitions,
     not repetitions x batch members."""
     subset = df[(df["profile"] == profile) & (df["overcommit"] == overcommit)]
-    sample_a = rep_level_sample(subset, config_a, value_col)
-    sample_b = rep_level_sample(subset, config_b, value_col)
+    series_a = rep_level_series(subset, config_a, value_col)
+    series_b = rep_level_series(subset, config_b, value_col)
+    sample_a, sample_b = series_a.to_numpy(), series_b.to_numpy()
 
     result = {
         "config_a": config_a,
@@ -156,7 +206,12 @@ def compare_configs(
         "cv_a": coefficient_of_variation(sample_a),
         "cv_b": coefficient_of_variation(sample_b),
     }
+    # Манна-Уитни оставлен рядом (mw_*) намеренно: вердикт теперь по ПАРНОМУ
+    # тесту (wsr_*), но видеть, что даёт непарный, полезно — расхождение и есть
+    # цена дизайна (парный снимает межповторную вариацию, непарный держит её в
+    # шуме).
     result.update({f"mw_{k}": v for k, v in mann_whitney(sample_a, sample_b).items()})
+    result.update({f"wsr_{k}": v for k, v in paired_test(series_a, series_b).items()})
     result.update(
         {f"cliffs_{k}": v for k, v in cliffs_delta(sample_a, sample_b).items()}
     )
@@ -168,9 +223,9 @@ def run_all_comparisons(
 ) -> pd.DataFrame:
     """Runs compare_configs for every (config_a, config_b) pair across every
     (profile, overcommit) combination present in df — the standard sweep for
-    testing H1-H4. Adds mw_p_holm: Mann-Whitney p-values Holm-Bonferroni
-    adjusted across the whole sweep (one family), which is what H1-H4 verdicts
-    should be read from."""
+    testing H1-H4. Adds wsr_p_holm (ПАРНЫЙ тест, Holm-скорректированный по
+    всему свипу как одной семье) — именно из него читаются вердикты H1-H4
+    (B3). mw_p_holm (непарный) оставлен рядом для сравнения."""
     rows = []
     for profile in sorted(df["profile"].dropna().unique()):
         for overcommit in sorted(df["overcommit"].dropna().unique()):
@@ -183,4 +238,5 @@ def run_all_comparisons(
     out = pd.DataFrame(rows)
     if not out.empty:
         out["mw_p_holm"] = holm_bonferroni(out["mw_p_value"])
+        out["wsr_p_holm"] = holm_bonferroni(out["wsr_p_value"])
     return out

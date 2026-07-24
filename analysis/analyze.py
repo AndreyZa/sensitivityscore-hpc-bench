@@ -83,10 +83,11 @@ def summarize_hypothesis(
     show_cv: bool = True,
 ) -> str:
     """Renders one hypothesis section from the already-computed comparison
-    sweep. Significance verdicts use mw_p_holm (Holm-Bonferroni adjusted over
-    the whole sweep) — with ~20 tests at alpha=0.05, an uncorrected verdict
-    would produce about one spurious "significant" point by chance alone; the
-    raw p is still shown for reference.
+    sweep. Significance verdicts use wsr_p_holm — ПАРНЫЙ тест (Wilcoxon
+    signed-rank, B3), Holm-Bonferroni-скорректированный по всему свипу: с ~20
+    тестами при alpha=0.05 нескорректированный вердикт дал бы примерно одну
+    ложную «значимость» случайно. Манна-Уитни (непарный) показан рядом для
+    сравнения — расхождение и есть цена дизайна.
 
     show_cv=False drops the CV annotation: CV = σ/μ is a stability measure that
     only means something for a positive-magnitude metric (makespan, slowdown).
@@ -107,8 +108,15 @@ def summarize_hypothesis(
     lines = [f"### {name}: {config_a} vs {config_b}\n"]
 
     for result in rows.to_dict("records"):
-        p = result["mw_p_value"]
-        p_holm = result["mw_p_holm"]
+        # Вердикт — по ПАРНОМУ тесту (B3): дизайн парный, повтор №k обоих плеч
+        # снят в одной сессии. Манна-Уитни (mw_*) показан рядом как вторичный —
+        # расхождение и есть цена непарного теста.
+        p = result["wsr_p_value"]
+        p_holm = result["wsr_p_holm"]
+        test = result.get("wsr_test", "wilcoxon")
+        paired = result.get("wsr_paired", True)
+        n_pairs = result.get("wsr_n_pairs", 0)
+        mw_p, mw_p_holm = result["mw_p_value"], result["mw_p_holm"]
         delta = result["cliffs_delta"]
         mag = result["cliffs_magnitude"]
         sig = (
@@ -122,14 +130,19 @@ def summarize_hypothesis(
         cv_b = f" (CV={result['cv_b']:.3f})" if show_cv else ""
         mean_a = value_fmt.format(result["mean_a"])
         mean_b = value_fmt.format(result["mean_b"])
+        # Имя парного теста для читателя: Wilcoxon signed-rank, либо честная
+        # пометка, что пар не хватило и тест непарный.
+        test_label = ("Wilcoxon signed-rank (paired)" if paired
+                      else "Mann-Whitney (unpaired fallback — пар не хватило)")
         lines.append(
             f"- profile={result['profile']}, overcommit={result['overcommit']}: "
             f"{config_a} mean={mean_a}{cv_a}, "
             f"{config_b} mean={mean_b}{cv_b} — "
-            f"{config_a} {direction}, Mann-Whitney p={p:.4f}, "
+            f"{config_a} {direction}, {test_label} p={p:.4f}, "
             f"Holm-adjusted p={p_holm:.4f} ({sig}), "
+            f"Mann-Whitney p={mw_p:.4f} (Holm {mw_p_holm:.4f}), "
             f"Cliff's delta={delta:.3f} ({mag}), "
-            f"n={result['mw_n_a']}/{result['mw_n_b']} reps"
+            f"n={n_pairs} pairs / {result['mw_n_a']}/{result['mw_n_b']} reps"
         )
     return "\n".join(lines)
 

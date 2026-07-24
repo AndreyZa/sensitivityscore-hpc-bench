@@ -930,6 +930,7 @@ analysis-self-test: venv-analysis ## Самопроверка скриптов B
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py --self-test
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --self-test
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python axis_ablation.py --self-test
+	$(ANALYSIS_VENV)/bin/python -m pytest analysis/tests/ -q
 
 .PHONY: ch-analyze
 ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)
