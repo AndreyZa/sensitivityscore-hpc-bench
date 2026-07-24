@@ -915,6 +915,19 @@ twin-contrast: venv-analysis ## Контраст двойников (B1): make t
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py \
 		$(ch_analysis_src) --pair $(or $(PAIR),high-s-net:net-insensitive)
 
+.PHONY: canonical-check
+canonical-check: venv-analysis ## Поймать устаревшие p (счёт по задачам) и рассинхрон вставляемых блоков
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python canonical_numbers.py --check
+
+.PHONY: canonical-sync
+canonical-sync: venv-analysis ## Вставить канонические числа в документы между маркерами
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python canonical_numbers.py --sync
+
+.PHONY: canonical-recompute
+canonical-recompute: venv-analysis ## Пересчитать канонические числа из ClickHouse и вставить в документы
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python canonical_numbers.py --recompute \
+		--ch-host $(or $(CH_HOST),localhost) --ch-port $(or $(CH_PORT),8123)
+
 .PHONY: drift-check
 drift-check: venv-analysis ## Внутрисессионный дрейф стенда (B2): make drift-check RUN_LABEL=stage-llc | RESULTS_FILE=<parquet>
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py $(ch_analysis_src)
