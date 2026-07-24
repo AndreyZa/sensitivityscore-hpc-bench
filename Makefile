@@ -930,7 +930,16 @@ analysis-self-test: venv-analysis ## Самопроверка скриптов B
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python twin_contrast.py --self-test
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python drift_check.py --self-test
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python axis_ablation.py --self-test
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python placement_oracle.py --self-test
 	$(ANALYSIS_VENV)/bin/python -m pytest analysis/tests/ -q
+
+.PHONY: placement-oracle
+placement-oracle: venv-analysis ## Независимый оракул placement_regret (B4): make placement-oracle RUN_LABEL=<серия> (нужен ch-tunnel)
+	@test -n "$(RUN_LABEL)" || { echo "укажи RUN_LABEL=<серия> (напр. stage-io-sensitivity)"; exit 1; }
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python placement_oracle.py \
+		--clickhouse --ch-host $(CH_HOST) --ch-port $(CH_PORT) \
+		--ch-database $(CH_DATABASE) --ch-user $(CH_USER) --ch-password "$(CH_PASSWORD)" \
+		--stand $(or $(STAND),stage) --run-label $(RUN_LABEL)
 
 .PHONY: ch-analyze
 ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse: make ch-analyze STAND=<s> RUN_LABEL=<l> (нужен ch-tunnel)
