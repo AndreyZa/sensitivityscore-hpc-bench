@@ -104,7 +104,11 @@ HISTORICAL = [
 ]
 
 SCAN_DIRS = ["docs", "analysis", "harness", "scripts"]
-SCAN_EXTRA = [Path.home() / "phd" / "text"]          # доклад и слайды не в репозитории
+# Каталоги вне репозитория, которые проверка обязана видеть: доклад и слайды
+# лежат в phd/text, статья вынесена отдельным репозиторием. Пропустить статью
+# нельзя — именно в ней проверка ловила доаудитные числа.
+SCAN_EXTRA = [Path.home() / "phd" / "text",
+              Path.home() / "phd" / "sensitivity-score-cloud-paper"]
 
 
 def _fmt(v, digits=2):

@@ -68,6 +68,33 @@ ok()   { echo "  ok: $*"; }
 
 pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# Push-уведомление о том, что случилось с прогоном, пока за ним никто не
+# следил. Доставку делает ОТДЕЛЬНЫЙ инструмент (репозиторий ss-notify), здесь
+# только вызов: нет его на машине — функция молча ничего не делает, и серия
+# этого не замечает. Обнаружение остаётся здесь: что считать бедой, знает
+# вотчдог, а не уведомлятель.
+#
+# Уведомляем ТОЛЬКО о том, что происходит после ухода оператора. Preflight и
+# `series-stop` идут при нём, синхронно и с выводом на экран — дублировать их
+# в чат значит приучить себя не читать оттуда ничего.
+#
+# `|| true` обязателен: недоступный чат не имеет права ронять четырёхчасовой
+# прогон. Время ограничивает сам ss-notify (~40 с на все ретраи) — вотчдог
+# зовёт его из своего цикла и не должен вставать на сетевом таймауте.
+notify() {   # notify <уровень> <заголовок> <текст> [файл]
+    local bin=${SS_NOTIFY_BIN:-}
+    [ -n "$bin" ] || bin=$(command -v ss-notify 2>/dev/null)
+    # PATH у фоновых процессов беднее интерактивного (вотчдог стартует через
+    # setsid/nohup), поэтому кроме PATH смотрим в место установки по умолчанию.
+    [ -n "$bin" ] || { [ -x "$HOME/.local/bin/ss-notify" ] && bin=$HOME/.local/bin/ss-notify; }
+    [ -n "$bin" ] || return 0
+    if [ -n "${4:-}" ]; then
+        "$bin" -l "$1" -t "$2" -f "$4" "$3" >/dev/null 2>&1 || true
+    else
+        "$bin" -l "$1" -t "$2" "$3" >/dev/null 2>&1 || true
+    fi
+}
+
 # Redis виден харнессу только через port-forward, и это единственная точка,
 # где берётся снимок давления узлов для placement_regret. Если форвард умрёт
 # посреди прогона, харнесс не падает (так задумано: сломанный метрик-пайплайн
@@ -417,22 +444,37 @@ watchdog() {
         if ! redis_alive; then
             echo "WATCHDOG ERROR $(date '+%F %T'): port-forward к Redis мёртв — placement_regret с этого момента NaN; поднимаю заново" >> "$LOG"
             redis_pf_start
+            # Уведомление — одно на эпизод, обеими ветками: «падал и поднят»
+            # тоже новость, потому что задачи, попавшие в разрыв, ушли в
+            # результаты с regret=NaN, и об этом надо знать при разборе.
             if redis_alive; then
                 echo "WATCHDOG $(date '+%F %T'): port-forward к Redis восстановлен" >> "$LOG"
+                notify warn "$STAND-$SERIES: port-forward к Redis падал" \
+                    "поднят заново; у задач, попавших в разрыв, placement_regret = NaN"
             else
                 echo "WATCHDOG ERROR $(date '+%F %T'): поднять port-forward не удалось (harness/.redis-pf.log)" >> "$LOG"
+                notify error "$STAND-$SERIES: Redis недоступен" \
+                    "port-forward умер и не поднялся — placement_regret с этого момента NaN.
+причина: harness/.redis-pf.log"
             fi
         fi
         if [ "$size" != "$last_size" ]; then
             last_size=$size; last_change=$now; rm -f "$STALLFLAG"
         elif [ $((now - last_change)) -ge 1200 ] && [ ! -e "$STALLFLAG" ]; then
             echo "WATCHDOG ERROR $(date '+%F %T'): лог не растёт $(((now - last_change) / 60)) мин — серия зависла? kubectl get pods -n $BENCH_NS" >> "$LOG"
+            notify error "$STAND-$SERIES: тишина в логе" \
+                "лог не растёт $(((now - last_change) / 60)) мин — похоже, серия зависла.
+проверить: kubectl get pods -n $BENCH_NS"
             touch "$STALLFLAG"
             last_size=$(log_size)
         fi
     done
     if grep -q "PRESSURE DONE" "$LOG" 2>/dev/null; then
         echo "WATCHDOG $(date '+%F %T'): серия $SERIES завершена (PRESSURE DONE)." >> "$LOG"
+        # Два уведомления, а не одно: «серия кончилась» — сигнал к тому, что
+        # стенд свободен под следующую, и ждать ради него сборки отчёта
+        # (минуты) незачем.
+        notify "done" "$STAND-$SERIES завершена" "стенд свободен; считаю отчёт, пришлю следом"
         # Отчёт H1 (Манн-Уитни+Холм+δ, графики) — панель «Анализ» статус-
         # страницы читает analysis/report-<стенд>-<серия>/. Генерируется здесь,
         # ПОСЛЕ выхода процесса серии (кластер уже свободен); неудача отчёта
@@ -443,11 +485,23 @@ watchdog() {
                 --results "../$results" --baselines "../$baselines" \
                 --outdir "report-$STAND-$SERIES") >> "$LOG" 2>&1; then
             echo "WATCHDOG $(date '+%F %T'): отчёт готов — analysis/report-$STAND-$SERIES (статус-страница «Анализ»)." >> "$LOG"
+            # summary.md приложением: вердикты H1-H4 читаются с телефона сразу,
+            # без доступа к стенду. Файла может не оказаться (analyze.py его
+            # не написал) — тогда уедет один текст, см. ss-notify.
+            notify "done" "отчёт по $STAND-$SERIES готов" \
+                "analysis/report-$STAND-$SERIES — панель «Анализ» статус-страницы" \
+                "analysis/report-$STAND-$SERIES/summary.md"
         else
             echo "WATCHDOG ERROR $(date '+%F %T'): отчёт не собрался (см. выше) — повторить: make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines" >> "$LOG"
+            notify warn "$STAND-$SERIES: отчёт не собрался" \
+                "данные целы (parquet + ClickHouse), повторить руками:
+make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines"
         fi
     else
         echo "WATCHDOG ERROR $(date '+%F %T'): процесс серии вышел ДО маркера PRESSURE DONE — смотри хвост лога." >> "$LOG"
+        notify error "$STAND-$SERIES оборвалась" \
+            "процесс вышел до маркера PRESSURE DONE. Хвост лога:
+$(tail -5 "$LOG")"
     fi
     rm -f "$PIDFILE" "$WDPIDFILE" "$STALLFLAG"
 }
@@ -494,6 +548,13 @@ start() {
     new_session nohup bash "$0" __watchdog "$SERIES" "$pid" >/dev/null 2>&1 &
     echo $! > "$WDPIDFILE"
     ok "вотчдог: алерт в лог, если тишина >20 мин"
+
+    # Уведомление на старте нужно не для отчёта о запуске, а чтобы канал
+    # проверился, пока оператор ещё рядом: протухший токен иначе обнаружится
+    # через четыре часа — ровно в тот момент, когда уведомление и требовалось.
+    notify info "$STAND-$SERIES запущена" "лог: $LOG
+статус: make series-status SERIES=$SERIES"
+
     echo
     echo "дальше:  make series-status SERIES=$SERIES   |   http://localhost:8787"
 }
