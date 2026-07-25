@@ -41,6 +41,8 @@ harness/.series-*
 harness/.redis-pf.*
 # параметры последней поднятой страницы — состояние конкретного хоста
 harness/.status-page.env
+# адрес службы уведомлений и токен приёма — состояние конкретного хоста
+harness/.notify.env
 
 # генерируется make series PILOT=1
 harness/.pilot-*.sh

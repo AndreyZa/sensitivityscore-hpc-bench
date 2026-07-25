@@ -180,17 +180,27 @@ make series-stop SERIES=<имя>     # остановить серию и уда
 [statusserver/README.md](statusserver/README.md).
 
 **Уведомления на телефон (опционально).** Страница и лог — это pull: смотреть
-надо самому, а серия идёт часами. Если на машине установлен
-[ss-notify](https://github.com/AndreyZa/ss-notifier), вотчдог шлёт в Telegram
-(или ntfy) пять событий: старт серии, зависание (лог не растёт 20 мин), смерть
-port-forward к Redis, завершение и готовый отчёт — с приложенным `summary.md`.
-Не установлен — вызовы молча ничего не делают, прогон одинаков в обоих случаях.
-Preflight и `series-stop` намеренно не уведомляют: они идут при операторе.
+надо самому, а серия идёт часами. Вотчдог шлёт хук службе
+[ss-notifier](https://github.com/AndreyZa/ss-notifier) — она крутится на
+JumpHost, держит токен бота у себя и пишет в Telegram (или ntfy) о пяти
+событиях: старт серии, зависание (лог не растёт 20 мин), смерть port-forward к
+Redis, завершение и готовый отчёт — с приложенным `summary.md`. Preflight и
+`series-stop` намеренно не уведомляют: они идут при операторе.
+
+На машине, с которой запускают серию, не нужно ничего — ни docker, ни
+установки, ни секретов: только адрес службы и токен приёма.
 
 ```bash
-git clone git@github.com:AndreyZa/ss-notifier.git && cd ss-notifier
-make image && make install && make config   # дальше — токен бота, см. его README
+cat > harness/.notify.env <<'EOF'      # файл хоста, в git не попадает
+SS_NOTIFY_URL=http://192.168.1.72:8790
+SS_NOTIFY_TOKEN=<токен приёма службы>
+EOF
 ```
+
+Адрес не задан — вызовы молча ничего не делают, прогон одинаков в обоих
+случаях. Как поднять саму службу — в её README; туда же имеет смысл направить
+вебхук Alertmanager, чтобы правила `SSLLCAxisSaturated` / `SSAxisDegenerate`
+доходили не только до Grafana.
 
 Соответствие сериям из Сводки: `llc` — серия кэша (LLC); `mixed` и
 `mixed-calib` — смешанная и смешанная с калиброванным скорингом; `placebo` —
