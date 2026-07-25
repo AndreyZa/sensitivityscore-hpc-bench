@@ -231,6 +231,88 @@ def plateau_onset(levels, points, cis):
     return lv[best]
 
 
+def paired_diff_ci(a, b, n_boot=2000, alpha=0.05, rng=None):
+    """Бутстрап-CI медианы ПАРНОЙ разности (a − b), сопоставление по ключу.
+
+    a, b — отображения «повторение -> величина» (Series с индексом rep или
+    dict). Пары берутся по общим ключам, как в paired_test: сопоставление по
+    номеру повтора, а не по позиции. Возвращает (lo, point, hi) или NaN, если
+    общих пар нет.
+    """
+    sa = a if isinstance(a, pd.Series) else pd.Series(a, dtype=float)
+    sb = b if isinstance(b, pd.Series) else pd.Series(b, dtype=float)
+    common = sa.index.intersection(sb.index)
+    if len(common) == 0:
+        return float("nan"), float("nan"), float("nan")
+    diff = (sa.loc[common] - sb.loc[common]).dropna().to_numpy(dtype=float)
+    if diff.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    return bootstrap_ci(diff, statistic=np.median, n_boot=n_boot, alpha=alpha, rng=rng)
+
+
+PLATEAU_MARGIN_FRACTION = 0.10   # доля размаха кривой, признаваемая несущественной
+
+
+def plateau_onset_paired(levels, series, margin=None, n_boot=2000, alpha=0.05,
+                         rng=None, return_margin=False):
+    """Минимальный уровень, который НЕ ХУЖЕ лучшего более чем на margin:
+    верхняя граница 95% CI парной разности (уровень − лучший) ниже margin.
+
+    levels — ось x (веса); series — {уровень: повторение -> величина};
+    margin — граница практической несущественности в тех же единицах, что и
+    величина. По умолчанию 10% размаха медиан по уровням (см.
+    PLATEAU_MARGIN_FRACTION) — та же шкала, что у прежнего эвристического
+    критерия «10% размаха», но теперь с доверительным утверждением.
+
+    Почему именно так — два отвергнутых варианта.
+
+    (1) Перекрытие двух МАРГИНАЛЬНЫХ CI (plateau_onset) — слишком слабо.
+    Интервалы могут перекрываться, тогда как разность значима, и на десяти
+    повторениях это происходит систематически: на синтетике уровень с regret
+    0,317 против лучшего 0,022 объявлялся «плато» только потому, что нижняя
+    граница его интервала заходила под верхнюю границу лучшего.
+
+    (2) «CI парной разности накрывает 0» — слишком строго, и в этом суть.
+    Дизайн парный (один поток через все веса), поэтому мощность высока, и
+    устойчивая разница в 1% отвергает плато. Но вопрос свипа не «есть ли хоть
+    какая-то разница», а «мал ли проигрыш настолько, что весом можно не
+    рисковать». Это утверждение о неменьшей эффективности, и его нельзя
+    сформулировать без границы: «практически эквивалентно» требует шкалы.
+
+    Отсюда правило: плато с первого уровня, про который можно уверенно сказать
+    «хуже лучшего меньше чем на margin». Широкие интервалы дают честное
+    отсутствие плато (вернётся лучший уровень), а не ложное колено.
+    """
+    lv = list(levels)
+    pts = {}
+    for level in lv:
+        s = series.get(level)
+        s = s if isinstance(s, pd.Series) else pd.Series(s or {}, dtype=float)
+        s = s.dropna()
+        pts[level] = float(np.median(s.to_numpy())) if len(s) else float("nan")
+    valid = [level for level in lv if not np.isnan(pts[level])]
+    if not valid:
+        return (None, float("nan")) if return_margin else None
+    best = min(valid, key=lambda level: pts[level])
+
+    if margin is None:
+        span = max(pts[level] for level in valid) - pts[best]
+        margin = PLATEAU_MARGIN_FRACTION * span
+
+    answer = best
+    for level in sorted(valid, key=lambda x: lv.index(x)):
+        if level == best:
+            break
+        _, _, hi = paired_diff_ci(series[level], series[best],
+                                  n_boot=n_boot, alpha=alpha, rng=rng)
+        if np.isnan(hi):
+            continue
+        if hi <= margin:       # уверенно не хуже лучшего более чем на margin
+            answer = level
+            break
+    return (answer, float(margin)) if return_margin else answer
+
+
 def compare_configs(
     df: pd.DataFrame,
     config_a: str,

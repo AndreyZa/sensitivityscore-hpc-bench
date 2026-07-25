@@ -23,8 +23,10 @@ from stats import (  # noqa: E402
     MIN_PAIRS_FOR_WILCOXON,
     bootstrap_ci,
     compare_configs,
+    paired_diff_ci,
     paired_test,
     plateau_onset,
+    plateau_onset_paired,
     rep_level_series,
 )
 
@@ -151,6 +153,62 @@ def test_plateau_onset_all_overlap_returns_smallest():
 def test_plateau_onset_all_nan_returns_none():
     assert plateau_onset([0, 1], [float("nan"), float("nan")],
                          [(np.nan, np.nan), (np.nan, np.nan)]) is None
+
+
+def test_paired_diff_ci_aligns_on_rep_not_position():
+    # То же свойство, что у paired_test: сопоставление ПО НОМЕРУ ПОВТОРА.
+    # Плечо b потеряло rep 0 и 1; разность обязана считаться по общим rep 2..9,
+    # где она строго +5, а не по позиции (иначе получился бы мусор).
+    a = _series({i: 100 + i for i in range(10)})
+    b = _series({i: 95 + i for i in range(2, 10)})
+    lo, point, hi = paired_diff_ci(a, b, rng=np.random.default_rng(0))
+    assert point == pytest.approx(5.0)
+    assert lo <= 5.0 <= hi
+    assert lo > 0  # разность уверенно положительна
+
+
+def test_paired_diff_ci_no_common_reps_is_nan():
+    a = _series({0: 1.0, 1: 2.0})
+    b = _series({5: 1.0, 6: 2.0})
+    lo, point, hi = paired_diff_ci(a, b)
+    assert np.isnan(lo) and np.isnan(point) and np.isnan(hi)
+
+
+def test_plateau_onset_paired_ignores_marginal_ci_overlap():
+    # Ключевое отличие от plateau_onset. Уровень 1 много хуже лучшего, но его
+    # маргинальный CI перекрывает CI лучшего из-за большого разброса ВНУТРИ
+    # уровня. Парная разность при этом устойчиво положительна на каждой паре,
+    # поэтому плато обязано начаться позже.
+    rng = np.random.default_rng(3)
+    base = np.array([0.10, 0.30, 0.50, 0.70, 0.90, 0.11, 0.31, 0.51, 0.71, 0.91])
+    series = {
+        0: pd.Series(base + 0.60),   # заметно хуже
+        1: pd.Series(base + 0.30),   # хуже, но CI перекрывает лучший
+        3: pd.Series(base + 0.01),   # уже неотличим
+        5: pd.Series(base),          # лучший
+    }
+    levels = [0, 1, 3, 5]
+    points = [float(np.median(series[l])) for l in levels]
+    cis = [bootstrap_ci(series[l].to_numpy(), rng=np.random.default_rng(1))[::2]
+           for l in levels]
+    # Прежний критерий обманывается разбросом внутри уровня...
+    assert plateau_onset(levels, points, [tuple(c) for c in cis]) <= 1
+    # ...парный — нет.
+    assert plateau_onset_paired(levels, series, rng=rng) == 3
+
+
+def test_plateau_onset_paired_flat_curve_starts_at_smallest():
+    # Все уровни одинаковы -> плато с самого малого: критерий не должен
+    # выдумывать колено там, где кривая плоская.
+    rng = np.random.default_rng(5)
+    vals = np.linspace(0.1, 0.9, 10)
+    series = {w: pd.Series(vals) for w in (0, 1, 5)}
+    assert plateau_onset_paired([0, 1, 5], series, rng=rng) == 0
+
+
+def test_plateau_onset_paired_all_empty_returns_none():
+    assert plateau_onset_paired([0, 1], {0: pd.Series(dtype=float),
+                                         1: pd.Series(dtype=float)}) is None
 
 
 def test_rep_level_series_keeps_rep_index():
