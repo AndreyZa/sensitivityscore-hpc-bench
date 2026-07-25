@@ -77,6 +77,13 @@ SERIES = {
 # --------------------------------------------------------------------------
 SUPERSEDED_P = ["3.8·10⁻⁸", "1.4·10⁻⁹", "1.5·10⁻⁷", "2·10⁻⁸", "4·10⁻⁹"]
 
+# Второй класс дефекта: величины, НЕ выводимые из приведённых рядом медиан.
+# Аудит 24.07.2026 не смог их воспроизвести (33/30 и 53/59 дают 3 с и 43,0
+# против 44,5 — не 18 с и не 46 против 54), происхождение неизвестно.
+# Пересчёт отложен до возврата ClickHouse; до тех пор появление вне пометки —
+# регресс, а не новый результат.
+UNVERIFIED = ["46 против 54", "ради ~18 с"]
+
 # Исторические цитирования: там старое число ОПИСЫВАЕТ дефект, а не заявляет
 # результат. Пара (хвост пути, отличительная подстрока строки).
 HISTORICAL = [
@@ -91,7 +98,9 @@ HISTORICAL = [
     ("docs/Аудит и план работ.md", "по сети —"),
     ("docs/Сводка результатов STAGE (июль 2026).md", "прежние p вида"),
     ("docs/Сводка результатов STAGE (июль 2026).md", "сняты: они посчитаны по 30 задачам"),
+    ("docs/Сводка результатов STAGE (июль 2026).md", "не выводятся из приведённых здесь медиан"),
     ("text/slides/make_pptx.py", "p ≈ 10"),          # колонка «было» в таблице
+    ("Статья (черновик).md", "не выводимые из приведённых медиан"),
 ]
 
 SCAN_DIRS = ["docs", "analysis", "harness", "scripts"]
@@ -221,17 +230,19 @@ def check() -> int:
             except (UnicodeDecodeError, OSError):
                 continue
             for i, line in enumerate(lines, 1):
-                for tok in SUPERSEDED_P:
+                for tok in SUPERSEDED_P + UNVERIFIED:
                     if tok in line and not _allowed(path, line):
                         bad.append((path, i, tok, line.strip()[:90]))
     if bad:
-        print("НАЙДЕНЫ устаревшие p (счёт по задачам) вне исторических цитирований:\n")
+        print("НАЙДЕНЫ доаудитные числа вне исторических цитирований:\n")
         for path, i, tok, line in bad:
-            print(f"  {path}:{i}  [{tok}]  {line}")
-        print("\nЛибо пересчитать на уровне повторений, либо, если это ОПИСАНИЕ")
+            kind = "устаревший p" if tok in SUPERSEDED_P else "не выводится из медиан"
+            print(f"  {path}:{i}  [{tok}: {kind}]  {line}")
+        print("\nЛибо пересчитать по исходным данным, либо, если это ОПИСАНИЕ")
         print("дефекта, внести место в HISTORICAL в analysis/canonical_numbers.py.")
         return 1
-    print(f"устаревших p не найдено (проверено {len(targets)} корней)")
+    print(f"доаудитных чисел не найдено (проверено {len(targets)} корней, "
+          f"{len(SUPERSEDED_P) + len(UNVERIFIED)} признаков)")
     return 0
 
 
@@ -251,6 +262,9 @@ def _self_test() -> int:
     passed = not _allowed(Path("a/docs/Прочее.md"), "результат p = 3.8·10⁻⁸")
     ok &= passed
     print(f"  {'OK ' if passed else 'НЕТ'} постороннее место НЕ в списке")
+    passed = bool(UNVERIFIED) and all(t not in SUPERSEDED_P for t in UNVERIFIED)
+    ok &= passed
+    print(f"  {'OK ' if passed else 'НЕТ'} два класса дефекта не пересекаются")
     print("\nсамопроверка:", "пройдена" if ok else "ПРОВАЛЕНА")
     return 0 if ok else 1
 
