@@ -179,6 +179,19 @@ make series-stop SERIES=<имя>     # остановить серию и уда
 включая разбор плашек «этим цифрам верить нельзя», —
 [statusserver/README.md](statusserver/README.md).
 
+**Уведомления на телефон (опционально).** Страница и лог — это pull: смотреть
+надо самому, а серия идёт часами. Если на машине установлен
+[ss-notify](https://github.com/AndreyZa/ss-notifier), вотчдог шлёт в Telegram
+(или ntfy) пять событий: старт серии, зависание (лог не растёт 20 мин), смерть
+port-forward к Redis, завершение и готовый отчёт — с приложенным `summary.md`.
+Не установлен — вызовы молча ничего не делают, прогон одинаков в обоих случаях.
+Preflight и `series-stop` намеренно не уведомляют: они идут при операторе.
+
+```bash
+git clone git@github.com:AndreyZa/ss-notifier.git && cd ss-notifier
+make image && make install && make config   # дальше — токен бота, см. его README
+```
+
 Соответствие сериям из Сводки: `llc` — серия кэша (LLC); `mixed` и
 `mixed-calib` — смешанная и смешанная с калиброванным скорингом; `placebo` —
 отрицательный контроль; `io-sensitivity` — различение по чувствительности к
