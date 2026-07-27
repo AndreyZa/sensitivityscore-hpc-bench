@@ -54,6 +54,12 @@ SCHED=sensitivityscore-scheduler
 REDIS_PORT=16379
 PY=harness/.venv/bin/python
 CHPY=db/clickhouse/.venv/bin/python
+# Анализ (фаза analyze) — ОТДЕЛЬНЫЙ venv. sweep-analyze.py импортирует из
+# analysis/ и stats (scipy), и clickhouse_source (clickhouse_connect); оба
+# пакета есть только в analysis/.venv. harness/.venv на .72 их не имеет, а на
+# рабочей машине имеет лишь scipy — поэтому запуск через $PY проходил --self-test
+# (он CH не трогает), но на реальном analyze падал бы на clickhouse_connect.
+APY=analysis/.venv/bin/python
 # CH на .72 локальный (не туннель — туннель это для Mac).
 CH_HOST=${CH_HOST:-localhost}
 CH_PORT=${CH_PORT:-8123}
@@ -209,9 +215,10 @@ phase_ss() {
 }
 
 phase_analyze() {
+    [ -x "$APY" ] || fail "нет $APY — сначала make venv-analysis (нужны scipy + clickhouse_connect)"
     say "анализ: measured-regret по весам (оракул B4)"
     # A-ss под каждым весом + эталоны/default из sweep-ref в один датафрейм.
-    "$PY" scripts/sweep-analyze.py --weights "$WEIGHTS" --ch-host "$CH_HOST" --ch-port "$CH_PORT"
+    "$APY" scripts/sweep-analyze.py --weights "$WEIGHTS" --ch-host "$CH_HOST" --ch-port "$CH_PORT"
 }
 
 case "${1:-all}" in
