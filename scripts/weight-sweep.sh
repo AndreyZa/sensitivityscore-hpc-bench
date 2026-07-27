@@ -83,6 +83,36 @@ export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say()  { echo "[sweep $(date +%H:%M:%S)] $*"; }
 
+# --- Статус-страница. Свип был единственным раннером серий, который зовёт
+# run_experiment.py напрямую и страницу не трогает вовсе: на 8787 продолжала
+# висеть ПРЕДЫДУЩАЯ серия (27.07 — июльский stage-ablation), выглядя при этом
+# совершенно живой. Отсюда два следствия для путей:
+#   * конфиг фазы пишется в РЕПОЗИТОРИЙ, а не в /tmp: контейнер страницы
+#     монтирует только корень репозитория (/repo), и /tmp ему не виден;
+#   * лог фазы — harness/stage-<серия>.log с теми же маркерами, что у штатных
+#     harness/run-stage-*.sh: по ним статус-страница определяет фазу и ETA
+#     (statusserver/progress.py). Без маркеров прогон виден, а фаза — нет.
+# Подъём делегируется run-series.sh page: там уже решены выбор kubeconfig
+# (каталог вместо файла ломает kubectl), пути parquet из секции output конфига
+# и запись harness/.status-page.env для systemd-юнита ss-status.
+page_up() {
+    local series=$1
+    bash scripts/run-series.sh page "$series" || \
+        say "статус-страница для $series не поднялась — на прогон это не влияет"
+}
+
+# harness_run <серия> <BASELINE|PRESSURE> <аргументы run_experiment.py...>
+harness_run() {
+    local series=$1 marker=$2 rc=0
+    shift 2
+    local log="harness/stage-$series.log"
+    echo "=== $marker START $(date +%H:%M:%S) epoch=$(date +%s) ===" | tee -a "$log"
+    ( cd harness && ../$PY run_experiment.py "$@" ) 2>&1 | tee -a "$log"
+    rc=${PIPESTATUS[0]}
+    echo "=== $marker DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ===" | tee -a "$log"
+    return "$rc"
+}
+
 command -v kubectl >/dev/null || fail "kubectl не найден"
 [ -x "$PY" ] || fail "нет $PY — сначала make venv-harness"
 [ -x "$CHPY" ] || fail "нет $CHPY — сначала make venv-clickhouse"
@@ -145,11 +175,13 @@ phase_ref() {
     redis_up
     say "REF-фаза: эталоны + default/trimaran (один раз, вес не влияет)"
     "$PY" scripts/sweep-series-config.py --variants default,trimaran --reps "$REPS" \
-        --results-file results-sweep-ref.parquet > /tmp/sweep-ref.yaml || fail "конфиг ref"
+        --results-file results-sweep-ref.parquet \
+        > harness/config-stage-sweep-ref.yaml || fail "конфиг ref"
+    page_up sweep-ref
     bench_clean
-    ( cd harness && ../$PY run_experiment.py --config /tmp/sweep-ref.yaml --baseline ) \
+    harness_run sweep-ref BASELINE --config config-stage-sweep-ref.yaml --baseline \
         || fail "эталоны ref"
-    ( cd harness && ../$PY run_experiment.py --config /tmp/sweep-ref.yaml --pressure ) \
+    harness_run sweep-ref PRESSURE --config config-stage-sweep-ref.yaml --pressure \
         || fail "pressure ref (default/trimaran)"
     ch_load sweep-ref harness/results/results-sweep-ref.parquet
     # baselines загружаем отдельно (нужны оракулу как знаменатель slowdown)
@@ -165,10 +197,11 @@ phase_ss() {
         set_weight "$w"
         say "SS-фаза: только A-sensitivityscore при weight=$w, reps=$REPS"
         "$PY" scripts/sweep-series-config.py --variants sensitivityscore --reps "$REPS" \
-            --results-file "results-sweep-ss-w$w.parquet" > "/tmp/sweep-ss-w$w.yaml" \
-            || fail "конфиг ss w$w"
+            --results-file "results-sweep-ss-w$w.parquet" \
+            > "harness/config-stage-sweep-ss-w$w.yaml" || fail "конфиг ss w$w"
+        page_up "sweep-ss-w$w"
         bench_clean
-        ( cd harness && ../$PY run_experiment.py --config "/tmp/sweep-ss-w$w.yaml" --pressure ) \
+        harness_run "sweep-ss-w$w" PRESSURE --config "config-stage-sweep-ss-w$w.yaml" --pressure \
             || fail "pressure ss w$w"
         ch_load "sweep-ss-w$w" "harness/results/results-sweep-ss-w$w.parquet"
     done

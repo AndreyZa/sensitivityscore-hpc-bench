@@ -46,3 +46,8 @@ harness/.notify.env
 
 # генерируется make series PILOT=1
 harness/.pilot-*.sh
+
+# конфиги фаз свипа веса: их печатает scripts/sweep-series-config.py на каждом
+# запуске (плоский конфиг с раскрытым extends). Лежат в репозитории, а не в
+# /tmp, только потому, что контейнер статус-страницы видит один /repo.
+harness/config-stage-sweep-*.yaml

@@ -9,8 +9,14 @@ sensitivityscore инвариантны, поэтому прогоняются �
     python sweep-series-config.py --variants sensitivityscore --reps 5 > /tmp/ss.yaml
     python sweep-series-config.py --variants default,trimaran --reps 5 > /tmp/ref.yaml
 
-output.results_file тоже переопределяется (--results-file), чтобы прогоны
-свипа не затирали parquet основной серии.
+output.results_file и output.baselines_file тоже переопределяются, чтобы
+прогоны свипа не затирали parquet основной серии. baselines_file — не
+косметика: он наследовался от config-stage-io-sensitivity.yaml, а эталоны
+пишутся простым to_parquet без ротации (run_experiment.py), поэтому REF-фаза
+свипа МОЛЧА затирала июльские эталоны io-sensitivity. Заодно расходились имена:
+weight-sweep.sh грузил в ClickHouse baselines-sweep-ref.parquet, которого не
+существовало, и знаменатели slowdown для оракула в базу не попадали (ошибка
+всплыла бы только на анализе, через 5-8 часов прогона).
 """
 
 import argparse
@@ -32,7 +38,16 @@ def main() -> int:
                    help="плечи через запятую: sensitivityscore | default,trimaran")
     p.add_argument("--reps", type=int, required=True)
     p.add_argument("--results-file", required=True)
+    p.add_argument("--baselines-file",
+                   help="по умолчанию — results-файл с префиксом baselines- "
+                        "вместо results- (соглашение остальных серий)")
     args = p.parse_args()
+
+    baselines_file = args.baselines_file
+    if not baselines_file:
+        stem = args.results_file
+        baselines_file = ("baselines-" + stem[len("results-"):]
+                          if stem.startswith("results-") else "baselines-" + stem)
 
     cfg = load_config(BASE)  # extends раскрыт -> плоский dict
     cfg["scheduler_variants"] = args.variants.split(",")
@@ -42,6 +57,7 @@ def main() -> int:
     for sc in cfg.get("pressure_scenarios", []):
         sc["repetitions"] = args.reps
     cfg.setdefault("output", {})["results_file"] = args.results_file
+    cfg["output"]["baselines_file"] = baselines_file
 
     sys.stdout.write(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     return 0

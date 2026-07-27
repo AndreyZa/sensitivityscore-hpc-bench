@@ -41,10 +41,19 @@ services:
     volumes:
       - ..:/repo:ro
       # kubeconfig — для секции кластера (statusserver/cluster.py). Если файла
-      # нет, docker создаёт на его месте ПУСТУЮ ДИРЕКТОРИЮ (в том числе в
-      # $HOME пользователя) и kubectl внутри падает; страница живёт дальше, но
-      # секция кластера молча пустая — в cluster.py это best-effort.
-      - ${KUBECONFIG:-${HOME}/.kube/config}:/kube/config:ro
+      # нет, docker создаёт на его месте ПУСТУЮ ДИРЕКТОРИЮ и kubectl внутри
+      # падает; страница живёт дальше, но секция кластера молча пустая — в
+      # cluster.py это best-effort.
+      #
+      # Дефолт — /dev/null (файл, который существует ВСЕГДА), а не привычный
+      # ~/.kube/config: 27.07 ручной `docker compose up -d` без KUBECONFIG
+      # создал каталог /home/andrey/.kube/config на .72, где конфигов вообще
+      # два уровнем ниже (~/.kube/configs/<стенд>) — после чего сломался и
+      # kubectl ХОСТА, и секция кластера на странице («read /kube/config: is a
+      # directory»). Штатные пути (run-series.sh, status-page-boot.sh) сюда
+      # KUBECONFIG передают всегда и проверяют, что это файл; дефолт остаётся
+      # только для ручного запуска — и он обязан быть безвредным.
+      - ${KUBECONFIG:-/dev/null}:/kube/config:ro
     environment:
       KUBECONFIG: /kube/config
       # Часовой пояс хоста. Маркеры фаз харнесс пишет по локальному времени
