@@ -1,43 +1,39 @@
 {
-  "source": "seeded-from-audit-2026-07-25 (ПЕРЕСЧИТАТЬ через --recompute при доступе к ClickHouse)",
-  "series_count": 10,
-  "note": "Значения перенесены из выверенного блока 3 сводки и текста доклада от 20.07.2026, посчитанных analysis/twin_contrast.py на уровне ПОВТОРЕНИЙ. Первый же --recompute заменит их машинным расчётом и сменит поле source.",
+  "source": "recomputed-from-clickhouse",
   "contrasts": {
     "differentiation": {
-      "title": "близнецы, диск (differentiation)",
+      "title": "близнецы, диск",
       "run_label": "stage-differentiation",
-      "ratio": 1.73,
-      "ci_lo": 1.65,
-      "ci_hi": 1.84,
-      "p": 0.008,
+      "ratio": 1.7304582210242587,
+      "ci_lo": 1.6458333333333333,
+      "ci_hi": 1.84366576819407,
+      "p": 0.0078125,
       "p_str": "0.008",
       "test": "wilcoxon(n=8)",
-      "n": 8,
-      "per_arm": "default ×1.71 [1.53; 1.79], p = 0.003; trimaran ×1.72; sensitivityscore — не определён (0 из 30 на штормовом узле)"
+      "n": 10
     },
     "net-diff": {
-      "title": "близнецы, сеть (net-diff, v1)",
+      "title": "близнецы, сеть (v1)",
       "run_label": "stage-net-diff",
-      "ratio": 6.22,
-      "ci_lo": 5.66,
-      "ci_hi": 6.82,
-      "p": 0.002,
+      "ratio": 6.2155172413793105,
+      "ci_lo": 5.6581196581196584,
+      "ci_hi": 6.821428571428571,
+      "p": 0.001953125,
       "p_str": "0.002",
       "test": "wilcoxon(n=10)",
-      "n": 10,
-      "per_arm": "default ×5.66; trimaran ×6.15"
+      "n": 10
     },
     "net-diff-v2": {
-      "title": "близнецы, сеть (net-diff-v2, нейтральный приёмник)",
+      "title": "близнецы, сеть (v2, нейтральный приёмник)",
       "run_label": "stage-net-diff-v2",
-      "ratio": 4.2,
-      "ci_lo": 3.96,
-      "ci_hi": 5.33,
-      "p": 0.004,
+      "ratio": 4.196969696969697,
+      "ci_lo": 3.9558823529411766,
+      "ci_hi": 5.333333333333333,
+      "p": 0.00390625,
       "p_str": "0.004",
-      "test": "wilcoxon(n=10)",
-      "n": 10,
-      "per_arm": "×4.03 / ×4.13 / ×4.12 во всех трёх плечах"
+      "test": "wilcoxon(n=9)",
+      "n": 10
     }
-  }
+  },
+  "series_count": 10
 }

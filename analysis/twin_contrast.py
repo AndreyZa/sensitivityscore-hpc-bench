@@ -178,15 +178,83 @@ def contrast_one_arm(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
     return out
 
 
+POOLED_LABEL = "все плечи"
+
+
+def contrast_pooled(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
+                    value_col: str = "makespan_s",
+                    storm_node: str | None = None) -> dict:
+    """Сводный контраст: единица наблюдения — ПОВТОР, плечи схлопываются
+    внутри повтора.
+
+    Основание: поток задач повторения порождается генератором с начальным
+    значением, фиксированным по номеру повтора, то есть у всех плеч повтор r —
+    ОДИН И ТОТ ЖЕ поток при одном и том же шторме. Считать default-rep3 и
+    trimaran-rep3 двумя независимыми парами — псевдорепликация поперёк плеч;
+    поэтому внутри повтора значения плеч сводятся медианой, и пар остаётся
+    не больше числа повторов. Отсюда сводные числа статьи: у differentiation
+    8 пар (p Уилкоксона 2/2⁸ ≈ 0,008), у сетевых серий 10.
+    """
+    a_parts, b_parts = [], []
+    out = {
+        "n_reps_sensitive": 0, "n_reps_twin": 0,
+        "ratio": float("nan"), "ci_lo": float("nan"), "ci_hi": float("nan"),
+        "test": "", "p": float("nan"),
+        "storm_share_sensitive": float("nan"), "storm_share_twin": float("nan"),
+        "storm_node_inferred": False,
+    }
+    for config, arm in df.groupby("config", dropna=False):
+        storm = storm_nodes_for(arm, axis, explicit=storm_node)
+        if storm.empty:
+            continue
+        on_storm = arm[arm.apply(
+            lambda r: r["node"] == storm.get(r["rep"], None), axis=1)]
+        for parts, profile in ((a_parts, sensitive), (b_parts, twin)):
+            sub = on_storm[on_storm["profile"] == profile]
+            parts.append(sub.set_index("rep")[value_col])
+    # Значение повтора — медиана по ВСЕМ штормовым задачам повтора (задачи
+    # всех плеч в одном пуле): внутри повтора агрегируем задачи, а не медианы
+    # плеч. Ровно этот вариант воспроизводит числа июльского отчёта посимвольно
+    # (×1.73 [1.65; 1.84] / ×6.22 [5.66; 6.82] / ×4.20 [3.96; 5.33]) —
+    # проверено сверкой трёх вариантов схлопывания 27.07.2026.
+    a = (pd.concat(a_parts).groupby(level=0).median().sort_index()
+         if a_parts else pd.Series(dtype=float))
+    b = (pd.concat(b_parts).groupby(level=0).median().sort_index()
+         if b_parts else pd.Series(dtype=float))
+    out["n_reps_sensitive"], out["n_reps_twin"] = len(a), len(b)
+    if len(a) < 2 or len(b) < 2:
+        return out
+    out["ratio"], out["ci_lo"], out["ci_hi"] = bootstrap_ratio_ci(
+        a.to_numpy(), b.to_numpy())
+    common = a.index.intersection(b.index)
+    if len(common) >= 5:
+        out["test"] = f"wilcoxon(n={len(common)})"
+        out["p"] = float(wilcoxon(a.loc[common].to_numpy(),
+                                  b.loc[common].to_numpy()).pvalue)
+    else:
+        out["test"] = f"mannwhitney(n={len(a)},{len(b)})"
+        out["p"] = float(mannwhitneyu(a.to_numpy(), b.to_numpy(),
+                                      alternative="two-sided").pvalue)
+    return out
+
+
 def twin_contrast(df: pd.DataFrame, sensitive: str, twin: str, axis: str,
                   value_col: str = "makespan_s",
                   storm_node: str | None = None) -> pd.DataFrame:
-    """По плечу на строку. Плечи НЕ объединяются: попадание на штормовой узел
-    в плече sensitivityscore выбирал сам планировщик."""
+    """По плечу на строку плюс сводная строка POOLED_LABEL.
+
+    Пары никогда не пересекают плечо (повтор сравнивается сам с собой внутри
+    своего плеча); сводная строка лишь объединяет ГОТОВЫЕ пары всех плеч.
+    Попадание на штормовой узел в плече sensitivityscore выбирал сам
+    планировщик, поэтому сводную оценку всегда сопровождают поплечевые —
+    воспроизводимость внутри каждого плеча и есть контроль отбора."""
     rows = []
     for config, arm in df.groupby("config", dropna=False):
         res = contrast_one_arm(arm, sensitive, twin, axis, value_col, storm_node)
         rows.append({"config": config, **res})
+    rows.append({"config": POOLED_LABEL,
+                 **contrast_pooled(df, sensitive, twin, axis, value_col,
+                                   storm_node)})
     return pd.DataFrame(rows).sort_values("config").reset_index(drop=True)
 
 
@@ -256,13 +324,28 @@ def _self_test() -> int:
           f"--storm-node честно говорит «данных нет» (ratio={r_ok['ratio']})")
     ok &= passed
 
-    # 5. Плечи не смешиваются.
+    # 5. Плечи не смешиваются: поплечевые строки чисты, сводная — отдельно.
     two = pd.concat([frame(1.7), frame(1.0).assign(config="A-sensitivityscore")])
-    r = twin_contrast(two, "high-s-net", "net-insensitive", "net")
-    passed = bool(len(r) == 2 and r.set_index("config").loc["A-default", "ratio"] > 1.4
-                  and abs(r.set_index("config").loc["A-sensitivityscore", "ratio"] - 1.0) < 0.15)
+    r = twin_contrast(two, "high-s-net", "net-insensitive", "net").set_index("config")
+    passed = bool(len(r) == 3 and r.loc["A-default", "ratio"] > 1.4
+                  and abs(r.loc["A-sensitivityscore", "ratio"] - 1.0) < 0.15)
     print(f"  {'OK ' if passed else 'НЕТ'} плечи раздельно: "
-          f"{dict(zip(r['config'], r['ratio'].round(2)))}")
+          f"{dict(zip(r.index, r['ratio'].round(2)))}")
+    ok &= passed
+
+    # 6. Сводная строка: повтор — единица наблюдения, плечи схлопываются
+    # внутри повтора. У двух плеч по 10 повторов пар остаётся 10, НЕ 20:
+    # поток повторения один на все плечи, и 20 означало бы псевдорепликацию
+    # поперёк плеч — ровно ту ошибку, против которой весь уровень повторений.
+    two_same = pd.concat([frame(1.7),
+                          frame(1.7).assign(config="A-trimaran")])
+    r = twin_contrast(two_same, "high-s-net", "net-insensitive", "net") \
+        .set_index("config")
+    pooled = r.loc[POOLED_LABEL]
+    passed = bool(pooled["test"] == "wilcoxon(n=10)"
+                  and 1.5 < pooled["ratio"] < 1.9)
+    print(f"  {'OK ' if passed else 'НЕТ'} сводная строка: ×{pooled['ratio']:.2f}, "
+          f"{pooled['test']} (10 пар от двух плеч по 10 повторов, не 20)")
     ok &= passed
 
     print("\nсамопроверка:", "пройдена" if ok else "ПРОВАЛЕНА")
