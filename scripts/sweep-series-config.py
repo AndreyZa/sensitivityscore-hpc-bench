@@ -29,7 +29,13 @@ HARNESS = Path(__file__).resolve().parent.parent / "harness"
 sys.path.insert(0, str(HARNESS))
 from config_loader import load_config  # noqa: E402
 
-BASE = HARNESS / "config-stage-io-sensitivity.yaml"
+# Базовый сценарий свипа. io-sensitivity годился для физики цены, но НЕ для свипа
+# веса: на нём чувствительная жертва избегает шторма даже при весе 0 (разные
+# ресурсные заявки + вдоволь чистой ёмкости) — весу нечего двигать, кривая
+# плоская (прогон 28.07). Для свипа нужен сценарий, где при весе 0 жертва РЕАЛЬНО
+# садится на дорогой узел: net-diff-v2 (базовая цена сети = 0 ⇒ размещение решает
+# только чувствительностная компонента, которую вес и масштабирует).
+DEFAULT_BASE = HARNESS / "config-stage-net-diff-v2.yaml"
 
 
 def main() -> int:
@@ -41,7 +47,11 @@ def main() -> int:
     p.add_argument("--baselines-file",
                    help="по умолчанию — results-файл с префиксом baselines- "
                         "вместо results- (соглашение остальных серий)")
+    p.add_argument("--base", default=str(DEFAULT_BASE),
+                   help="базовый конфиг сценария (extends раскрывается); "
+                        f"по умолчанию {DEFAULT_BASE.name}")
     args = p.parse_args()
+    BASE = Path(args.base)
 
     baselines_file = args.baselines_file
     if not baselines_file:

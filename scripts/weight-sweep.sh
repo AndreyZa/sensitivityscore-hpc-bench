@@ -6,6 +6,14 @@
 # начало выигрывать?»: прогоняем набор весов и смотрим, как зависит качество
 # размещения (независимый placement_oracle, B4) от веса.
 #
+# Сценарий — net-diff-v2 (не io-sensitivity). На io первый прогон (28.07) дал
+# ПЛОСКУЮ кривую: чувствительная жертва избегала шторма даже при весе 0 (разные
+# ресурсные заявки + вдоволь чистой ёмкости), весу нечего было двигать. В
+# net-diff базовая цена сети = 0, размещение решает ТОЛЬКО чувствительностная
+# компонента, которую вес и масштабирует. Скрипт сам подменяет score-веса в CM
+# на base=0/sens net=0.5 (иначе у плагина нет сигнала) и ВОЗВРАЩАЕТ калиброванные
+# в cleanup, поднимает приёмник стрима (setup_scenario) и убирает его после.
+#
 # Оптимизация (втрое меньше прогонов). Эталоны и плечи default/trimaran к весу
 # плагина sensitivityscore ИНВАРИАНТНЫ, поэтому:
 #   REF-фаза (один раз): эталоны + default + trimaran   -> метка sweep-ref
@@ -35,7 +43,7 @@
 #
 # Ниже плато сигнал SensitivityScore перекрывается суммой дефолтных
 # score-плагинов; выше — избыточен. Рядом анализ печатает прямую ступеньку
-# размещения (доля high-s-io на штормовом узле по весу); решение остаётся за
+# размещения (доля high-s-net на штормовом узле по весу); решение остаётся за
 # человеком.
 #
 #   bash scripts/weight-sweep.sh ref           только REF-фаза (один раз)
@@ -64,6 +72,13 @@ APY=analysis/.venv/bin/python
 CH_HOST=${CH_HOST:-localhost}
 CH_PORT=${CH_PORT:-8123}
 
+# --- Сценарий свипа: net-diff-v2. Профиль-жертва, чьё размещение решает вес;
+# приёмник стрима (на ss-system, ёмкости bench не ест); конфиг, откуда берутся
+# net-diff score-веса для CM.
+SENSITIVE_PROFILE=high-s-net
+SINK_MANIFEST=k8s/net-sink/sink-stage-v2.yaml
+NETDIFF_CONFIG=harness/config-stage-net-diff-v2.yaml
+
 # Усиленный свип (C2): 10 повторов (совпадает с n=10 остального исследования,
 # дискретный пол Уилкоксона 2/2^10) и гуще сетка весов + один сверху (40),
 # чтобы гарантированно накрыть плато. 8 весов × 10 повторов ≈ 80 SS-прогонов +
@@ -72,19 +87,28 @@ WEIGHTS=${WEIGHTS:-"0 1 2 3 5 10 20 40"}
 REPS=${REPS:-10}
 
 # --- Оверрайды профилей под STAGE (2 vCPU / ~1.9Gi на узел). КРИТИЧНО.
-# Свип зовёт run_experiment.py напрямую, минуя run-stage-io-sensitivity.sh,
-# поэтому обязан САМ выставить те же env, что и штатный раннер. Без них
-# профиль high-s-io берёт прод-дефолт cpu=8/mem=4Gi (profiles.py) и ни один
-# под жертвы не встаёт на 2-ядерный узел — планировщик вечно держит его в
-# Pending («Insufficient cpu/memory»), а свип клинит на первом же io-плече.
-# Значения — 1:1 с harness/run-stage-io-sensitivity.sh (не менять по отдельности).
-export HARNESS_OVERRIDE_HIGH_S_IO_CPU=500m HARNESS_OVERRIDE_HIGH_S_IO_THREADS=2 \
-       HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=300000 \
-       HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=2Gi \
-       HARNESS_OVERRIDE_HIGH_S_IO_IO_BURST_MB=32 \
-       HARNESS_OVERRIDE_HIGH_S_IO_IO_INTERVAL_SECONDS=0 \
-       HARNESS_OVERRIDE_HIGH_S_IO_IO_TOTAL_BURSTS=16 \
-       HARNESS_OVERRIDE_LOW_S_PRIMARIES=300000
+# Свип зовёт run_experiment.py напрямую, минуя run-stage-net-diff-v2.sh, поэтому
+# обязан САМ выставить те же env, что и штатный раннер. Без них профили берут
+# прод-дефолты (profiles.py) и не встают на 2-ядерный узел.
+#
+# Сценарий net-diff-v2, а НЕ io-sensitivity: на io чувствительная жертва
+# избегала шторма даже при весе 0 (кривая свипа плоская, прогон 28.07). Здесь
+# базовая цена сети = 0, размещение решает ТОЛЬКО чувствительностная компонента,
+# которую вес и масштабирует — есть чему зависеть от веса.
+#
+# Двойники high-s-net / net-insensitive: ИДЕНТИЧНЫЕ compute/ресурсы (500m, 1
+# поток, 100k частиц, 384Mi), отличие лишь в сетевом выводе. Значения — 1:1 с
+# harness/run-stage-net-diff-v2.sh (не менять по отдельности).
+export HARNESS_OVERRIDE_HIGH_S_NET_CPU=500m HARNESS_OVERRIDE_HIGH_S_NET_THREADS=1 \
+       HARNESS_OVERRIDE_HIGH_S_NET_PRIMARIES=100000 \
+       HARNESS_OVERRIDE_HIGH_S_NET_MEM_REQ=384Mi HARNESS_OVERRIDE_HIGH_S_NET_MEM_LIM=2Gi \
+       HARNESS_OVERRIDE_HIGH_S_NET_OUTPUT_MODE=stream \
+       HARNESS_OVERRIDE_HIGH_S_NET_NET_SINK_HOST=ss-sink \
+       HARNESS_OVERRIDE_HIGH_S_NET_NET_SINK_PORT=9000 \
+       HARNESS_OVERRIDE_HIGH_S_NET_NET_TOTAL_MB=2048 \
+       HARNESS_OVERRIDE_NET_INSENSITIVE_CPU=500m HARNESS_OVERRIDE_NET_INSENSITIVE_THREADS=1 \
+       HARNESS_OVERRIDE_NET_INSENSITIVE_PRIMARIES=100000 \
+       HARNESS_OVERRIDE_NET_INSENSITIVE_MEM_REQ=384Mi HARNESS_OVERRIDE_NET_INSENSITIVE_MEM_LIM=2Gi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say()  { echo "[sweep $(date +%H:%M:%S)] $*"; }
@@ -123,6 +147,31 @@ command -v kubectl >/dev/null || fail "kubectl не найден"
 [ -x "$PY" ] || fail "нет $PY — сначала make venv-harness"
 [ -x "$CHPY" ] || fail "нет $CHPY — сначала make venv-clickhouse"
 
+# --- Score-веса (weights.json в CM sensitivity-config). Свип net-diff идёт на
+# base=0/sens net=0.5 — иначе у плагина нет сетевого сигнала и весу нечего
+# масштабировать. Калиброванные веса СНИМАЕМ живьём (на разных стендах разные) и
+# возвращаем в CM после свипа (cleanup, даже при падении). НЕ путать с плагинным
+# weight в scheduler-config — тот трогает set_weight/restore_weight.
+CALIB_WEIGHTS=$(kubectl -n "$NS" get cm sensitivity-config -o jsonpath='{.data.weights\.json}' 2>/dev/null)
+[ -n "$CALIB_WEIGHTS" ] || fail "не снял текущий weights.json из CM sensitivity-config"
+printf '%s' "$CALIB_WEIGHTS" > harness/.sweep-calib-weights.json   # для ручного восстановления
+WEIGHTS_SWAPPED=0
+
+netdiff_weights_json() {   # score_weights из конфига net-diff-v2 -> JSON одной строкой
+    "$PY" - "$NETDIFF_CONFIG" <<'EOF'
+import sys, json
+sys.path.insert(0, "harness")
+from config_loader import load_config
+print(json.dumps(load_config(sys.argv[1])["score_weights"]))
+EOF
+}
+
+set_score_weights() {   # set_score_weights <json>; CM sensitivity-config несёт один ключ weights.json
+    kubectl -n "$NS" create configmap sensitivity-config \
+        --from-literal=weights.json="$1" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+}
+
 # --- Redis port-forward: метрика решения (placement_regret) читается из Redis.
 RF_PID=""
 redis_up() {
@@ -135,7 +184,18 @@ redis_up() {
     done
     fail "redis port-forward не поднялся (см. /tmp/sweep-redis.log)"
 }
-cleanup() { [ -n "$RF_PID" ] && kill "$RF_PID" 2>/dev/null; }
+cleanup() {
+    [ -n "${RF_PID:-}" ] && kill "$RF_PID" 2>/dev/null
+    # Вернуть калиброванные score-веса, даже если свип упал на середине — иначе
+    # стенд остаётся на net-diff-весах и следующая серия/анализ считает не тем.
+    if [ "${WEIGHTS_SWAPPED:-0}" = 1 ] && [ -n "${CALIB_WEIGHTS:-}" ]; then
+        set_score_weights "$CALIB_WEIGHTS" 2>/dev/null \
+            && echo "[sweep] калиброванные score-веса возвращены в CM sensitivity-config"
+        kubectl rollout restart deployment/"$SCHED" -n "$NS" >/dev/null 2>&1 || true
+    fi
+    # Убрать приёмник стрима (следующая серия ждёт пустой bench-namespace).
+    kubectl delete -f "$SINK_MANIFEST" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 set_weight() {
@@ -168,6 +228,21 @@ bench_clean() {
     kubectl -n "$BENCH_NS" delete jobs -l app=geant4-bench --ignore-not-found --timeout=120s >/dev/null 2>&1
 }
 
+# Инфраструктура сценария net-diff: приёмник стрима + net-веса в CM. Идемпотентно
+# (зовут и ref, и ss). Приёмник bench_clean НЕ трогает (метка ss-sink), он живёт
+# весь свип; убирает его cleanup. net-веса ставим один раз (флаг), первый
+# set_weight с rollout их и подхватит.
+setup_scenario() {
+    kubectl apply -f "$SINK_MANIFEST" >/dev/null || fail "приёмник $SINK_MANIFEST не применился"
+    kubectl -n "$BENCH_NS" wait --for=condition=Ready pod/ss-sink --timeout=120s >/dev/null 2>&1 \
+        || say "приёмник ss-sink не Ready за 120с — стрим жертв может не подняться"
+    if [ "$WEIGHTS_SWAPPED" = 0 ]; then
+        say "score-веса CM -> net-diff (base=0, sens net=0.5); калиброванные вернутся в cleanup"
+        set_score_weights "$(netdiff_weights_json)" || fail "подмена weights.json на net-diff"
+        WEIGHTS_SWAPPED=1
+    fi
+}
+
 ch_load() {
     local label=$1 results=$2
     [ -f "$results" ] || { say "нет $results — пропуск загрузки $label"; return 0; }
@@ -179,6 +254,7 @@ ch_load() {
 
 phase_ref() {
     redis_up
+    setup_scenario
     say "REF-фаза: эталоны + default/trimaran (один раз, вес не влияет)"
     "$PY" scripts/sweep-series-config.py --variants default,trimaran --reps "$REPS" \
         --results-file results-sweep-ref.parquet \
@@ -199,6 +275,7 @@ phase_ref() {
 
 phase_ss() {
     redis_up
+    setup_scenario
     for w in $WEIGHTS; do
         set_weight "$w"
         say "SS-фаза: только A-sensitivityscore при weight=$w, reps=$REPS"
@@ -218,7 +295,11 @@ phase_analyze() {
     [ -x "$APY" ] || fail "нет $APY — сначала make venv-analysis (нужны scipy + clickhouse_connect)"
     say "анализ: measured-regret по весам (оракул B4)"
     # A-ss под каждым весом + эталоны/default из sweep-ref в один датафрейм.
-    "$APY" scripts/sweep-analyze.py --weights "$WEIGHTS" --ch-host "$CH_HOST" --ch-port "$CH_PORT"
+    # --sensitive-profile: для net-diff жертва — high-s-net (не high-s-io);
+    # от неё зависят детект штормового узла и ступенька размещения.
+    "$APY" scripts/sweep-analyze.py --weights "$WEIGHTS" \
+        --sensitive-profile "$SENSITIVE_PROFILE" \
+        --ch-host "$CH_HOST" --ch-port "$CH_PORT"
 }
 
 case "${1:-all}" in

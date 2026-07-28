@@ -270,6 +270,10 @@ def main() -> int:
     p.add_argument("--ch-port", type=int, default=8123)
     p.add_argument("--self-test", action="store_true",
                    help="прогнать счёт на синтетике с заложенным ответом")
+    p.add_argument("--sensitive-profile", default=IO_SENSITIVE_PROFILE,
+                   help="профиль-жертва, которую плагин должен уводить с шторма "
+                        f"(по умолчанию {IO_SENSITIVE_PROFILE}; для net-diff — high-s-net). "
+                        "От него зависят детект штормового узла и ступенька размещения.")
     args = p.parse_args()
     if args.self_test:
         return _self_test()
@@ -299,11 +303,12 @@ def main() -> int:
 
     allrows = pd.concat(frames, ignore_index=True)
     _, matrix, hot, curve, knee, knee_marginal, margin = analyze_sweep(
-        allrows, baselines)
+        allrows, baselines, profile=args.sensitive_profile)
     if curve.empty:
         print(f"нет наблюдений плеча {SS_ARM} под давлением — нечего сводить")
         return 1
-    _print_report(matrix, hot, curve, knee, knee_marginal, margin)
+    _print_report(matrix, hot, curve, knee, knee_marginal, margin,
+                  profile=args.sensitive_profile)
     return 0
 
 
