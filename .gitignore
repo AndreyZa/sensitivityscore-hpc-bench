@@ -51,3 +51,5 @@ harness/.pilot-*.sh
 # запуске (плоский конфиг с раскрытым extends). Лежат в репозитории, а не в
 # /tmp, только потому, что контейнер статус-страницы видит один /repo.
 harness/config-stage-sweep-*.yaml
+harness/.sweep-calib-weights.json
+harness/weight-sweep-resume.out

@@ -30,6 +30,7 @@ from clickhouse_source import load_from_clickhouse  # noqa: E402
 # Статья вынесена отдельным репозиторием рядом.
 ARTICLE = Path.home() / "phd" / "sensitivity-score-cloud-paper" / "Статья (черновик).md"
 DISK_NODE = "worker-192.168.0.9"   # диск/сеть-шторм на STAGE (факт постановки)
+SCRIPTS = HERE.parent / "scripts"  # sweep-analyze.py — переиспользуем его счёт
 
 
 def _load(label):
@@ -84,6 +85,51 @@ def checks() -> list[tuple]:
     return out
 
 
+def plateau_checks() -> list[tuple]:
+    """§7 «Параметрическая устойчивость»: measured-regret по весам пересчитан из
+    CH ТЕМ ЖЕ analyze_sweep, что и sweep-analyze.py (лейблы sweep-ss-w0..w40 +
+    sweep-ref). Гарантирует, что впаянные в статью числа плато не разойдутся с
+    ClickHouse при ре-прогоне свипа. Точка правды — CH, не проза."""
+    import importlib.util
+
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))          # stats.py рядом со счётом
+    spec = importlib.util.spec_from_file_location(  # дефис в имени → грузим по пути
+        "sweep_analyze", SCRIPTS / "sweep-analyze.py")
+    sa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sa)
+
+    weights = [0, 1, 2, 3, 5, 10, 20, 40]
+    baselines = load_from_clickhouse("baselines", host=H, port=P,
+                                     stand="stage", run_labels=["sweep-ref"])
+    frames = []
+    ref = sa._load("sweep-ref", H, P)
+    if not ref.empty:
+        ref = ref.copy(); ref["weight"] = -1; frames.append(ref)
+    for w in weights:
+        d = sa._load(f"sweep-ss-w{w}", H, P)
+        if not d.empty:
+            d = d.copy(); d["weight"] = w; frames.append(d)
+    if not frames:
+        return [("§7 плато: данные свипа в CH", 0, 1, 0, "sweep-ss-w0")]
+
+    allrows = pd.concat(frames, ignore_index=True)
+    _, _, _, curve, knee, _, _ = sa.analyze_sweep(
+        allrows, baselines, profile="high-s-net")
+    r = dict(zip(curve["weight"].astype(int), curve["regret_measured"]))
+
+    out = []
+    # Колено плато — предзарегистрированный ПАРНЫЙ критерий (plateau_onset_paired).
+    out.append(("§7 плато: колено (парный критерий)", knee, 3, 0,
+                "плато сожаления достигается с *k* = 3"))
+    # Представительные точки кривой; паттерн — как значение записано в §7.
+    for w, exp, pat in ((0, 0.127, "0,127"), (3, 0.030, "0,03"),
+                        (10, 0.098, "0,098"), (40, 0.068, "0,068")):
+        got = round(float(r.get(w, float("nan"))), 3)
+        out.append((f"§7 regret k={w}", got, exp, 0.0015, pat))
+    return out
+
+
 def main() -> int:
     global H, P
     ap = argparse.ArgumentParser()
@@ -99,12 +145,16 @@ def main() -> int:
 
     ok = True
     print(f"{'число':44} {'из CH':>9} {'статья':>8} {'совпало':>8} {'в тексте':>9}")
-    for desc, got, exp, tol, pat in checks():
+    for desc, got, exp, tol, pat in checks() + plateau_checks():
         num_ok = abs(float(got) - float(exp)) <= tol
         txt_ok = pat in text
         ok = ok and num_ok and txt_ok
-        gs = ru(got) if isinstance(got, float) else str(got)
-        es = ru(exp) if isinstance(exp, float) else str(exp)
+        # суб-единичные величины (regret плато) печатаем в 3 знака, иначе 0,1
+        # маскирует 0,127 vs 0,03; makespan'ы (>=1) остаются в 1 знак.
+        gs = (ru(got, 3 if abs(got) < 1 else 1) if isinstance(got, float)
+              else str(got))
+        es = (ru(exp, 3 if abs(exp) < 1 else 1) if isinstance(exp, float)
+              else str(exp))
         print(f"{desc:44} {gs:>9} {es:>8} {'✓' if num_ok else '✗ РАСХОД':>8} "
               f"{'✓' if txt_ok else '✗ НЕТ':>9}")
     print("\nсверка с ClickHouse:", "пройдена" if ok else "ЕСТЬ РАСХОЖДЕНИЯ")
