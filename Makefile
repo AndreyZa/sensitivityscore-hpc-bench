@@ -968,6 +968,11 @@ ch-analyze: venv-analysis ## Построить H1-H4 отчёт ИЗ ClickHouse
 		--ch-user $(CH_USER) --ch-password "$(CH_PASSWORD)" \
 		--stand $(STAND) --run-label $(RUN_LABEL) --outdir report
 
+.PHONY: paper-check
+paper-check: venv-analysis ## Сверить несущие числа статьи с ClickHouse: make paper-check (поверх ch-tunnel; на .72 CH_HOST=localhost)
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python verify_paper_numbers.py \
+		--ch-host $(or $(CH_HOST),localhost) --ch-port $(or $(CH_PORT),$(CH_TUNNEL_PORT))
+
 # --- In-cluster ClickHouse (StatefulSet на системной ноде; см. k8s/clickhouse) ---
 CH_INCLUSTER_NS ?= sensitivityscore-system
 # Прод: k8s/clickhouse/overlays/prod (комментарий отдельной строкой — см. выше).
