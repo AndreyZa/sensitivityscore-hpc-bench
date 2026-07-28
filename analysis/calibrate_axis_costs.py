@@ -1,6 +1,12 @@
 """calibrate_axis_costs.py — калибровка цены осей интерференции по уже
 собранным сериям STAGE (LLC + смешанная), без новых прогонов.
 
+Источник данных — ClickHouse (флаг --clickhouse, точка правды): parquet стенда
+удалялись при миграции, и без CH-пути центральное число c⁰_io было
+невоспроизводимо. ДИ — 95% перцентильный КЛАСТЕРНЫЙ бутстреп ПО ПОВТОРЕНИЯМ
+(--bootstrap): единица ресемплинга — повтор, а не задача, иначе интервал занижен
+псевдорепликацией (тот же урок B3). Запуск: make axis-costs (поверх ch-tunnel).
+
 Мотивация (см. docs/«Сводка результатов STAGE (июль 2026).md»): скоринг
 считает все оси равноценными, а эмпирически единица давления диска стоит
 на порядок дороже единицы давления кэша. Модель калибровки:
@@ -126,6 +132,9 @@ def build_rows(df: pd.DataFrame, pressures: pd.DataFrame,
         row = {
             "series": series, "profile": r["profile"],
             "node": NODE_SHORT.get(r["node"], r["node"]),
+            # rep нужен как единица кластерного бутстрепа по повторениям (задачи
+            # одного повтора коррелированы — ресемплим повтор целиком, не задачу).
+            "rep": int(r["rep"]),
             "y": r["makespan_s"] / b - 1.0, "nb": nb[idx],
         }
         for a in AXES:
@@ -156,6 +165,33 @@ def fit(data: pd.DataFrame) -> dict:
     ss_tot = float(((y - y.mean()) ** 2).sum())
     out["r2"] = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
     return out
+
+
+def bootstrap_cis(data: pd.DataFrame, n_boot: int, seed: int) -> dict:
+    """95%-е перцентильные ДИ коэффициентов кластерным бутстрепом ПО ПОВТОРЕНИЯМ.
+
+    Единица ресемплинга — (серия, повтор), а не отдельная задача: задачи одного
+    повтора коррелированы (общий поток, общая сессия), поэтому ресемпл задач
+    занизил бы ДИ той же псевдорепликацией, что вычищена в анализе (B3). Пресы
+    узлов фиксированы (это входы модели, медианы на момент решения), ресемплится
+    регрессионная выборка. Точечная оценка при этом остаётся из fit() на всех
+    данных — бутстреп даёт только интервалы."""
+    from collections import defaultdict
+    rng = np.random.default_rng(seed)
+    groups = {k: idx for k, idx in data.groupby(["series", "rep"]).groups.items()}
+    keys = list(groups)
+    draws: dict[str, list] = defaultdict(list)
+    for _ in range(n_boot):
+        pick = rng.integers(0, len(keys), len(keys))
+        rows = pd.concat([data.loc[groups[keys[i]]] for i in pick], ignore_index=True)
+        try:
+            c = fit(rows)
+        except Exception:
+            continue
+        for k, v in c.items():
+            draws[k].append(v)
+    return {k: (float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5)))
+            for k, v in draws.items() if v}
 
 
 def score_table(pressures: pd.DataFrame, coefs: dict, scheme: str) -> pd.DataFrame:
@@ -189,13 +225,37 @@ def main() -> None:
                     default="../harness/results/results-stage-llc.parquet")
     ap.add_argument("--baselines",
                     default="../harness/results/baselines-stage-mixed.parquet")
+    # ClickHouse — точка правды: parquet стенда удалялись при миграции, и без
+    # этого пути центральное число c⁰_io было невоспроизводимо (см. B1-урок).
+    ap.add_argument("--clickhouse", action="store_true",
+                    help="брать серии из ClickHouse, а не из parquet")
+    ap.add_argument("--ch-host", default="localhost")
+    ap.add_argument("--ch-port", type=int, default=8123)
+    ap.add_argument("--stand", default="stage")
+    ap.add_argument("--mixed-label", default="stage-mixed")
+    ap.add_argument("--llc-label", default="stage-llc")
+    ap.add_argument("--baselines-label", default="stage-mixed",
+                    help="метка серии, чьи эталоны дают знаменатель slowdown")
+    ap.add_argument("--bootstrap", type=int, default=2000,
+                    help="итераций кластерного бутстрепа по повторениям для ДИ (0 — без)")
+    ap.add_argument("--seed", type=int, default=20260714,
+                    help="фикс генератора бутстрепа — воспроизводимость ДИ")
     ap.add_argument("--out-json", default=None,
-                    help="куда сохранить коэффициенты и рекомендованные веса")
+                    help="куда сохранить коэффициенты, ДИ и рекомендованные веса")
     args = ap.parse_args()
 
-    base = baseline_medians(pd.read_parquet(args.baselines))
-    mixed = pd.read_parquet(args.results_mixed)
-    llc = pd.read_parquet(args.results_llc)
+    if args.clickhouse:
+        from clickhouse_source import load_from_clickhouse
+        ld = lambda tbl, lbl: load_from_clickhouse(
+            tbl, host=args.ch_host, port=args.ch_port,
+            stand=args.stand, run_labels=[lbl])
+        base = baseline_medians(ld("baselines", args.baselines_label))
+        mixed = ld("results", args.mixed_label)
+        llc = ld("results", args.llc_label)
+    else:
+        base = baseline_medians(pd.read_parquet(args.baselines))
+        mixed = pd.read_parquet(args.results_mixed)
+        llc = pd.read_parquet(args.results_llc)
 
     p_mixed = node_pressures_mixed(mixed)
     p_llc = node_pressures_llc(llc)
@@ -211,12 +271,22 @@ def main() -> None:
           f"(mixed3 {sum(data.series == 'mixed3')}, llc {sum(data.series == 'llc')})")
 
     coefs = fit(data)
+    cis = bootstrap_cis(data, args.bootstrap, args.seed) if args.bootstrap else {}
+
+    def ci(name: str) -> str:
+        lohi = cis.get(name)
+        return f" [{lohi[0]:.3f}; {lohi[1]:.3f}]" if lohi else ""
+
     print("\n=== Цены осей (замедление на единицу давления) ===")
-    print(f"{'ось':>5} | {'α базовая':>10} | {'β чувствит.':>11} | {'α+β':>6}")
+    if cis:
+        print(f"ДИ — 95% перцентильный кластерный бутстреп по повторениям, "
+              f"{args.bootstrap} итераций, seed={args.seed}")
+    print(f"{'ось':>5} | {'α базовая (c⁰)':>26} | {'β чувствит. (cˢ)':>26} | {'α+β':>6}")
     for a in AXES:
         al, be = coefs[f"alpha_{a}"], coefs[f"beta_{a}"]
-        print(f"{a:>5} | {al:10.3f} | {be:11.3f} | {al + be:6.3f}")
-    print(f"цена соседства γ = {coefs['gamma']:.3f} на одного co-located соседа")
+        print(f"{a:>5} | {al:6.3f}{ci('alpha_'+a):>20} | "
+              f"{be:6.3f}{ci('beta_'+a):>20} | {al + be:6.3f}")
+    print(f"цена соседства γ = {coefs['gamma']:.3f}{ci('gamma')} на одного co-located соседа")
     for k, v in coefs.items():
         if k.startswith("intercept_"):
             print(f"дрейф сессии {k.removeprefix('intercept_')}: +{v:.3f} "
@@ -246,7 +316,9 @@ def main() -> None:
         w = {a: coefs[f"alpha_{a}"] + coefs[f"beta_{a}"] for a in AXES}
         top = max(w.values()) or 1.0
         payload = {
+            "source": "clickhouse" if args.clickhouse else "parquet",
             "coefficients": {k: round(v, 4) for k, v in coefs.items()},
+            "ci95": {k: [round(lo, 4), round(hi, 4)] for k, (lo, hi) in cis.items()},
             "weights_only": {a: round(w[a] / top, 2) for a in AXES} | {"numa": 0.0},
             "base_plus_sensitivity": {
                 a: {"base": round(coefs[f"alpha_{a}"], 3),

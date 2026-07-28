@@ -440,6 +440,12 @@ netcheck-logs: ## Дождаться завершения клиента и ра
 # DaemonSet'а не трогается. В git не хранится — значения стендо-специфичны.
 CALIBRATION_CM ?= metrics-agent-calibration
 
+.PHONY: axis-costs
+axis-costs: venv-analysis ## Пересчитать цены осей (c⁰/cˢ) + ДИ ИЗ ClickHouse: make axis-costs (поверх make ch-tunnel; на .72 CH_HOST=localhost)
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python calibrate_axis_costs.py --clickhouse \
+		--ch-host $(or $(CH_HOST),localhost) --ch-port $(or $(CH_PORT),$(CH_TUNNEL_PORT)) \
+		--bootstrap $(or $(BOOTSTRAP),2000)
+
 .PHONY: calibration-apply
 calibration-apply: ## Выставить калибровки: make calibration-apply NET_REFERENCE_MBPS=<N> LLC_REFERENCE_MISSES_PER_SEC=<M> (перезапускает агент — МЕЖДУ сериями)
 	@test -n "$(NET_REFERENCE_MBPS)$(LLC_REFERENCE_MISSES_PER_SEC)" || { \
