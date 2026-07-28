@@ -130,6 +130,28 @@ def plateau_checks() -> list[tuple]:
     return out
 
 
+def censoring_checks() -> list[tuple]:
+    """§7 «Информативное цензурирование»: свидетельство из CH, что ни одна задача
+    не отброшена по таймауту. В каждом плече отчётных серий ровно 60 завершённых
+    задач под давлением (= числу поставленных: 6 жертв × 10 повторов), сумма 720,
+    недобор 0. Если бы задачу отбросило — строки бы не было, n<60, недобор>0."""
+    labels = ("stage-mixed-calib", "stage-placebo", "stage-net-diff",
+              "stage-net-diff-v2")
+    arms = ("A-sensitivityscore", "A-default", "A-trimaran")
+    total = short = 0
+    for lab in labels:
+        p = _press(_load(lab))
+        for a in arms:
+            n = int(((p["config"] == a) & p["makespan_s"].notna()).sum())
+            total += n
+            short += max(0, 60 - n)
+    return [
+        ("§7 цензурирование: всего завершённых", total, 720, 0, "720"),
+        ("§7 цензурирование: недобор (отброшено)", short, 0, 0,
+         "не отброшена ни одна"),
+    ]
+
+
 def main() -> int:
     global H, P
     ap = argparse.ArgumentParser()
@@ -145,7 +167,7 @@ def main() -> int:
 
     ok = True
     print(f"{'число':44} {'из CH':>9} {'статья':>8} {'совпало':>8} {'в тексте':>9}")
-    for desc, got, exp, tol, pat in checks() + plateau_checks():
+    for desc, got, exp, tol, pat in checks() + plateau_checks() + censoring_checks():
         num_ok = abs(float(got) - float(exp)) <= tol
         txt_ok = pat in text
         ok = ok and num_ok and txt_ok
