@@ -75,10 +75,18 @@ def load_from_clickhouse(
     # Привести dtypes к parquet-совместимым: числовые -> float с NaN (не pd.NA),
     # строковые -> object; иначе filter_valid/stats могут споткнуться на
     # nullable-расширениях clickhouse-connect.
+    #
+    # Гарда `c in df.columns`: на ПУСТОМ результате (метка ещё не залита —
+    # напр. недобитый вес свипа) clickhouse-connect возвращает df без колонок,
+    # и безусловная коэрция падала с KeyError. Пустой df — валидный ответ
+    # (у вызывающих есть `if df.empty`), ронять анализ он не должен.
     for c in _FLOAT_COLS:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     for c in ("rep", "batch_size", "batch_index"):
-        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
     for c in _STR_COLS:
-        df[c] = df[c].astype("object")
+        if c in df.columns:
+            df[c] = df[c].astype("object")
     return df
