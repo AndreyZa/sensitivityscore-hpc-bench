@@ -41,12 +41,60 @@ jobs:
       - name: Тесты анализа
         run: python -m pytest analysis/tests -q
 
+      # Самопроверки на данных с ЗАЛОЖЕННЫМ ответом (B1/B2/C3/B4 + свип): без
+      # них вывод «эффекта нет» неотличим от «скрипт не умеет его находить».
+      # ClickHouse им не нужен — синтетика; это и позволило однажды пропустить
+      # сломанный CH-путь, но сами скрипты они проверяют полностью.
+      - name: Самопроверки анализа (заложенный ответ)
+        run: |
+          cd analysis
+          python twin_contrast.py --self-test
+          python drift_check.py --self-test
+          python axis_ablation.py --self-test
+          python placement_oracle.py --self-test
+          cd .. && python scripts/sweep-analyze.py --self-test
+
       # Ловит доаудитные числа (p вида 3,8·10⁻⁸ из счёта по задачам) и
       # рассинхрон вставляемых блоков. SCAN_EXTRA (phd/text, репозиторий
       # статьи) в CI не существует, и canonical_numbers это переживает —
       # `if p.exists()`; проверяются доки самого репозитория.
       - name: Канонические числа
         run: cd analysis && python canonical_numbers.py --check
+
+  contract:
+    name: контракт Redis-полей
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Форк планировщика — третья копия имён полей; без него проверка тихо
+      # сужается до двух и предупреждает, а не проверяет. Он публичный,
+      # поэтому просто выкачивается рядом. Это ровно та проверка, которая в
+      # исходном решении B5 была названа исключением: ловит молчаливое
+      # вырождение плеча (переименованное поле -> все читатели подставляют
+      # 0.0 -> A-sensitivityscore неотличим от default), а не регрессию кода.
+      - uses: actions/checkout@v7
+        with:
+          repository: AndreyZa/scheduler-plugins
+          path: scheduler-plugins-fork
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Проверка контракта (все три копии)
+        run: |
+          pip install -q pyyaml
+          python scripts/check-redis-contract.py \
+            --plugin-repo scheduler-plugins-fork 2>&1 | tee /tmp/out
+          # Пропуск форка деградирует в «ПРОПУЩЕНО: …» с кодом 0 — локально
+          # это удобный мягкий режим, в CI это сломанный checkout, и он должен
+          # быть красным. Сверено с фактическим выводом скрипта: полная
+          # проверка печатает «5 источников сверено» без слова ПРОПУЩЕНО.
+          if grep -q 'ПРОПУЩЕНО' /tmp/out; then
+            echo "::error::проверка прошла не по всем трём копиям — см. вывод выше"
+            exit 1
+          fi
 
   go:
     name: go (metrics-agent)
