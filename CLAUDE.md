@@ -9,6 +9,13 @@
   of what it touches.
 - Rebuilding + `docker push`-ing an image is **conditional**: only do it when
   the commit actually touches that image's inputs, not on every commit.
+  **Comment-only diffs are not a rebuild trigger**, even when they land inside
+  an input file (a corrected comment in `harness/config.yaml` is the case that
+  prompted this). The rule guards against the cluster running stale
+  *behaviour*; a diff that changes nothing a program can observe — comments,
+  YAML comments, docstrings not asserted on — cannot cause that. Judge the
+  diff, not the path: if any executable line, key, value or default moved,
+  it's a normal input change and the rebuild applies.
   Since 2026-07-14 Dockerfiles COPY explicit path lists (no `COPY . .`), so
   "image inputs" is a precise set per image:
   - metrics-agent image inputs: `metrics-agent/{go.mod,go.sum,cmd/**,pkg/**}`,
