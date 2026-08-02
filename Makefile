@@ -19,7 +19,13 @@ SCHEDULER_PLUGINS_DIR ?= ../scheduler-plugins
 
 # --- Docker-образы ---
 REGISTRY                ?= andreyza
-SCHEDULER_RELEASE_VER   ?= v20260714-5c212261
+# Пин образа планировщика. Релизы выпускает ТОЛЬКО CI форка (workflow
+# sensitivityscore: пуш в master -> неподвижный v<дата>-<коммит>, тег — в
+# сводке прогона). Переезд на новый релиз = правка этой строки +
+# `make scheduler-deploy`. v20260802-15fb1db собран из того же исходника,
+# что и прежний v20260714-5c212261 (дифф по входам бинаря пуст — сверено
+# перед переездом), различие только в том, что выпущен конвейером.
+SCHEDULER_RELEASE_VER   ?= v20260802-15fb1db
 WORKLOAD_IMAGE          ?= $(REGISTRY)/geant4:11.2
 SCHEDULER_IMAGE         ?= $(REGISTRY)/sensitivityscore:$(SCHEDULER_RELEASE_VER)
 METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev

@@ -50,9 +50,12 @@
     (pressure-scenario stress pods).
   - The scheduler plugin image is built from the **separate**
     `scheduler-plugins` repo (`pkg/sensitivityscore/**`, not anything under
-    `k8s/` here) — see that repo's own `CLAUDE.md`. A commit here touching
-    only `k8s/scheduler-config/*.yaml` is a manifest change (`kubectl apply`
-    territory), not an image rebuild.
+    `k8s/` here) and since 2026-08-02 is **released by that repo's CI only**
+    (immutable `v<date>-<commit>` per push to master) — never `docker push`
+    it by hand; see that repo's `CLAUDE.md`. Adopting a release here =
+    bump `SCHEDULER_RELEASE_VER` in `Makefile` + `make scheduler-deploy`.
+    A commit here touching only `k8s/scheduler-config/*.yaml` is a manifest
+    change (`kubectl apply` territory), not an image rebuild.
   - A commit touching only `docs/`, `analysis/`, or other non-image paths →
     git push only, no image rebuild, no docker push.
 - This repo's cluster uses `imagePullPolicy: Always`, so a local rebuild is enough for the local dev cluster to pick it up — the Docker Hub push is for durability/sharing (e.g. a prod stand pulling the same tag), not a local-dev requirement.
