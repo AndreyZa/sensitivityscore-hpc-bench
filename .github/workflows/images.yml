@@ -1,0 +1,158 @@
+# Сборка и пуш образов стенда.
+#
+# Собирается ТОЛЬКО то, чьи входы изменились — тот же список, что в CLAUDE.md
+# («image inputs»), перенесённый сюда как фильтр путей. Здесь фильтр по путям,
+# а не по смыслу диффа: в CI пересборка ничего не стоит, и оговорка про
+# «правки в одних комментариях» из CLAUDE.md сюда не переносится — она
+# экономила время и канал человека, а не раннера.
+#
+# Пуш — только с main. На pull_request образы собираются (проверяем, что
+# Dockerfile жив), но не пушатся: иначе PR, в том числе из форка, двигал бы
+# теги, которые стенд тянет с `imagePullPolicy: Always`.
+name: образы
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      all:
+        description: "Собрать все образы, не глядя на изменённые пути"
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: andreyza
+
+jobs:
+  changes:
+    name: что пересобирать
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.f.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # нужен предыдущий коммит для diff
+
+      - id: f
+        name: Сопоставить изменённые пути со входами образов
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BASE_PUSH: ${{ github.event.before }}
+          FORCE_ALL: ${{ inputs.all }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) base=$BASE_PR ;;
+            push)         base=$BASE_PUSH ;;
+            *)            base="" ;;
+          esac
+
+          # Нет базы, нулевая база (новая ветка), недостижимый коммит
+          # (форс-пуш) или ручной запуск с галкой — собираем всё. Лишняя
+          # сборка дешевле пропущенного образа: пропуск проявится тем, что
+          # кластер молча тянет вчерашний код.
+          if [ "$FORCE_ALL" = "true" ] || [ -z "$base" ] \
+             || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            files=""
+            all=yes
+            echo "база не определена или запрошено всё — собираем все образы"
+          else
+            files=$(git diff --name-only "$base" "${{ github.sha }}")
+            all=no
+            echo "изменённые файлы:"; printf '%s\n' "$files" | sed 's/^/  /'
+          fi
+
+          match() {   # match <regex> -> yes|no
+            [ "$all" = yes ] && { echo yes; return; }
+            printf '%s\n' "$files" | grep -qE "$1" && echo yes || echo no
+          }
+
+          # Списки — копия «image inputs» из CLAUDE.md. Расходиться им нельзя:
+          # там правило для человека, здесь для раннера, и оба про одно.
+          m_agent=$(match '^metrics-agent/(go\.(mod|sum)|cmd/|pkg/|Dockerfile)')
+          m_workload=$(match '^workload/(Dockerfile|entrypoint\.sh|macros/)')
+          m_harness=$(match '^harness/(run_experiment|profiles|config_loader|provenance)\.py|^harness/(submit|templates)/|^harness/config.*\.yaml$|^harness/(requirements\.txt|Dockerfile)$')
+          m_status=$(match '^statusserver/([^/]+\.py|Dockerfile|requirements\.txt)$|^harness/config_loader\.py$')
+          m_aggr=$(match '^aggressor/Dockerfile$')
+
+          matrix='[]'
+          add() {   # add <yes|no> <json>
+            [ "$1" = yes ] || return 0
+            matrix=$(printf '%s' "$matrix" | jq -c --argjson o "$2" '. + [$o]')
+          }
+          add "$m_agent"    '{"repo":"metrics-agent","tag":"dev","context":"./metrics-agent","file":"metrics-agent/Dockerfile"}'
+          add "$m_agent"    '{"repo":"perfcheck","tag":"dev","context":"./metrics-agent","file":"metrics-agent/cmd/perfcheck/Dockerfile"}'
+          add "$m_workload" '{"repo":"geant4","tag":"11.2","context":"./workload","file":"workload/Dockerfile"}'
+          add "$m_harness"  '{"repo":"harness","tag":"dev","context":"./harness","file":"harness/Dockerfile"}'
+          add "$m_status"   '{"repo":"statusserver","tag":"dev","context":".","file":"statusserver/Dockerfile"}'
+          add "$m_aggr"     '{"repo":"aggressor","tag":"dev","context":"./aggressor","file":"aggressor/Dockerfile"}'
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "к сборке: $matrix"
+
+  build:
+    name: ${{ matrix.image.repo }}
+    needs: changes
+    if: needs.changes.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    # Образ Geant4 компилируется из исходников (весь тулкит) — при холодном
+    # кэше это десятки минут. Остальные укладываются в единицы.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Отдельная проверка с внятным текстом: без неё docker/login-action
+      # падает на пустом пароле сообщением, по которому не догадаться, что
+      # секрет просто не заведён.
+      - name: Проверить секреты registry
+        if: github.event_name == 'push'
+        env:
+          U: ${{ secrets.DOCKERHUB_USERNAME }}
+          T: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$U" ] || [ -z "$T" ]; then
+            echo "::error::нет секретов DOCKERHUB_USERNAME / DOCKERHUB_TOKEN — Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
+      - name: Логин в Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Короткий SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Два тега на образ:
+      #   <tag>      — подвижный, его и тянет стенд (imagePullPolicy: Always);
+      #   sha-<sha>  — неподвижный. Провенанс строки результата уже пишет
+      #                digest образа, и по неподвижному тегу он становится
+      #                восстановимым до коммита, а не только до «:dev на тот
+      #                момент».
+      # Пушим только с main — на pull_request шаг собирает и выбрасывает.
+      - name: Сборка и пуш
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.file }}
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.image.repo }}:${{ matrix.image.tag }}
+            ${{ env.REGISTRY }}/${{ matrix.image.repo }}:sha-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=${{ matrix.image.repo }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.repo }}

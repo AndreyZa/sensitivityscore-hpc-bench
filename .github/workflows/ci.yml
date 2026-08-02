@@ -1,0 +1,108 @@
+# Тесты. Ничего не пушит и секретов не запрашивает — поэтому безопасно
+# запускается и на pull_request из форка.
+#
+# Чего здесь принципиально НЕТ: всё, что требует стенда или ClickHouse
+# (`paper-check`, `axis-costs`, `drift-check --clickhouse`, прогоны серий).
+# Раннеру негде взять ни кластер, ни агрегатор, и делать вид, что проверка
+# состоялась, хуже, чем её не иметь.
+name: тесты
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: python (харнесс + анализ)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Из .lock, а не из .txt: это те самые версии, на которых получены
+      # результаты (scipy 1.18.0, numpy 2.5.1, pandas 3.0.3). Если тесты
+      # начнут падать от чужого релиза — пусть это будет видно как расхождение
+      # с локом, а не как случайная краснота.
+      - name: Зависимости харнесса
+        run: pip install -r harness/requirements.lock
+
+      - name: Тесты харнесса
+        run: python -m pytest harness/tests -q
+
+      - name: Зависимости анализа
+        run: pip install -r analysis/requirements.lock
+
+      - name: Тесты анализа
+        run: python -m pytest analysis/tests -q
+
+      # Ловит доаудитные числа (p вида 3,8·10⁻⁸ из счёта по задачам) и
+      # рассинхрон вставляемых блоков. SCAN_EXTRA (phd/text, репозиторий
+      # статьи) в CI не существует, и canonical_numbers это переживает —
+      # `if p.exists()`; проверяются доки самого репозитория.
+      - name: Канонические числа
+        run: cd analysis && python canonical_numbers.py --check
+
+  go:
+    name: go (metrics-agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: metrics-agent/go.mod
+          cache-dependency-path: metrics-agent/go.sum
+
+      - name: Сборка
+        working-directory: metrics-agent
+        run: go build ./...
+
+      - name: go vet
+        working-directory: metrics-agent
+        run: go vet ./...
+
+      # Ради этого шага CI и стоит заводить для Go-части: `make test-go-run`
+      # помечен «только на linux-хосте», то есть на рабочем маке не гоняется
+      # вовсе — perf_event_open там просто нет. Раннер линуксовый.
+      - name: Юнит-тесты
+        working-directory: metrics-agent
+        run: go test ./...
+
+  shell:
+    name: shell (скрипты серий и обвязка)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Синтаксис
+        run: |
+          set -e
+          found=0
+          for f in scripts/*.sh harness/run-*.sh workload/entrypoint.sh \
+                   slurm/local-test/entrypoint.sh; do
+            [ -e "$f" ] || continue
+            found=$((found + 1))
+            bash -n "$f"
+          done
+          # Пустой список — это не «всё чисто», а сломанный шаг: пути могли
+          # переехать, и проверка молча перестала бы что-либо проверять.
+          [ "$found" -gt 0 ] || { echo "::error::не найдено ни одного скрипта"; exit 1; }
+          echo "проверено скриптов: $found"
+
+      # Только severity=error: этот уровень — не стиль, а находки вида
+      # «переменная затирается» и «условие всегда истинно». Порог низкий
+      # намеренно, чтобы шаг мог падать и падал по делу, а не тонул в
+      # предупреждениях о кавычках.
+      # entrypoint.sh включён не для полноты: он вход образа нагрузки и несёт
+      # дисковую и сетевую оси (OUTPUT_MODE), то есть его поломка тихо портит
+      # измерение, а не падает заметно.
+      - name: shellcheck
+        run: |
+          shellcheck --severity=error scripts/*.sh harness/run-*.sh \
+                     workload/entrypoint.sh slurm/local-test/entrypoint.sh
