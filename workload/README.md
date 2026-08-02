@@ -34,10 +34,14 @@ make image-workload      # -> andreyza/geant4:11.2 (см. WORKLOAD_IMAGE в Make
   обязательно **до** `/run/initialize` (PreInit-state команда).
 - **Physics list** — через переменную окружения `PHYSLIST`, которую
   `G4PhysListFactory::ReferencePhysList()` читает напрямую.
-- **Disk I/O** — реализовано через `OUTPUT_MODE=burst`: параллельно с compute
-  каждые `IO_INTERVAL_SECONDS` пишется `IO_BURST_MB` МБ с `fsync` (fsync
-  принципиален — иначе запись оседает в page cache и io.pressure не растёт).
-  Это и есть дисковая ось жертвы high-s-io (`profiles.py`). Настоящий per-event
+- **Disk I/O** — у жертвы `high-s-io` это `OUTPUT_MODE=blocking`
+  (`profiles.py`): job не завершается, пока вывод не сброшен на диск, то есть
+  запись стоит на КРИТИЧЕСКОМ пути и под штормом makespan растёт — только так
+  cˢ_io > 0 вообще измерим. Режим `burst` (параллельно с compute каждые
+  `IO_INTERVAL_SECONDS` пишется `IO_BURST_MB` МБ) остаётся поддержанным, но
+  писатель в нём фоновый и makespan от диска не зависит: им мерили детекцию и
+  уклонение, а не деградацию. В обоих режимах `fsync` принципиален — иначе
+  запись оседает в page cache и io.pressure не растёт. Настоящий per-event
   `OUTPUT_MODE=ntuple` (UI-команды `/analysis/...`, завязанные на
   `AnalysisManager` конкретного `TestEm5`) **пока не реализован** — оставлен
   как TODO (комментарии в `entrypoint.sh`), burst выбран как честная и
