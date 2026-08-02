@@ -22,7 +22,7 @@ make image-workload      # -> andreyza/geant4:11.2 (см. WORKLOAD_IMAGE в Make
 | `G4_THREADS` | `1` | число физических ядер на NUMA-домене узла |
 | `PHYSICS_LIST` | `QGSP_BERT` | `FTFP_BERT_HP` |
 | `N_PRIMARIES` | `10000` | `1000000`–`10000000` |
-| `OUTPUT_MODE` | `none` | `burst` (реальная запись с fsync; `ntuple` — TODO, см. ниже) |
+| `OUTPUT_MODE` | `none` | `blocking` — диск (запись на критическом пути); `stream` — сеть; `burst` — фоновая запись; `ntuple` — TODO, см. ниже |
 | `RNG_SEED` | фикс. на повтор | фикс. на повтор |
 
 ## Как передаются параметры
