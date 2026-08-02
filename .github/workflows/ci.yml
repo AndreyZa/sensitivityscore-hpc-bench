@@ -18,9 +18,9 @@ jobs:
     name: python (харнесс + анализ)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -52,9 +52,9 @@ jobs:
     name: go (metrics-agent)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: metrics-agent/go.mod
           cache-dependency-path: metrics-agent/go.sum
@@ -78,7 +78,7 @@ jobs:
     name: shell (скрипты серий и обвязка)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Синтаксис
         run: |
