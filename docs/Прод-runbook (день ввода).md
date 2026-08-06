@@ -1,0 +1,136 @@
+# Прод-runbook: день ввода стенда
+
+Исполняемая последовательность — каждая ступень: команда → проверка. Порядок
+строгий; следующая ступень не начинается, пока проверка текущей не зелёная.
+Контекст и обоснования — в «Переход STAGE→прод (статус и чеклист).md»;
+здесь только «что жать».
+
+Составлен 07.08.2026 по итогам STAGE (ступени 5 и 7 обкатаны на живом STAGE
+06.08 теми же командами).
+
+---
+
+## 0. Входные условия (до площадки)
+
+- От партнёра: IP и SSH-доступ к 7 хостам (3 CP-ВМ, 3× Dell R760, 1 ss-system ВМ).
+- Репозитории свежие: `sensitivityscore-hpc-bench`, `hpc-k0s-provision`.
+- Бэкап STAGE-истории под рукой: `~/phd/sensitivityscore-ch-backup-*.tar.gz`.
+- Образы в Docker Hub (стендовые — уже там; плагин — релиз CI
+  `SCHEDULER_RELEASE_VER` в Makefile, руками не пушить).
+
+## 1. Провижн кластера
+
+```bash
+cd ~/phd/hpc-k0s-provision
+$EDITOR inventory/hosts.yml        # <-- IP 7 хостов
+make provision                     # Ansible OS-prep + k0sctl; kubeconfig-кнопка
+```
+**Проверка:** kubeconfig лёг в `~/.kube/configs/prod`;
+`kubectl get nodes` — все узлы Ready, роли согласно inventory.
+
+## 2. Роли, базовые сервисы, мониторинг
+
+```bash
+cd ~/phd/sensitivityscore-hpc-bench
+export KUBECONFIG=$HOME/.kube/configs/prod
+make bootstrap SS_NODES="<имя ss-system-узла>"   # роли+taint, namespace, Redis
+make setup-cluster                               # планировщик (релиз CI) + агент
+make trimaran-deps                               # metrics-server — нужен плечу trimaran
+make monitoring-deploy
+```
+**Проверка:** `make scheduler-status` — под жив, ConfigMap-ы на месте;
+`make monitoring-targets` — все цели up; `kubectl get ds -n
+sensitivityscore-system` — metrics-agent на всех bench-узлах.
+
+## 3. Прогноз A5 — проверить ДО серий
+
+Прогноз зарегистрирован 20.07 (`c19a721`); критерии и действия при
+опровержении — «A5-прогноз (прод).md».
+
+```bash
+make perfcheck-run NODE=<bench-1>   # и так для каждого из трёх bench-узлов
+make perfcheck-logs                 # доля окна при одном событии — 1.000
+make perfcheck-clean
+```
+**Проверка:** 1.000 на всех трёх узлах → вписать результат в
+«A5-прогноз (прод).md». Меньше 0.99 — СТОП, серии не начинать (см. файл
+прогноза: отказ от NUMA-пары или узловые счётчики).
+
+## 4. Калибровки датчиков (опорные значения осей)
+
+```bash
+make netcheck-run && make netcheck-logs      # -> NET_REFERENCE_MBPS
+# LLC_REFERENCE_MISSES_PER_SEC — из perfcheck ступени 3 (§1а аудита)
+make calibration-apply NET_REFERENCE_MBPS=<N> LLC_REFERENCE_MISSES_PER_SEC=<M>
+make netcheck-clean
+```
+**Проверка:** `make calibration-show` — оба значения непустые (пустой Net =
+ось выключена; пустой LLC = сырой инвертирующий ratio).
+
+## 5. In-cluster CH-дубль (обкатано на STAGE 06.08)
+
+```bash
+make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/prod   # ТОЛЬКО оверлей
+make ch-incluster-status                    # под Running на ss-system, schema-Job Complete
+make ch-forward &                           # localhost:8124 -> in-cluster CH
+tar xzf ~/phd/sensitivityscore-ch-backup-<дата>.tar.gz -C /tmp
+CH=http://localhost:8124 /tmp/sensitivityscore-ch-backup-<дата>/restore.sh
+```
+**Проверка:** счётчики строк из restore.sh == MANIFEST.txt архива.
+`base` вместо оверлея — нельзя: CH сядет на измерительный узел, preflight
+серий его завалит.
+
+## 6. Смоук-серия
+
+```bash
+kubectl get nodes                                   # имена bench-узлов
+grep -rn FILL harness/config-prod-*.yaml            # заполнить все <FILL>
+STAND=prod make series-preflight SERIES=smoke
+STAND=prod make series SERIES=smoke PILOT=1
+```
+**Проверка:** в `harness/prod-smoke.log` фазы BASELINE/PRESSURE c rc=0;
+задача считается 3–10 мин (нет — править PRIMARIES в `run-prod-smoke.sh`);
+статус-страница показывает узлы и давление; `ss_agent_pmu_multiplex_ratio`
+= 1.000 на bench-узлах под нагрузкой (закрытие ступени 3 в бою).
+
+## 7. Заливка в оба CH (обкатано на STAGE 06.08)
+
+```bash
+make ch-tunnel        # localhost:8123 -> .72 (первичный)
+# ch-forward со ступени 5 ещё жив (localhost:8124 -> in-cluster)
+make ch-load-all STAND=prod RUN_LABEL=prod-smoke \
+    RESULTS_FILE=harness/results/results-prod-smoke.parquet \
+    BASELINES_FILE=harness/results/baselines-prod-smoke.parquet
+```
+**Проверка:** «залито во все приёмники: prod home»; упавший приёмник цель
+называет и печатает команду долива. Так — после КАЖДОЙ серии.
+
+## 8. Цены осей (после смоука, до рабочих серий)
+
+Веса в `config-prod-base.yaml` — ЗАГЛУШКА (равные). Снять калибровочную
+серию (аналог stage-mixed-calib — конфиг писать по её образцу), затем:
+
+```bash
+make axis-costs        # calibrate_axis_costs.py ИЗ ClickHouse (поверх ch-tunnel)
+```
+Полученные веса вписать в `config-prod-base.yaml` (score_weights) и в
+ConfigMap (`make scheduler-apply-config`). До этого все серии — разведочные.
+
+## 9. Вернуть постоянные сервисы .72 (отключены 07.08 при заморозке STAGE)
+
+```bash
+ssh andrey@192.168.1.72
+sudo systemctl enable ss-status               # страницу поднимет первая же серия
+# в /etc/systemd/system/ss-forward@.service поправить:
+#   Environment=KUBECONFIG=/home/andrey/.kube/configs/prod
+sudo systemctl daemon-reload && sudo systemctl enable --now ss-forward@grafana
+```
+ss-notifier не трогать — он включён и от стенда не зависит.
+Прод-kubeconfig на .72 положить в `~/.kube/configs/prod` (та же конвенция).
+
+## 10. Регулярное
+
+- После каждой серии: ступень 7 (`ch-load-all`) + отчёт `make ch-analyze`.
+- Раз в неделю (и перед любыми работами на .72): `make ch-backup` — архив
+  верифицируется восстановлением сам; копию — в облако.
+- Прогноз A5 со статусом — в диссертацию (пример предрегистрации).
