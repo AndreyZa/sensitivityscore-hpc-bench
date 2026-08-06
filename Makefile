@@ -799,6 +799,13 @@ ch-tunnel: ## Поднять SSH-туннель к ПК-агрегатору (CH
 ch-tunnel-close: ## Закрыть SSH-туннель к ПК-агрегатору
 	@ssh -S $(CH_SOCK) -O exit $(CH_SSH) 2>/dev/null && echo "туннель закрыт" || echo "туннель не найден"
 
+# Дамп верифицируется восстановлением во временную БД на том же сервере и
+# пакуется в BACKUP_DIR (~/phd). Копию архива держать вне этой машины.
+.PHONY: ch-backup
+ch-backup: ## Бэкап БД sensitivityscore (DDL+Native+Parquet+restore.sh): make ch-backup [CH_HOST=..] [BACKUP_DIR=~/phd]
+	CH=http://$(CH_HOST):$(CH_PORT) DB=$(CH_DATABASE) \
+		BACKUP_DIR=$(or $(BACKUP_DIR),$(HOME)/phd) ./db/clickhouse/backup.sh
+
 $(CH_VENV)/bin/activate: db/clickhouse/requirements.txt $(wildcard db/clickhouse/requirements.lock)
 	$(PYTHON) -m venv $(CH_VENV)
 	$(CH_VENV)/bin/pip install --quiet --upgrade pip

@@ -4,10 +4,16 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Прод: прибить StatefulSet к системной ноде (ss-system, taint NoSchedule) —
-# CH не должен стоять на измерительных узлах (пункт про загрязнение метрик).
+# Прод: прибить CH к системной ноде (ss-system, taint NoSchedule) —
+# ничего из CH не должно стоять на измерительных узлах (загрязнение метрик).
+# Пинится И StatefulSet, И schema-Job: на обкатке STAGE 06.08 незапиненный
+# Job транзиентно сел на bench-узел — под серией такой под валит preflight.
 patches:
   - path: placement-patch.yaml
     target:
       kind: StatefulSet
       name: clickhouse
+  - path: job-placement-patch.yaml
+    target:
+      kind: Job
+      name: clickhouse-schema

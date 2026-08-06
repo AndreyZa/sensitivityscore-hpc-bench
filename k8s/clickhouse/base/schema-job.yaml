@@ -1,9 +1,9 @@
 # Одноразовый Job: дождаться готовности ClickHouse и применить schema.sql
 # (таблицы results + baselines). ConfigMap clickhouse-schema создаётся из
 # ЕДИНОГО источника db/clickhouse/schema.sql (см. Makefile ch-incluster-deploy),
-# чтобы схема не расходилась с загрузчиком. Job может встать на любой узел —
-# он лишь коннектится к сервису clickhouse (placement ss-system нужен только
-# самому StatefulSet).
+# чтобы схема не расходилась с загрузчиком. Функционально Job'у всё равно, где
+# стоять (он лишь коннектится к сервису clickhouse), но на стенде под серией
+# посторонний под на bench-узле валит preflight — прод-оверлей пинит и его.
 apiVersion: batch/v1
 kind: Job
 metadata:
