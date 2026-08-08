@@ -129,6 +129,20 @@ print(json.dumps({"n": N, "total_s": round(total, 2),
 resnet50-v1-12.onnx`; фазы — соло / `--stream 2` / `--hdd 2 --hdd-bytes 1g`
 на узле жертвы.)
 
+Проба упакована в самодостаточный образ `andreyza/mlprobe:dev` (собран
+07.08) — модель и ONNX Runtime внутри, egress из пода не нужен (в пилоте
+pip/модель тянулись из сети, на проде у партнёра это может быть закрыто).
+Годится для быстрой репетиции пилота на прод-железе до полноценного профиля:
+
+```dockerfile
+FROM python:3.12-slim
+RUN pip install --no-cache-dir onnxruntime numpy
+ADD https://github.com/onnx/models/raw/main/validated/vision/classification/resnet/model/resnet50-v1-12.onnx /model.onnx
+COPY ml_probe.py /ml_probe.py
+ENV OMP_NUM_THREADS=1
+CMD ["python", "/ml_probe.py"]
+```
+
 ### План на прод — опциональная ступень runbook
 
 См. «Прод-runbook (день ввода).md», ступень 11: профиль `ml-inference`
