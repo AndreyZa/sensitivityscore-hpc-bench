@@ -447,6 +447,10 @@ netcheck-logs: ## Дождаться завершения клиента и ра
 CALIBRATION_CM ?= metrics-agent-calibration
 
 .PHONY: axis-costs
+.PHONY: ml-slowdown
+ml-slowdown: venv-analysis ## ML-вопрос №1: GBDT vs линейная модель цены осей, out-of-fold (поверх make ch-tunnel)
+	cd analysis && ../$(ANALYSIS_VENV)/bin/python ml_slowdown.py
+
 axis-costs: venv-analysis ## Пересчитать цены осей (c⁰/cˢ) + ДИ ИЗ ClickHouse: make axis-costs (поверх make ch-tunnel; на .72 CH_HOST=localhost)
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python calibrate_axis_costs.py --clickhouse \
 		--ch-host $(or $(CH_HOST),localhost) --ch-port $(or $(CH_PORT),$(CH_TUNNEL_PORT)) \
