@@ -249,9 +249,11 @@ scheduler-apply-config: ## Применить ConfigMap-ы плагина (sensi
 
 .PHONY: scheduler-deploy
 scheduler-deploy: scheduler-apply-config ## Развернуть second scheduler (Deployment) с текущим значением SCHEDULER_IMAGE
-	$(KUBECTL) apply -f k8s/scheduler-config/deployment.yaml
-	$(KUBECTL) set image deployment/$(SCHEDULER_DEPLOYMENT) \
-		$(SCHEDULER_DEPLOYMENT)=$(SCHEDULER_IMAGE) -n $(NAMESPACE)
+	# Образ подставляется ДО apply: раздельные apply + set image на первом
+	# деплое создавали ReplicaSet с плейсхолдером REPLACE_ME_IMAGE, чей под
+	# спамил InvalidImageName, пока настоящий образ качается (лаба, 17.08).
+	sed "s|REPLACE_ME_IMAGE|$(SCHEDULER_IMAGE)|" k8s/scheduler-config/deployment.yaml \
+		| $(KUBECTL) apply -f -
 
 .PHONY: scheduler-redeploy
 scheduler-redeploy: scheduler-deploy ## Полный цикл: пересобрать образ плагина -> передеплоить -> дождаться rollout (образ берётся локально, без kind load — см. примечание у SCHEDULER_IMAGE)
