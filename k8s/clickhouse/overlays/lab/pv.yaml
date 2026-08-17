@@ -1,0 +1,20 @@
+# Статический hostPath-PV: у голого k0s нет динамического провижионера, PVC
+# из volumeClaimTemplates иначе висел бы в Pending. claimRef прибивает PV к
+# конкретному claim'у StatefulSet'а, чтобы его не увёл чужой PVC.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: clickhouse-data-lab
+  labels:
+    app: clickhouse
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /var/lib/ss-clickhouse
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: sensitivityscore-system
+    name: data-clickhouse-0

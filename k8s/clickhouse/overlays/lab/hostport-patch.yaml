@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+spec:
+  template:
+    spec:
+      containers:
+        - name: clickhouse
+          ports:
+            - name: http
+              containerPort: 8123
+              hostPort: 8123
+              hostIP: 127.0.0.1

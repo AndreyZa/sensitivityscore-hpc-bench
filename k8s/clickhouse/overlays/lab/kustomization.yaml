@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Лаба .72 (однонодовый k0s local72): домашний ПК-агрегатор, CH перенесён из
+# systemd-юнита в кластер 17.08.2026 (restore из ch-backup, не перенос
+# датадира — юнит был 26.7, образ база пинит 25.3, даунгрейд датадира CH не
+# поддерживается; логическое восстановление версий не боится).
+resources:
+  - ../../base
+  - pv.yaml
+
+patches:
+  # localhost:8123 на узле — ТОЛЬКО loopback (hostIP), как слушал юнит:
+  # ssh-туннель `make ch-tunnel` продолжает работать без изменений, в LAN
+  # passwordless CH не торчит.
+  - path: hostport-patch.yaml
+    target:
+      kind: StatefulSet
+      name: clickhouse
