@@ -42,13 +42,16 @@ profiles:
   # awareness. Тот же вес 5, что у SensitivityScore, — единственное различие
   # плеч A-trimaran/A-sensitivityscore это сам плагин, не его вес.
   #
-  # Зависимость: LoadVariationRiskBalancing читает метрики через metrics-server
-  # (metricProvider.type: KubernetesMetricsServer — дефолт). Без него плагин НЕ
-  # падает и не роняет процесс (профиль sensitivityscore остаётся рабочим) —
-  # collector лишь логирует "Unable to populate metrics" и возвращает
-  # минимальный score всем нодам. Установить metrics-server на стенде:
-  # `make trimaran-deps` (см. Makefile). На dev-kind это плечо всё равно не
-  # различает ноды (общий kernel), оно для партнёрского стенда.
+  # Утилизацию trimaran берёт из СЕРВИСА load-watcher — как peaks и packing
+  # (единый источник для всех load-aware плеч; до 17.08 здесь был собственный
+  # in-process сборщик metricProvider: KubernetesMetricsServer — лишний
+  # параллельный конвейер метрик в процессе планировщика). Если load-watcher
+  # лежит, плагин НЕ падает и не роняет процесс (профиль sensitivityscore
+  # остаётся рабочим) — collector лишь логирует ошибку и возвращает
+  # минимальный score всем нодам. Сам load-watcher читает metrics.k8s.io:
+  # у k0s-стендов metrics-server встроен, на kind/dev — `make trimaran-deps`.
+  # На dev-kind это плечо всё равно не различает ноды (общий kernel), оно
+  # для партнёрского стенда.
   - schedulerName: trimaran
     plugins:
       score:
@@ -60,8 +63,7 @@ profiles:
         args:
           safeVarianceMargin: 1
           safeVarianceSensitivity: 1
-          metricProvider:
-            type: KubernetesMetricsServer
+          watcherAddress: http://load-watcher.sensitivityscore-system.svc.cluster.local:2020
 
   # ─── Энерговетка (партнёрская, без SS): плечи A-peaks и A-packing ───────
   #
