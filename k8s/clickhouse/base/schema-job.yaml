@@ -20,7 +20,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: apply-schema
-          image: clickhouse/clickhouse-server:25.3
+          image: clickhouse/clickhouse-server:26.7.3.19
           command: ["/bin/bash", "-c"]
           args:
             # set -e обязателен: без него неудачный apply не прерывал скрипт —

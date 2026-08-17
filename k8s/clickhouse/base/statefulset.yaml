@@ -24,7 +24,7 @@ spec:
         fsGroup: 101 # uid/gid clickhouse в официальном образе — чтобы PVC был писабелен
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:25.3
+          image: clickhouse/clickhouse-server:26.7.3.19
           ports:
             - name: http
               containerPort: 8123
