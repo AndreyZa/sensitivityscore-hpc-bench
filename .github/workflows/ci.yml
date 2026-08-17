@@ -53,6 +53,7 @@ jobs:
           python axis_ablation.py --self-test
           python placement_oracle.py --self-test
           cd .. && python scripts/sweep-analyze.py --self-test
+          python3 scripts/energy-window.py --self-test
 
       # Ловит доаудитные числа (p вида 3,8·10⁻⁸ из счёта по задачам) и
       # рассинхрон вставляемых блоков. SCAN_EXTRA (phd/text, репозиторий

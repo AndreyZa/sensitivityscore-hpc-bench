@@ -38,6 +38,9 @@ SCHEDULER_NAME_BY_CONFIG = {
     "A-default": "default-scheduler",
     "A-sensitivityscore": "sensitivityscore",
     "A-trimaran": "trimaran",  # load-aware бейзлайн H1-trimaran
+    # Энерговетка (партнёрская, без SS): профили в scheduler-config.yaml.
+    "A-peaks": "peaks",        # мин. скачок мощности (Trimaran Peaks)
+    "A-packing": "packing",    # упаковка до целевой утилизации (TLP)
     "B-default": "default-scheduler",
     "B-sensitivityscore": "sensitivityscore",
     "B-trimaran": "trimaran",

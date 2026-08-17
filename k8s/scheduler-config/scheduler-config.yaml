@@ -62,3 +62,65 @@ profiles:
           safeVarianceSensitivity: 1
           metricProvider:
             type: KubernetesMetricsServer
+
+  # ─── Энерговетка (партнёрская, без SS): плечи A-peaks и A-packing ───────
+  #
+  # Оба профиля берут утилизацию из СЕРВИСА load-watcher
+  # (k8s/scheduler-config/load-watcher.yaml, образ наш — loadwatcher/
+  # Dockerfile): у Peaks выбора нет (его PeaksArgs не имеет metricProvider,
+  # пустой watcherAddress валит checkSpecs при старте), а packing посажен на
+  # тот же сервис сознательно — единый источник утилизации делает плечи
+  # сопоставимыми. Вес 5 — тот же, что у остальных плеч: различие плеч
+  # только в плагине.
+  #
+  # Peaks: жадный выбор узла по МИНИМАЛЬНОМУ скачку мощности
+  # ΔP = K1·(e^(K2·p) − e^(K2·x)), модель мощности P(x) = K0 + K1·e^(K2·x)
+  # по узлам приходит из NodePowerModel. Апстрим решили НЕ патчить (17.08),
+  # поэтому два обхода вместо правок кода:
+  #
+  # 1) КЛЮЧИ С ЗАГЛАВНОЙ. В v1-типах апстрима json-теги обоих полей PeaksArgs
+  #    сломаны (`json:watcherAddress",inline"` — тег невалиден и парсером
+  #    игнорируется), сериализатор берёт имена Go-полей: WatcherAddress,
+  #    NodePowerModel. Строчные ключи строгий декодер отвергнет.
+  # 2) КАРТА ОБЯЗАНА ПОКРЫВАТЬ ВСЕ ИЗМЕРИТЕЛЬНЫЕ УЗЛЫ, и пустой быть не
+  #    может. Пустая карта → плагин читает файл из env NODE_POWER_MODEL →
+  #    его нет → ошибка New() → падает ВЕСЬ процесс планировщика, включая
+  #    профиль sensitivityscore. Узел без записи получает модель {0,0,0} —
+  #    нулевой «скачок», а инверсия в NormalizeScore делает такой узел
+  #    ЛУЧШИМ (тот же эффект у узла без метрик и у прогноза >100 % —
+  #    известные грабли апстрима). Пока карта — заглушки-нули (Peaks
+  #    нейтрален: все узлы равны, решают остальные score-плагины); боевые
+  #    K0/K1/K2 заполняет калибровка фазы P1
+  #    (docs/Энергоэффективность — статья (план).md).
+  - schedulerName: peaks
+    plugins:
+      score:
+        enabled:
+          - name: Peaks
+            weight: 5
+    pluginConfig:
+      - name: Peaks
+        args:
+          WatcherAddress: http://load-watcher.sensitivityscore-system.svc.cluster.local:2020
+          NodePowerModel:
+            # ключ — имя узла (kubectl get nodes); нули = нейтральная
+            # заглушка до калибровки P1. НЕ удалять последнюю запись —
+            # пустая карта роняет планировщик (см. комментарий выше).
+            calibrate-me-p1: {k0: 0, k1: 0, k2: 0}
+
+  # TargetLoadPacking: упаковка до целевой утилизации CPU — базовое плечо
+  # «классической» энергоэффективности (консолидация). targetUtilization 40 —
+  # апстрим-дефолт; окончательное значение — ручка предрегистрации P2
+  # (на трёх узлах прода стоит обсудить 50–70). У TLP json-теги исправны,
+  # ключи строчные.
+  - schedulerName: packing
+    plugins:
+      score:
+        enabled:
+          - name: TargetLoadPacking
+            weight: 5
+    pluginConfig:
+      - name: TargetLoadPacking
+        args:
+          watcherAddress: http://load-watcher.sensitivityscore-system.svc.cluster.local:2020
+          targetUtilization: 40

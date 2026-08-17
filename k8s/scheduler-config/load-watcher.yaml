@@ -1,0 +1,88 @@
+# load-watcher — сервис фактической утилизации узлов для Trimaran-плечей
+# энерговетки (профили peaks и packing). Почему он обязателен и почему образ
+# свой — см. loadwatcher/Dockerfile.
+#
+# Один инстанс на кластер: планировщик ходит в него по HTTP (GET /watcher),
+# адрес задан watcherAddress-ами в scheduler-config.yaml. Если сервис лежит,
+# Trimaran-коллектор в планировщике НЕ падает: он логирует ошибку и отдаёт
+# всем узлам минимальный балл — плечи peaks/packing вырождаются в «без
+# различения» (это видно по логам планировщика и по ошибке размещения серии).
+#
+# Провайдер метрик — metrics-server (in-cluster, `make trimaran-deps`).
+# На проде можно переключить на Prometheus: METRICS_PROVIDER_NAME=Prometheus,
+# METRICS_PROVIDER_ADDRESS=http://prometheus.sensitivityscore-monitoring.svc:9090
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: load-watcher
+  namespace: sensitivityscore-system
+---
+# Библиотека load-watcher с провайдером KubernetesMetricsServer читает
+# metrics.k8s.io (утилизация) и core-узлы/поды (ёмкость и аллокация).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: load-watcher
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: load-watcher
+subjects:
+  - kind: ServiceAccount
+    name: load-watcher
+    namespace: sensitivityscore-system
+roleRef:
+  kind: ClusterRole
+  name: load-watcher
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-watcher
+  namespace: sensitivityscore-system
+  labels: {app: load-watcher}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: load-watcher}
+  template:
+    metadata:
+      labels: {app: load-watcher}
+    spec:
+      serviceAccountName: load-watcher
+      containers:
+        - name: load-watcher
+          image: andreyza/load-watcher:dev
+          imagePullPolicy: Always
+          env:
+            - name: METRICS_PROVIDER_NAME
+              value: KubernetesMetricsServer
+          ports:
+            - containerPort: 2020
+          readinessProbe:
+            httpGet: {path: /watcher, port: 2020}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-watcher
+  namespace: sensitivityscore-system
+spec:
+  selector: {app: load-watcher}
+  ports:
+    - port: 2020
+      targetPort: 2020

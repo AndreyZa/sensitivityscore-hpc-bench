@@ -1,0 +1,61 @@
+# ipmi_exporter — по-узловая мощность через BMC (DCMI power reading): третий
+# независимый источник для кросс-валидации PDU↔RAPL↔IPMI (фаза P0).
+# ЗАГОТОВКА: не включена в kustomization, см. README.md рядом.
+#
+# Режим remote: экспортёр опрашивает BMC по сети (LAN-канал IPMI), на узлы
+# ничего не ставится — измерительные узлы остаются нешумящими (принцип
+# «мониторинг только на ss-system», k8s/monitoring/README.md).
+#
+# TODO(Д4): адреса BMC трёх узлов в scrape-джобе, креды — в Secret
+#   ipmi-exporter-creds (user/password для config.yml экспортёра).
+#
+# Снипет scrape-джоба для prometheus-configmap (добавить при включении):
+#   - job_name: ipmi
+#     static_configs: [{targets: ['<BMC_IP_1>', '<BMC_IP_2>', '<BMC_IP_3>']}]
+#     metrics_path: /ipmi
+#     relabel_configs:
+#       - {source_labels: [__address__], target_label: __param_target}
+#       - {source_labels: [__param_target], target_label: instance}
+#       - {target_label: __address__, replacement: ipmi-exporter.sensitivityscore-monitoring.svc:9290}
+#     metric_relabel_configs:   # TODO(Д3/Д4): BMC IP -> имя узла Kubernetes
+#       - {source_labels: [instance], regex: '<BMC_IP_1>', target_label: node, replacement: '<node-1>'}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipmi-exporter
+  namespace: sensitivityscore-monitoring
+  labels: {app: ipmi-exporter}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ipmi-exporter}
+  template:
+    metadata:
+      labels: {app: ipmi-exporter}
+    spec:
+      containers:
+        - name: ipmi-exporter
+          image: prometheuscommunity/ipmi-exporter:v1.9.0
+          args: ["--config.file=/etc/ipmi_exporter/config.yml"]
+          ports:
+            - containerPort: 9290
+          volumeMounts:
+            - {name: config, mountPath: /etc/ipmi_exporter}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: config
+          secret:
+            secretName: ipmi-exporter-creds   # TODO(Д4): config.yml с кредами BMC
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipmi-exporter
+  namespace: sensitivityscore-monitoring
+spec:
+  selector: {app: ipmi-exporter}
+  ports:
+    - port: 9290
+      targetPort: 9290

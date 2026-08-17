@@ -83,6 +83,7 @@ jobs:
           m_harness=$(match '^harness/(run_experiment|profiles|config_loader|provenance)\.py|^harness/(submit|templates)/|^harness/config.*\.yaml$|^harness/(requirements\.txt|Dockerfile)$')
           m_status=$(match '^statusserver/([^/]+\.py|Dockerfile|requirements\.txt)$|^harness/config_loader\.py$')
           m_aggr=$(match '^aggressor/Dockerfile$')
+          m_lw=$(match '^loadwatcher/Dockerfile$')
 
           matrix='[]'
           add() {   # add <yes|no> <json>
@@ -95,6 +96,7 @@ jobs:
           add "$m_harness"  '{"repo":"harness","tag":"dev","context":"./harness","file":"harness/Dockerfile"}'
           add "$m_status"   '{"repo":"statusserver","tag":"dev","context":".","file":"statusserver/Dockerfile"}'
           add "$m_aggr"     '{"repo":"aggressor","tag":"dev","context":"./aggressor","file":"aggressor/Dockerfile"}'
+          add "$m_lw"       '{"repo":"load-watcher","tag":"dev","context":"./loadwatcher","file":"loadwatcher/Dockerfile"}'
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "к сборке: $matrix"

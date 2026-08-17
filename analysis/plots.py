@@ -20,6 +20,8 @@ ARM_LABEL = {
     "A-default": "default",
     "A-sensitivityscore": "SensitivityScore",
     "A-trimaran": "trimaran",
+    "A-peaks": "peaks",        # энерговетка: мин. скачок мощности
+    "A-packing": "packing",    # энерговетка: упаковка до целевой утилизации
     "B-default": "default (KubeVirt)",
     "B-sensitivityscore": "SensitivityScore (KubeVirt)",
 }
@@ -27,6 +29,8 @@ ARM_PALETTE = {
     "default": "#8a8f98",
     "SensitivityScore": "#1c7ed6",
     "trimaran": "#e8590c",
+    "peaks": "#2b8a3e",
+    "packing": "#9c36b5",
 }
 SCENARIO_RU = {
     "pressure:io": "фоновая дисковая нагрузка (IO)",

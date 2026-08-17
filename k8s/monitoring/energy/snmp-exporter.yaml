@@ -1,0 +1,60 @@
+# snmp_exporter — опрос умного PDU (per-outlet, накопительный регистр кВт·ч).
+# ЗАГОТОВКА фазы P0: не включена в kustomization, см. README.md рядом.
+#
+# TODO(Д1): выбрать модуль под фактическую модель PDU. Конфиг snmp.yml
+#   генерируется апстрим-generator'ом из MIB вендора (APC AP89xx / Raritan
+#   PX3 / Eaton / Vertiv); зафиксировать OID накопительной энергии розетки в
+#   docs/Методика измерений.md.
+# TODO(Д2): community/креды SNMPv3 — в Secret, не в этот файл.
+# TODO(Д3): карта розетка↔узел — relabel'ом ниже (metric_relabel_configs),
+#   чтобы у метрик была метка node с именем узла Kubernetes: energy-window.py
+#   группирует по ней (--node-label node).
+#
+# Снипет scrape-джоба для prometheus-configmap (добавить при включении):
+#   - job_name: pdu
+#     static_configs: [{targets: ['<PDU_IP>']}]
+#     metrics_path: /snmp
+#     params: {module: [<pdu_module>]}
+#     relabel_configs:
+#       - {source_labels: [__address__], target_label: __param_target}
+#       - {source_labels: [__param_target], target_label: instance}
+#       - {target_label: __address__, replacement: snmp-exporter.sensitivityscore-monitoring.svc:9116}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: snmp-exporter
+  namespace: sensitivityscore-monitoring
+  labels: {app: snmp-exporter}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: snmp-exporter}
+  template:
+    metadata:
+      labels: {app: snmp-exporter}
+    spec:
+      containers:
+        - name: snmp-exporter
+          image: prom/snmp-exporter:v0.26.0
+          ports:
+            - containerPort: 9116
+          volumeMounts:
+            - {name: config, mountPath: /etc/snmp_exporter}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: config
+          configMap:
+            name: snmp-exporter-config   # TODO(Д1): снятый generator'ом snmp.yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: snmp-exporter
+  namespace: sensitivityscore-monitoring
+spec:
+  selector: {app: snmp-exporter}
+  ports:
+    - port: 9116
+      targetPort: 9116

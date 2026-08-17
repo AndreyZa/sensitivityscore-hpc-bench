@@ -7,7 +7,14 @@
   (`git@github.com:AndreyZa/sensitivityscore-hpc-bench.git`) automatically,
   without asking first. Unconditional — applies to every commit, regardless
   of what it touches.
-- Rebuilding + `docker push`-ing an image is **conditional**: only do it when
+- Since 2026-08-17 images are built and pushed **by CI only**
+  (`.github/workflows/images.yml`, path-filtered matrix): do NOT run
+  `make image-*` / `docker push` locally — the local Docker proxy drops
+  network mid-build (DeadlineExceeded), which is what prompted this rule.
+  A push to main with image inputs touched is the whole release action.
+  The per-image input lists below remain the source of truth for what
+  counts as an image input (CI's path filters mirror them).
+- Rebuilding an image is **conditional**: it happens only when
   the commit actually touches that image's inputs, not on every commit.
   **Comment-only diffs are not a rebuild trigger**, even when they land inside
   an input file (a corrected comment in `harness/config.yaml` is the case that
@@ -48,6 +55,11 @@
   - aggressor image inputs: `aggressor/Dockerfile` only →
     `make image-aggressor` then `docker push andreyza/aggressor:dev`
     (pressure-scenario stress pods).
+  - load-watcher image inputs: `loadwatcher/Dockerfile` only →
+    `make image-load-watcher` then `docker push andreyza/load-watcher:dev`
+    (утилизация узлов для Trimaran-плечей энерговетки peaks/packing;
+    собирается из апстрим-исходников paypal/load-watcher с пином коммита
+    внутри Dockerfile — своего кода в образе нет).
   - The scheduler plugin image is built from the **separate**
     `scheduler-plugins` repo (`pkg/sensitivityscore/**`, not anything under
     `k8s/` here) and since 2026-08-02 is **released by that repo's CI only**

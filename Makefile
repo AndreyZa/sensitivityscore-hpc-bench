@@ -32,6 +32,7 @@ METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev
 AGGRESSOR_IMAGE         ?= $(REGISTRY)/aggressor:dev
 HARNESS_IMAGE           ?= $(REGISTRY)/harness:dev
 STATUSSERVER_IMAGE      ?= $(REGISTRY)/statusserver:dev
+LOADWATCHER_IMAGE       ?= $(REGISTRY)/load-watcher:dev
 
 # Прокси Docker Desktop рвёт upload'ы в Docker Hub с EOF — лечим ретраями.
 PUSH_RETRIES ?= 5
@@ -168,6 +169,10 @@ image-metrics-agent: build-go ## Собрать образ metrics-agent
 .PHONY: image-aggressor
 image-aggressor: ## Собрать образ LLC/membw-агрессора (stress-ng) для pressure-сценариев
 	docker build --platform $(IMAGE_PLATFORM) -t $(AGGRESSOR_IMAGE) ./aggressor
+
+.PHONY: image-load-watcher
+image-load-watcher: ## Собрать образ load-watcher (Trimaran-плечи peaks/packing энерговетки)
+	docker build --platform $(IMAGE_PLATFORM) -t $(LOADWATCHER_IMAGE) ./loadwatcher
 
 # Один образ на два сценария: локально — с примонтированным репозиторием,
 # в кластере — с PVC харнесса и ServiceAccount вместо kubeconfig.
