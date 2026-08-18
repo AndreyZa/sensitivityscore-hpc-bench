@@ -1,0 +1,98 @@
+# Pushgateway — мост для метрик, которые Prometheus не может скрейпить сам.
+#
+# Первый (и пока единственный) клиент — poller iDRAC-мощности энерговетки
+# (scripts/idrac-power-poller.py): он живёт на лабе (.72), потому что
+# iDRAC-сеть (10.21.200.0/24) видна ТОЛЬКО из её WG-туннеля, а обратного
+# маршрута кластер→лаба нет (проверено 18.08.2026: WG-адрес лабы из
+# ss-system недостижим) — прямой скрейп невозможен в обе стороны.
+#
+# Доступ снаружи — ТОЛЬКО ss-forward@pushgateway (kubectl port-forward с
+# лабы, scripts/monitoring-forward.sh): ClusterIP, НЕ NodePort — по тому же
+# доводу, что у prometheus-deployment: неаутентифицированный push-эндпоинт
+# в общей сети (на STAGE — интернет, на проде — партнёрская 10.40/16 с
+# неизвестными соседями) позволил бы кому угодно подменять метрики, из
+# которых энерговетка считает ipmi-источник energy_windows.
+#
+# Свежесть: pushgateway отдаёт последний push вечно, поэтому poller кладёт
+# рядом idrac_poll_timestamp_seconds — панель/алерт различают «мощность
+# такая» и «poller давно молчит». Узел, не ответивший на опрос, из группы
+# просто исчезает (PUT заменяет группу целиком) — отсутствие честнее
+# протухшего значения.
+#
+# Живёт в base: схема сбора едина для стендов (см. overlays/prod), а на
+# стендах без poller'а деплой просто тихо пуст — таргет зелёный, серий нет.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pushgateway
+  labels:
+    app: pushgateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pushgateway
+  template:
+    metadata:
+      labels:
+        app: pushgateway
+    spec:
+      # Как весь стек — на служебном узле, не на измерительных (методика).
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: pushgateway
+          image: prom/pushgateway:v1.9.0
+          args:
+            # Рестарт пода не должен молча ронять последние показания —
+            # poller пушит раз в ~10 с и быстро их вернёт, но пустой график
+            # на каждый rollout сбивал бы с толку. Персистентность файлом
+            # в emptyDir: переживает рестарт контейнера, не переживает
+            # пересоздание пода — и этого достаточно.
+            - --persistence.file=/data/pushgateway.state
+            - --persistence.interval=1m
+          ports:
+            - name: metrics
+              containerPort: 9091
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9091
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9091
+            initialDelaySeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pushgateway
+  labels:
+    app: pushgateway
+spec:
+  type: ClusterIP
+  selector:
+    app: pushgateway
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: 9091

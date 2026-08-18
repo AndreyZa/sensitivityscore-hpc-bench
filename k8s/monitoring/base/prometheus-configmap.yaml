@@ -126,6 +126,14 @@ data:
         static_configs:
           - targets: ["kube-state-metrics.sensitivityscore-monitoring.svc.cluster.local:8080"]
 
+      # --- pushgateway: метрики, приносимые извне (poller iDRAC на лабе) ---
+      # honor_labels обязателен: узел задаёт метка node из тела push'а, а не
+      # instance цели скрейпа (иначе все серии слиплись бы в один pushgateway).
+      - job_name: pushgateway
+        honor_labels: true
+        static_configs:
+          - targets: ["pushgateway.sensitivityscore-monitoring.svc.cluster.local:9091"]
+
       # --- metrics-agent: оси чувствительности ----------------------------
       # Отдельная job с ЧАСТЫМ интервалом. Причина — разрешение по времени, а
       # не нагрузка: планировщик читает node:metrics:<node> с TTL 30s, и

@@ -11,6 +11,7 @@ resources:
   - prometheus-deployment.yaml
   - kube-state-metrics.yaml
   - node-exporter-daemonset.yaml
+  - pushgateway.yaml
   - grafana.yaml
   - grafana-dashboards.yaml
 

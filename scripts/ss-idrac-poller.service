@@ -1,0 +1,35 @@
+# Poller iDRAC-мощности (энерговетка): Redfish трёх BMC -> Pushgateway
+# кластера через ss-forward@pushgateway. Живёт ТОЛЬКО на лабе (.72) — см.
+# докстринг scripts/idrac-power-poller.py.
+#
+#   sudo cp scripts/ss-idrac-poller.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ss-idrac-poller
+#   journalctl -u ss-idrac-poller -f
+
+[Unit]
+Description=iDRAC power poller -> Pushgateway (SensitivityScore, энерговетка)
+After=network-online.target ss-forward@pushgateway.service
+Wants=network-online.target ss-forward@pushgateway.service
+# Как у ss-forward@: без лимита стартов — при лежащем стенде юнит честно
+# перезапускается, пока тот не вернётся, а не гаснет навсегда.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=andrey
+Group=andrey
+WorkingDirectory=/home/andrey/phd/sensitivityscore-hpc-bench
+# Карта узел->BMC и путь к паролю — здесь, а не в скрипте: скрипт один на
+# все стенды, адреса — свойство площадки. Сам пароль читается из файла
+# уже процессом poller'а и в окружение не попадает.
+Environment=IDRAC_MAP=wrk-b6=10.21.200.106,wrk-b7=10.21.200.107,wrk-b8=10.21.200.108
+Environment=IDRAC_PASS_FILE=/home/andrey/phd/.idrac-pass.txt
+Environment=PUSHGATEWAY=http://127.0.0.1:9091
+Environment=POLL_INTERVAL_SECONDS=10
+ExecStart=/usr/bin/python3 /home/andrey/phd/sensitivityscore-hpc-bench/scripts/idrac-power-poller.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

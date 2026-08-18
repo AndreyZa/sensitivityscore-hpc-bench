@@ -9,12 +9,23 @@
 Порядок включения на проде (фаза P0):
 
 1. Получить от партнёра: модель PDU + SNMP-креды (Д1–Д2), карту
-   розетка↔узел (Д3), креды BMC (Д4).
-2. Заполнить TODO в `snmp-exporter.yaml` (community/креды, OID-модуль под
-   конкретную модель PDU через `snmp_exporter` generator) и
-   `ipmi-exporter.yaml` (адреса BMC, креды в Secret).
-3. Добавить оба файла в `k8s/monitoring/overlays/prod/kustomization.yaml` и
-   scrape-джобы в prometheus-configmap (снипеты — в самих файлах).
+   розетка↔узел (Д3). ~~Креды BMC (Д4)~~ — получены 18.08.2026.
+2. **Мощность BMC уже снимается (18.08.2026)** — но не ipmi-exporter'ом из
+   заготовки, а Redfish-poller'ом на лабе: iDRAC-сеть видна только из её
+   WG-туннеля, кластеру BMC недоступны (и обратного маршрута кластер→лаба
+   нет), так что скрейп невозможен в обе стороны — вместо него push:
+   `scripts/idrac-power-poller.py` (юнит `scripts/ss-idrac-poller.service`)
+   → `ss-forward@pushgateway` → pushgateway в base стека → Prometheus
+   (`idrac_power_watts`, `idrac_psu_input_watts`,
+   `idrac_poll_timestamp_seconds`). Заготовка `ipmi-exporter.yaml` этим
+   ПЕРЕКРЫТА и осталась на случай, если BMC станут доступны кластеру.
+   Накопительного счётчика энергии у iDRAC этой прошивки нет — источник
+   ipmi в energy_windows будет интегрированием опроса (Э0.1 — по средней
+   мощности, этого достаточно).
+3. Для PDU: заполнить TODO в `snmp-exporter.yaml` (community/креды,
+   OID-модуль под конкретную модель через `snmp_exporter` generator),
+   добавить файл в `k8s/monitoring/overlays/prod/kustomization.yaml` и
+   scrape-джоб в prometheus-configmap (снипет — в самом файле).
 4. Кросс-валидация PDU↔RAPL↔IPMI по плану P0. **RAPL снимает metrics-agent
    (решено и реализовано 18.08.2026)** — вариант «а» из прежней развилки:
    агент и так единственный разрешённый постоянный процесс на bench-узлах,

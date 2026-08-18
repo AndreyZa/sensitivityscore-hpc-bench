@@ -18,17 +18,19 @@
 set -u
 
 SVC=${1:-}
+# DEF_ADDR: grafana/prometheus пробрасываются в домашнюю сеть (смысл юнита —
+# видимость с других машин; Grafana требует логин, Prometheus выставлять
+# осознанно). Pushgateway — строго localhost: это неаутентифицированный
+# push-эндпоинт для ЛОКАЛЬНОГО ss-idrac-poller, наружу ему нельзя.
 case "$SVC" in
-    grafana)    PORT=3000; HEALTH=/api/health ;;   # отвечает без авторизации
-    prometheus) PORT=9090; HEALTH=/-/healthy ;;
-    *) echo "использование: $0 <grafana|prometheus>"; exit 2 ;;
+    grafana)     PORT=3000; HEALTH=/api/health; DEF_ADDR=0.0.0.0 ;;   # отвечает без авторизации
+    prometheus)  PORT=9090; HEALTH=/-/healthy;  DEF_ADDR=0.0.0.0 ;;
+    pushgateway) PORT=9091; HEALTH=/-/healthy;  DEF_ADDR=127.0.0.1 ;;
+    *) echo "использование: $0 <grafana|prometheus|pushgateway>"; exit 2 ;;
 esac
 
 NS=${MONITORING_NAMESPACE:-sensitivityscore-monitoring}
-# 0.0.0.0, а не localhost: смысл юнита — видимость из домашней сети. Grafana
-# требует логин (GF_USERS_ALLOW_SIGN_UP=false, пароль в секрете grafana-admin),
-# Prometheus — нет, его выставлять только осознанно.
-ADDRESS=${FORWARD_ADDRESS:-0.0.0.0}
+ADDRESS=${FORWARD_ADDRESS:-$DEF_ADDR}
 PROBE_INTERVAL=${PROBE_INTERVAL:-30}
 PROBE_FAILURES=${PROBE_FAILURES:-3}
 
