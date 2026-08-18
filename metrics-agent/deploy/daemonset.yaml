@@ -80,6 +80,15 @@ spec:
                   name: metrics-agent-calibration
                   key: LLC_REFERENCE_MISSES_PER_SEC
                   optional: true
+            # RAPL (энерговетка, pkg/rapl) читается через ХОСТОВЫЙ /sys: свой
+            # /sys контейнера не годится — runc после PLATYPUS (CVE-2020-8694)
+            # маскирует /sys/devices/virtual/powercap, и class-симлинки ведут в
+            # пустоту. Права: energy_uj 0400 root — контейнер и так работает
+            # root'ом (capabilities выше режут привилегии, не uid). На ВМ
+            # (ss-system, STAGE) зон просто нет — агент честно гасит метрику
+            # (ss_agent_rapl_zones=0), это штатно.
+            - name: RAPL_SYSFS_ROOT
+              value: "/host/sys/class/powercap"
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the
             # container's own /proc show every host process (net.go reads
@@ -87,6 +96,12 @@ spec:
             # the config-B QemuProcessResolver ever needs a non-PID view.
             - name: cgroup
               mountPath: /sys/fs/cgroup
+              readOnly: true
+            # только чтение и только под RAPL_SYSFS_ROOT; тот же приём, что у
+            # node-exporter (--path.sysfs=/host/sys), нового процесса на узле
+            # по-прежнему не появляется.
+            - name: sys
+              mountPath: /host/sys
               readOnly: true
           resources:
             requests:
@@ -99,6 +114,9 @@ spec:
         - name: cgroup
           hostPath:
             path: /sys/fs/cgroup
+        - name: sys
+          hostPath:
+            path: /sys
       tolerations:
         - operator: Exists # run on every node, including tainted control-plane/HPC nodes
 ---

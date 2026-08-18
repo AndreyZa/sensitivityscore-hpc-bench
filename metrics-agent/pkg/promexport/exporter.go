@@ -56,6 +56,10 @@ type Exporter struct {
 	netCalibrated prometheus.Gauge
 	llcCalibrated prometheus.Gauge
 	psiAvailable  prometheus.Gauge
+
+	// Энерговетка (P0): накопительные RAPL-джоули по powercap-зонам узла.
+	raplJoules *prometheus.CounterVec
+	raplZones  prometheus.Gauge
 }
 
 // New собирает экспортёр с собственным реестром (не DefaultRegisterer): в него
@@ -72,6 +76,11 @@ func New(nodeName string) *Exporter {
 	}
 	counter := func(name, help string) prometheus.Counter {
 		c := prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
+		r.MustRegister(c)
+		return c
+	}
+	counterVec := func(name, help string, labels []string) *prometheus.CounterVec {
+		c := prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
 		r.MustRegister(c)
 		return c
 	}
@@ -144,6 +153,19 @@ func New(nodeName string) *Exporter {
 		psiAvailable: gauge("ss_agent_psi_available",
 			"1 when the kernel exposes cgroup io.pressure (PSI). 0 means the IO axis is effectively off - "+
 				"Debian/RHEL builds need psi=1 on the kernel cmdline."),
+
+		raplJoules: counterVec("ss_node_rapl_joules_total",
+			"Cumulative Intel RAPL energy per powercap zone, joules, wraparound-corrected (pkg/rapl). "+
+				"Energy for a window = counter difference at the window borders (scripts/energy-window.py, "+
+				"source rapl-pkg/rapl-dram) - do NOT integrate instantaneous power. Domain names repeat "+
+				"across sockets (dram on both), so identity is the `zone` label (sysfs id); `domain` is "+
+				"the human name (package-0, dram, psys). Absent on nodes without powercap (VMs) - see "+
+				"ss_agent_rapl_zones.",
+			[]string{"zone", "domain"}),
+		raplZones: gauge("ss_agent_rapl_zones",
+			"Powercap zones the agent actually samples. 0 = RAPL unavailable (VM, or no permission to "+
+				"read energy_uj) - the energy branch must not trust rapl totals from such a node; "+
+				"bare-metal 2-socket SPR is expected to show 5 (2x package + 2x dram + psys)."),
 	}
 }
 
@@ -166,6 +188,17 @@ func (e *Exporter) SetPMUMultiplexRatio(ratio float64) { e.pmuMultiplex.Set(rati
 // старте: PSI определяется наличием файла, и агент узнаёт об этом только когда
 // nodePSISampler впервые сходит в cgroupfs.
 func (e *Exporter) SetPSIAvailable(ok bool) { e.psiAvailable.Set(b2f(ok)) }
+
+// SetRAPLZones — сколько powercap-зон агент реально читает (0 = RAPL на узле
+// нет: ВМ или нет прав). Выставляется один раз на старте, по итогам Discover.
+func (e *Exporter) SetRAPLZones(n int) { e.raplZones.Set(float64(n)) }
+
+// AddRAPLJoules накапливает прирост энергии зоны. Counter, а не Gauge с сырым
+// energy_uj: sysfs-счётчик переполняется (диапазон max_energy_range_uj), и
+// коррекцию делает pkg/rapl — Prometheus видит уже монотонные джоули.
+func (e *Exporter) AddRAPLJoules(zone, domain string, joules float64) {
+	e.raplJoules.WithLabelValues(zone, domain).Add(joules)
+}
 
 // Publish зеркалит узловой агрегат тика. Вызывается там же, где
 // WriteNodeMetrics — из одной горутины сэмплирования, поэтому гейджи

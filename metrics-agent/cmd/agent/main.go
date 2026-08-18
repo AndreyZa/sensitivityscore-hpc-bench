@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -21,6 +22,7 @@ import (
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/cgroup"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/perf"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/promexport"
+	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/rapl"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/redisclient"
 )
 
@@ -109,6 +111,23 @@ func main() {
 	exporter.SetEnvironment(hwPMUAvailable, netRefMbps, llcRefMps)
 	go exporter.Serve(promexport.DefaultAddr)
 
+	// RAPL для энерговетки (pkg/rapl): в контейнере путь указывает на хостовый
+	// /sys через ro-mount (см. deploy/daemonset.yaml — runc маскирует
+	// контейнерный powercap после PLATYPUS). Ноль зон — свойство узла (ВМ,
+	// STAGE), а не ошибка: метрика честно отсутствует, гейдж говорит почему.
+	raplSampler, raplErr := rapl.Discover(envOr("RAPL_SYSFS_ROOT", "/sys/class/powercap"))
+	if raplErr != nil {
+		log.Printf("WARNING: rapl discover: %v — energy metrics off", raplErr)
+		raplSampler = nil
+		exporter.SetRAPLZones(0)
+	} else if raplSampler.Zones() == 0 {
+		log.Printf("rapl: no powercap zones (normal on VMs) — energy metrics off")
+		exporter.SetRAPLZones(0)
+	} else {
+		log.Printf("rapl: %d zones: %s", raplSampler.Zones(), strings.Join(raplSampler.IDs(), ", "))
+		exporter.SetRAPLZones(raplSampler.Zones())
+	}
+
 	log.Printf("metrics-agent starting on node=%s, sampling every %s", nodeName, sampleInterval)
 
 	// Per-pod sampling state, keyed by pod UID, kept across ticks: perf
@@ -127,6 +146,18 @@ func main() {
 		if err := sampleOnce(ctx, clientset, writer, exporter, nodeName, synth, samplers, nodePSI, netRefMbps, llcRefMps, elapsed); err != nil {
 			exporter.ObserveSampleError()
 			log.Printf("sample error: %v", err)
+		}
+		// RAPL — вне sampleOnce: энергия узла не входит в PressureVector и не
+		// пишется в Redis, её потребитель — только Prometheus (энерговетка).
+		// Ошибка чтения не считается sample error: оси давления она не трогает.
+		if raplSampler != nil && raplSampler.Zones() > 0 {
+			deltas, err := raplSampler.Sample()
+			for _, d := range deltas {
+				exporter.AddRAPLJoules(d.ID, d.Name, d.Joules)
+			}
+			if err != nil {
+				log.Printf("rapl sample: %v", err)
+			}
 		}
 	}
 }
