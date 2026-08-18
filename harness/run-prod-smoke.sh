@@ -12,8 +12,14 @@
 # снято» видно из данных, а не только из скрипта.
 #
 # ОТЛИЧИЯ ОТ STAGE, ради которых значения ниже другие:
-#   * полные ядра вместо квоты 500m — THREADS по числу ядер NUMA-домена (32),
-#     CPU-заявка целыми ядрами; на STAGE было 500m/2 потока;
+#   * полные ядра вместо квоты 500m; на STAGE было 500m/2 потока. Доза — 28
+#     ядер, а не «весь NUMA-домен»: разведка wrk-b6 18.08 показала SMT OFF в
+#     BIOS (64 ядра, 32 на сокет), а kubelet-профиль bench (static +
+#     single-numa-node) резервирует 4 CPU, и из-за чередующейся нумерации
+#     (node0 — чётные, node1 — нечётные) по 2 с КАЖДОГО домена → 30
+#     эксклюзивных ядер на домен. Жертва на 32 не встала бы никогда; 28
+#     влезает с запасом, и обе жертвы (node_capacity_jobs=2) садятся по
+#     одной на домен — чистая NUMA-картина;
 #   * больше первичных частиц: на 32 потоках 300 тыс. частиц отсчитываются за
 #     секунды, и на таком времени интерференция утонет в шуме запуска;
 #   * дисковая доза крупнее: NVMe против облачного тома, мелкая запись
@@ -29,14 +35,14 @@ export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/prod} REDIS_ADDR=localhost:1
 # Пара близнецов: одинаковый расчёт и заявки, различие — только реальный вывод
 # на диск и декларация io. Равенство CPU/памяти/частиц здесь принципиально:
 # оно и делает пару близнецами (см. docs/Методика измерений.md).
-export HARNESS_OVERRIDE_HIGH_S_IO_CPU=32 HARNESS_OVERRIDE_HIGH_S_IO_THREADS=32 \
+export HARNESS_OVERRIDE_HIGH_S_IO_CPU=28 HARNESS_OVERRIDE_HIGH_S_IO_THREADS=28 \
        HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=5000000 \
        HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=8Gi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=16Gi \
        HARNESS_OVERRIDE_HIGH_S_IO_OUTPUT_MODE=blocking \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_BURST_MB=256 \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_INTERVAL_SECONDS=0 \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_TOTAL_BURSTS=16 \
-       HARNESS_OVERRIDE_IO_INSENSITIVE_CPU=32 HARNESS_OVERRIDE_IO_INSENSITIVE_THREADS=32 \
+       HARNESS_OVERRIDE_IO_INSENSITIVE_CPU=28 HARNESS_OVERRIDE_IO_INSENSITIVE_THREADS=28 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_PRIMARIES=5000000 \
        HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_REQ=8Gi HARNESS_OVERRIDE_IO_INSENSITIVE_MEM_LIM=16Gi
 
