@@ -531,7 +531,10 @@ netcheck-clean: ## Убрать поды и Service netcheck
 # ($(REGISTRY)), кластер пуллит их сам (imagePullPolicy: Always). См.
 # image-workload-push / scheduler-plugin-image / image-metrics-agent.
 .PHONY: setup-cluster
-setup-cluster: bootstrap scheduler-deploy deploy-metrics-agent deploy-load-watcher ## Подготовка кластера: namespace+Redis, планировщик, агент, load-watcher (образы уже в Docker Hub)
+# load-watcher — ДО планировщика: плечи trimaran/peaks при инициализации ходят
+# в него, и на вводе прода 18.08 планировщик набрал 10 CrashLoopBackOff-рестартов,
+# стартуя раньше готового load-watcher. Порядок убирает это окно на свежем стенде.
+setup-cluster: bootstrap deploy-load-watcher deploy-metrics-agent scheduler-deploy ## Подготовка кластера: namespace+Redis, load-watcher, агент, планировщик (образы уже в Docker Hub)
 
 # ---------------------------------------------------------------------------
 # Отладка планировщика: логи, статус, правка метрик/весов "на лету"
