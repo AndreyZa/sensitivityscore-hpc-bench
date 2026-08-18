@@ -1022,3 +1022,103 @@ data:
       "version": 1
     }
 
+  energy.json: |
+    {
+      "uid": "ss-energy",
+      "title": "Энергия — мощность узлов",
+      "tags": ["sensitivityscore", "energy"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": {"from": "now-1h", "to": "now"},
+      "templating": {
+        "list": [
+          {
+            "name": "node",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+            "query": "label_values(idrac_power_watts, node)",
+            "multi": false,
+            "includeAll": false,
+            "refresh": 2
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "row", "title": "Мощность по узлам", "id": 1, "collapsed": false, "panels": [],
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+        },
+        {
+          "type": "timeseries", "title": "Вся система (iDRAC)", "id": 2,
+          "description": "PowerConsumedWatts из BMC: розетка минус потери PSU. Источник для сверки с PDU (Э0.1).",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 10, "x": 0, "y": 1},
+          "fieldConfig": {"defaults": {"unit": "watt", "custom": {"lineWidth": 2, "fillOpacity": 6}}, "overrides": []},
+          "targets": [
+            {"refId": "A", "expr": "idrac_power_watts", "legendFormat": "{{node}}"}
+          ]
+        },
+        {
+          "type": "timeseries", "title": "CPU+DRAM (RAPL pkg+dram)", "id": 3,
+          "description": "Дифференцируемая счётчиками часть узла. Окно энергии считает energy-window.py разностью счётчика, не этим графиком.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 10, "x": 10, "y": 1},
+          "fieldConfig": {"defaults": {"unit": "watt", "custom": {"lineWidth": 2, "fillOpacity": 6}}, "overrides": []},
+          "targets": [
+            {"refId": "A", "expr": "sum by (node) (rate(ss_node_rapl_joules_total{domain=~\"package-.*|dram\"}[2m]))", "legendFormat": "{{node}}"}
+          ]
+        },
+        {
+          "type": "stat", "title": "Кластер (iDRAC)", "id": 4,
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 4, "x": 20, "y": 1},
+          "fieldConfig": {"defaults": {"unit": "watt", "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
+          "targets": [{"refId": "A", "expr": "sum(idrac_power_watts)"}]
+        },
+        {
+          "type": "row", "title": "Сверка источников и годность", "id": 5, "collapsed": false, "panels": [],
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9}
+        },
+        {
+          "type": "timeseries", "title": "Цепочка Э0.4 на узле $node: Σ(pkg+dram) ≤ psys ≤ iDRAC", "id": 6,
+          "description": "Порядковый критерий предрегистрации: нарушение порядка линий = недоверие инструменту. PDU добавится сюда же, когда партнёры дадут доступ.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 16, "x": 0, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "watt", "custom": {"lineWidth": 2, "fillOpacity": 0}}, "overrides": []},
+          "targets": [
+            {"refId": "A", "expr": "sum(rate(ss_node_rapl_joules_total{node=\"$node\",domain=~\"package-.*|dram\"}[2m]))", "legendFormat": "RAPL pkg+dram"},
+            {"refId": "B", "expr": "sum(rate(ss_node_rapl_joules_total{node=\"$node\",domain=\"psys\"}[2m]))", "legendFormat": "RAPL psys"},
+            {"refId": "C", "expr": "idrac_power_watts{node=\"$node\"}", "legendFormat": "iDRAC (система)"}
+          ]
+        },
+        {
+          "type": "stat", "title": "Свежесть iDRAC-опроса", "id": 7,
+          "description": "Pushgateway помнит последний push вечно — панель отличает «мощность такая» от «poller молчит».",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 4, "x": 16, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "orange", "value": 60}, {"color": "red", "value": 300}
+          ]}}, "overrides": []},
+          "targets": [{"refId": "A", "expr": "max(time() - idrac_poll_timestamp_seconds)"}]
+        },
+        {
+          "type": "stat", "title": "RAPL-зон (мин. по bench)", "id": 8,
+          "description": "Ожидается 5 (2 пакета + 2 dram + psys). Меньше — агент потерял powercap; No data на STAGE — норма.",
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 4, "x": 20, "y": 10},
+          "fieldConfig": {"defaults": {"unit": "none", "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "green", "value": 5}
+          ]}}, "overrides": []},
+          "targets": [{"refId": "A", "expr": "min(ss_agent_rapl_zones{node=~\"wrk-.*\"})"}]
+        }
+      ],
+      "annotations": {"list": []},
+      "editable": true,
+      "graphTooltip": 1,
+      "links": [],
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "version": 1
+    }
+
