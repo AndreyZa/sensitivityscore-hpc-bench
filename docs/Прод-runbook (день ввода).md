@@ -20,12 +20,17 @@
 
 ## 1. Провижн кластера
 
+Гонять **с лаба (.72)**: прод-сеть видна только из его WG-туннеля, а k0sctl
+ходит своим SSH-клиентом и `~/.ssh/config` (ProxyJump) не читает.
+
 ```bash
 cd ~/phd/hpc-k0s-provision
-$EDITOR inventory/hosts.yml        # <-- IP 7 хостов
+$EDITOR inventory/hosts.yml        # IP 7 хостов (заполнен 18.08 от партнёра)
 make provision                     # Ansible OS-prep + k0sctl; kubeconfig-кнопка
 ```
-**Проверка:** kubeconfig лёг в `~/.kube/configs/prod`;
+**Проверка:** kubeconfig лёг в `~/.kube/configs/prod` и стал дефолтом
+(симлинк `~/.kube/config` — цель kubeconfig-install в конце provision;
+лабный local72 остаётся в `~/.kube/configs/local72.yaml`);
 `kubectl get nodes` — все узлы Ready, роли согласно inventory.
 
 ## 2. Роли, базовые сервисы, мониторинг
@@ -138,7 +143,8 @@ sudo systemctl enable ss-status               # страницу подниме�
 sudo systemctl daemon-reload && sudo systemctl enable --now ss-forward@grafana
 ```
 ss-notifier не трогать — он включён и от стенда не зависит.
-Прод-kubeconfig на .72 положить в `~/.kube/configs/prod` (та же конвенция).
+Прод-kubeconfig на .72 уже лежит в `~/.kube/configs/prod` и является
+дефолтом — его кладёт сам provision (ступень 1), отдельного шага нет.
 
 ## 10. Регулярное
 
