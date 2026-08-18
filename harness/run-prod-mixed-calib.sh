@@ -18,19 +18,25 @@ export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/prod} REDIS_ADDR=localhost:1
 # Статус-страница (идемпотентно; при запуске через make series уже поднята).
 ../scripts/run-series.sh page mixed-calib || true
 
+# MEM_REQ == MEM_LIM ОБЯЗАТЕЛЬНО (найдено 18.08 перед первой калибровкой):
+# static cpuManager выдаёт эксклюзивные ядра только Guaranteed-подам
+# (requests == limits по CPU И памяти). Со смоуковскими 8Gi/16Gi жертвы были
+# Burstable — пиннинг и single-numa-node для них не работали вовсе, ровно
+# как предупреждал §C5 аудита, и numa_remote_ratio мерил бы миграцию
+# потоков, а не последствия размещения.
 export HARNESS_OVERRIDE_HIGH_S_CPU=28 HARNESS_OVERRIDE_HIGH_S_THREADS=28 \
        HARNESS_OVERRIDE_HIGH_S_PRIMARIES=60000000 \
-       HARNESS_OVERRIDE_HIGH_S_MEM_REQ=8Gi HARNESS_OVERRIDE_HIGH_S_MEM_LIM=16Gi \
+       HARNESS_OVERRIDE_HIGH_S_MEM_REQ=16Gi HARNESS_OVERRIDE_HIGH_S_MEM_LIM=16Gi \
        HARNESS_OVERRIDE_HIGH_S_IO_CPU=28 HARNESS_OVERRIDE_HIGH_S_IO_THREADS=28 \
        HARNESS_OVERRIDE_HIGH_S_IO_PRIMARIES=60000000 \
-       HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=8Gi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=16Gi \
+       HARNESS_OVERRIDE_HIGH_S_IO_MEM_REQ=16Gi HARNESS_OVERRIDE_HIGH_S_IO_MEM_LIM=16Gi \
        HARNESS_OVERRIDE_HIGH_S_IO_OUTPUT_MODE=blocking \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_BURST_MB=256 \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_INTERVAL_SECONDS=0 \
        HARNESS_OVERRIDE_HIGH_S_IO_IO_TOTAL_BURSTS=16 \
        HARNESS_OVERRIDE_HIGH_S_NET_CPU=28 HARNESS_OVERRIDE_HIGH_S_NET_THREADS=28 \
        HARNESS_OVERRIDE_HIGH_S_NET_PRIMARIES=60000000 \
-       HARNESS_OVERRIDE_HIGH_S_NET_MEM_REQ=8Gi HARNESS_OVERRIDE_HIGH_S_NET_MEM_LIM=16Gi \
+       HARNESS_OVERRIDE_HIGH_S_NET_MEM_REQ=16Gi HARNESS_OVERRIDE_HIGH_S_NET_MEM_LIM=16Gi \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=1000000
 
 echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="

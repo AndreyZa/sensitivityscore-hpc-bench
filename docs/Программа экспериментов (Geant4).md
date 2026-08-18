@@ -58,7 +58,7 @@ Geant4 удобен как эталонная нагрузка по нескол
 | Измерение S | Метрика (как реализовано) | Источник | В score? | Применимо к конфигурациям |
 |---|---|---|---|---|
 | LLC | узел: промахи/сек к калибровке `LLC_REFERENCE_MISSES_PER_SEC`¹; задача (fingerprint): miss ratio | `perf_event_open()` PMU, cgroup-scoped | да | A, C; B — ограниченно (см. §5) |
-| NUMA | Доля remote-обращений (`node-load-misses / node-loads`) | `perf_event_open()`, generic NODE-события PMU | да | A, C; B — ограниченно |
+| NUMA | Доля remote-обращений: `remote / (local + remote)`, т.е. `node-load-misses / (node-loads + node-load-misses)` — с 18.08.2026³ | `perf_event_open()`, generic NODE-события PMU | да | A, C; B — ограниченно |
 | Network | `net_pressure = net_bw / NET_REFERENCE_MBPS` (+ сырой `net_bw`) | `/proc/<pid>/net/dev` (поды делят netns, hostPID-агент) | да² (после калибровки Этапа 0) | A, B, C, D |
 | Disk I/O | `io_pressure` (PSI-доля ожидания IO, [0,1]) + сырые `io_iops` | cgroup v2 `io.pressure` (score) / `io.stat` (анализ) | да (PSI) | A, B, C, D |
 | Интегральные | Makespan, slowdown, placement regret, throughput | terminated-времена контейнера / `sacct Elapsed` / снапшот давления | — | A, B, C, D |
@@ -72,6 +72,12 @@ Geant4 удобен как эталонная нагрузка по нескол
 ² Без выставленного референса агент пишет `net_pressure = 0` — ось
 выключена честно, сырой `net_bw` остаётся для анализа. IO раздвоено:
 `io_pressure` (нормировано ядром, в score) vs `io_iops` (сырое, только анализ).
+³ До 18.08.2026 считалось `misses / loads` в предположении «misses ⊂ loads».
+Ground truth на прод-узле (SPR, perf под numactl) показал: на современных
+Intel generic node-события ДИЗЪЮНКТНЫ — `node-loads` считает только локальные
+DRAM-чтения, `node-load-misses` только удалённые; старая формула на любом
+удалённом трафике превышала 1 и клампилась — ось стояла насыщенной. Детали и
+числа — в `metrics-agent/pkg/perf/sampler.go` (RemoteShare).
 
 **Калибровка Net (код реализован; на стенде остаётся измерить референс):** нормировать не на
 номинальную скорость NIC (её и не прочитать честно — агент видит только
