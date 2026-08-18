@@ -1027,6 +1027,15 @@ CH_INCLUSTER_NS ?= sensitivityscore-system
 # завалил preflight, причём тихо. Промах в другую сторону безобиден и
 # нагляден: на dev-кластере без роли ss-system под просто повиснет Pending.
 # Лаба .72 — свой оверлей: CH_KUSTOMIZE=k8s/clickhouse/overlays/lab.
+# Свой CoreDNS вместо встроенного в k0s (тот отключён флагом контроллеров в
+# провижнере): 1 реплика на ss-system, чтобы DNS всего кластера не шумел на
+# измерительных узлах. Требует метки роли ss-system на узле (bootstrap или
+# провижнер её вешают до вызова).
+.PHONY: coredns-deploy
+coredns-deploy: ## Развернуть CoreDNS стенда (1 реплика на ss-system; k0s-встроенный отключён)
+	$(KUBECTL) apply -f k8s/coredns/coredns.yaml
+	$(KUBECTL) -n kube-system rollout status deploy/coredns --timeout=180s
+
 # База как таковая (без размещения) — только для dev, явным указанием.
 CH_KUSTOMIZE    ?= k8s/clickhouse/overlays/prod
 

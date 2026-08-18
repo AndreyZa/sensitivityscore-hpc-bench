@@ -1,0 +1,163 @@
+# CoreDNS стенда — СВОЙ, вместо встроенного в k0s (тот отключён флагом
+# контроллеров --disable-components=coredns, см. hpc-k0s-provision).
+#
+# Зачем: у k0s CoreDNS — 2 реплики с anti-affinity, а CP-ноды в k0s не узлы и
+# ss-system закрыт taint'ом → реплики вставали ТОЛЬКО на измерительные узлы
+# (ввод прода 18.08: b6+b8, b7 без) и обрабатывали DNS всего кластера на
+# узлах, чью чувствительность мы меряем — фоновая нагрузка, НЕодинаковая по
+# узлам. Здесь: 1 реплика, прибитая к ss-system (toleration + nodeSelector) —
+# bench-узлы чисты от не-DaemonSet обвязки.
+#
+# Цена: DNS кластера зависит от ss-system. Осознанно приемлемо: там же Redis и
+# планировщик — без ss-system стенд мёртв в любом случае (это стенд, не прод).
+#
+# ClusterIP 10.96.0.10 ПРИБИТ: kubelet раздаёт его подам как resolver
+# (--cluster-dns), менять нельзя. Спек контейнера снят с живого k0s v1.35.6
+# (образ quay.io/k0sproject/coredns:1.14.2-0) и не менялся, кроме размещения.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system-coredns
+rules:
+  - apiGroups: [""]
+    resources: [endpoints, services, pods, namespaces]
+    verbs: [list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system-coredns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system-coredns
+subjects:
+  - kind: ServiceAccount
+    name: coredns
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+          pods insecure
+          ttl 30
+          fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+    kubernetes.io/cluster-service: "true"
+    kubernetes.io/name: CoreDNS
+spec:
+  clusterIP: 10.96.0.10
+  selector:
+    k8s-app: kube-dns
+  ports:
+    - {name: dns, port: 53, protocol: UDP}
+    - {name: dns-tcp, port: 53, protocol: TCP}
+    - {name: metrics, port: 9153, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+spec:
+  # Одна реплика: вторая при anti-affinity всё равно уехала бы на bench, а
+  # HA DNS на стенде с ss-system-SPOF ничего не спасает.
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 25%, maxUnavailable: 1}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/port: "9153"
+        prometheus.io/scrape: "true"
+      labels:
+        k8s-app: kube-dns
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      priorityClassName: system-cluster-critical
+      serviceAccountName: coredns
+      dnsPolicy: Default
+      containers:
+        - name: coredns
+          image: quay.io/k0sproject/coredns:1.14.2-0
+          imagePullPolicy: IfNotPresent
+          args: ["-conf", "/etc/coredns/Corefile"]
+          ports:
+            - {containerPort: 53, name: dns, protocol: UDP}
+            - {containerPort: 53, name: dns-tcp, protocol: TCP}
+            - {containerPort: 9153, name: metrics, protocol: TCP}
+          livenessProbe:
+            httpGet: {path: /health, port: 8080, scheme: HTTP}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /ready, port: 8181, scheme: HTTP}
+            initialDelaySeconds: 30
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 70Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: [NET_BIND_SERVICE]
+              drop: [all]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - {name: config-volume, mountPath: /etc/coredns, readOnly: true}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: coredns
+            items:
+              - {key: Corefile, path: Corefile}
