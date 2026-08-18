@@ -9,28 +9,22 @@
 # монтирования, и RBAC — read-only. Это не перестраховка: страницу удобно
 # держать открытой во время серии, и она не должна иметь возможности её
 # испортить.
-FROM python:3.12-slim
 
 # kubectl нужен statusserver/cluster.py (снимок узлов). Версия совпадает с
 # k0s стенда (1.35); если kubectl не окажется — страница живёт дальше с
 # пустой секцией кластера, это заложено в cluster.py как best-effort.
-ARG KUBECTL_VERSION=v1.35.0
-# TARGETARCH БЕЗ значения по умолчанию: его подставляет BuildKit (arm64
-# локально, amd64 при --platform linux/amd64). Со значением =amd64 kubectl
-# качался x86-64 даже в «нативный» локальный образ, и работал он только
-# потому, что Docker Desktop держит binfmt/qemu в VM (замерено: 0.19 с против
-# 0.055 с у нативного бинаря). На arm64-рантайме без binfmt — Colima без qemu,
-# arm64-Linux-хост, podman — был бы «exec format error», а cluster.py ловит
-# это голым except и молча показал бы кластер из нуля узлов.
-ARG TARGETARCH
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSLo /usr/local/bin/kubectl \
-        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
-    && chmod +x /usr/local/bin/kubectl \
-    && kubectl version --client >/dev/null \
-    && apt-get purge -y curl && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+#
+# Бинарь берётся СЛОЕМ с Docker Hub, а не curl'ом с dl.k8s.io: с лаб-хоста
+# (.72, где страница живёт постоянно) dl.k8s.io/registry.k8s.io не качаются
+# (таймаут), Docker Hub — единственный надёжный источник этой сети; сборка
+# statusserver:local делается именно там. Мультиарх сохраняется: COPY --from
+# резолвит образ-источник под целевую платформу сборки (прежний урок про
+# TARGETARCH/qemu остаётся в силе, просто платформу теперь выбирает BuildKit
+# за нас).
+FROM rancher/kubectl:v1.35.0 AS kubectl-src
+FROM python:3.12-slim
+COPY --from=kubectl-src /bin/kubectl /usr/local/bin/kubectl
+RUN kubectl version --client >/dev/null
 
 WORKDIR /app
 
