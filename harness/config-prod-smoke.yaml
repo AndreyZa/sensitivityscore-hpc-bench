@@ -7,7 +7,7 @@
 # Запуск:  STAND=prod make series-preflight SERIES=smoke
 #          STAND=prod make series SERIES=smoke PILOT=1
 #
-# <FILL> перед запуском: имена узлов (`kubectl get nodes`) в storms[].node.
+# Имена узлов вписаны 18.08 по `kubectl get nodes` (wrk-b6/b7/b8; шторм — b7).
 #
 # Что смотреть глазами после прогона:
 #   * harness/prod-smoke.log — фазы BASELINE/PRESSURE, rc=0;
@@ -44,7 +44,7 @@ pressure_scenarios:
       interval_seconds: 30
     aggressors_per_node: [2]
     storms:
-      - node: "<FILL-bench-node-2>"     # имя из kubectl get nodes
+      - node: "wrk-b7"                  # имя из kubectl get nodes (18.08)
         mode: stress
         args: ["--hdd", "4", "--hdd-bytes", "4g"]
         per_node: 2

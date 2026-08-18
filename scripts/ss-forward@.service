@@ -24,7 +24,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=andrey
 Group=andrey
-Environment=KUBECONFIG=/home/andrey/.kube/configs/timeweb-stage
+# Прод — с 18.08 (перевешен со STAGE при вводе прод-стенда).
+Environment=KUBECONFIG=/home/andrey/.kube/configs/prod
 WorkingDirectory=/home/andrey/phd/sensitivityscore-hpc-bench
 ExecStart=/home/andrey/phd/sensitivityscore-hpc-bench/scripts/monitoring-forward.sh %i
 Restart=always
