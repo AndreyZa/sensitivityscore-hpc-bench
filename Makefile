@@ -274,6 +274,10 @@ scheduler-undeploy: ## Убрать Deployment планировщика и ег�
 deploy-metrics-agent: ## Развернуть DaemonSet metrics-agent
 	$(KUBECTL) apply -f metrics-agent/deploy/daemonset.yaml
 
+.PHONY: registry-secret
+registry-secret: ## Учётка реестра для образов: make registry-secret DOCKERHUB_USER=<логин> DOCKERHUB_TOKEN=<токен>
+	KUBECTL="$(KUBECTL)" ./scripts/registry-secret.sh
+
 .PHONY: deploy-load-watcher
 deploy-load-watcher: ## Развернуть load-watcher (утилизация узлов для плечей trimaran/peaks/packing)
 	# До 18.08.2026 этот манифест не разворачивал НИ ОДИН таргет: на стенде он

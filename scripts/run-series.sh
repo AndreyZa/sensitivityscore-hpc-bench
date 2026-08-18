@@ -320,6 +320,17 @@ preflight() {
     kubectl -n $SYS_NS get deploy sensitivityscore-scheduler \
         -o jsonpath='{.status.readyReplicas}' 2>/dev/null | grep -q '^[1-9]' \
         || fail "планировщик не Ready"
+    # Учётка реестра: без неё Docker Hub режет анонимные вытягивания по
+    # внешнему адресу (100/час на весь стенд), и длинная серия сыплется в
+    # ErrImagePull на середине. Предупреждение, а не отказ: на стендах, где
+    # образы уже локально или реестр свой, учётка не нужна.
+    if [ -z "$(kubectl -n $BENCH_NS get sa default -o jsonpath='{.imagePullSecrets}' 2>/dev/null)" ]; then
+        echo "  ВНИМАНИЕ: в $BENCH_NS нет imagePullSecrets — вытягивание образов анонимное"
+        echo "            (лимит Docker Hub 100/час на внешний адрес; make registry-secret)"
+    else
+        ok "учётка реестра прописана в $BENCH_NS"
+    fi
+
     kubectl -n $SYS_NS logs deploy/sensitivityscore-scheduler --tail=-1 2>/dev/null \
         | grep -q "sensitivity weights loaded" \
         || fail "в логе планировщика нет 'sensitivity weights loaded' — образ без parseWeights?"

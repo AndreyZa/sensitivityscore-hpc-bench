@@ -34,13 +34,23 @@ make provision                     # Ansible OS-prep + k0sctl; kubeconfig-кно
 cd ~/phd/sensitivityscore-hpc-bench
 export KUBECONFIG=$HOME/.kube/configs/prod
 make bootstrap SS_NODES="<имя ss-system-узла>"   # роли+taint, namespace, Redis
-make setup-cluster                               # планировщик (релиз CI) + агент
-make trimaran-deps                               # metrics-server — нужен плечу trimaran
+# Учётка реестра — ДО setup-cluster: без неё Docker Hub считает стенд анонимным
+# и режет 100 вытягиваний в час на внешний адрес (общий на все узлы за NAT),
+# из-за чего длинная серия сыплется в ErrImagePull на середине.
+make registry-secret DOCKERHUB_USER=<логин> DOCKERHUB_TOKEN=<токен>
+make setup-cluster                               # планировщик (релиз CI) + агент + load-watcher
+make trimaran-deps                               # metrics-server — его читает load-watcher
 make monitoring-deploy
 ```
 **Проверка:** `make scheduler-status` — под жив, ConfigMap-ы на месте;
 `make monitoring-targets` — все цели up; `kubectl get ds -n
-sensitivityscore-system` — metrics-agent на всех bench-узлах.
+sensitivityscore-system` — metrics-agent на всех bench-узлах;
+`kubectl -n sensitivityscore-bench get sa default -o jsonpath='{.imagePullSecrets}'`
+— учётка реестра прописана (её же проверяет preflight серии).
+
+**Учесть при появлении новых компонентов:** `registry-secret` патчит
+ServiceAccount'ы, которые существуют НА МОМЕНТ запуска. Развернул новый
+компонент — прогони таргет ещё раз.
 
 ## 3. Прогноз A5 — проверить ДО серий
 
@@ -71,8 +81,10 @@ make netcheck-clean
 
 ```bash
 make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/prod   # ТОЛЬКО оверлей
+# Оверлей теперь дефолт, а страж scripts/ch-placement-guard.sh не даст
+# развернуть CH без привязки к ss-system там, где есть измерительные узлы.
 make ch-incluster-status                    # под Running на ss-system, schema-Job Complete
-make ch-forward &                           # localhost:8124 -> in-cluster CH
+make ch-forward   # заодно проверяет NetworkPolicy: port-forward обязан работать &                           # localhost:8124 -> in-cluster CH
 tar xzf ~/phd/sensitivityscore-ch-backup-<дата>.tar.gz -C /tmp
 CH=http://localhost:8124 /tmp/sensitivityscore-ch-backup-<дата>/restore.sh
 ```

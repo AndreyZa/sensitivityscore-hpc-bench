@@ -6,6 +6,7 @@ namespace: sensitivityscore-system
 
 resources:
   - service.yaml
+  - networkpolicy.yaml
   - users.yaml
   - statefulset.yaml
   - schema-job.yaml
