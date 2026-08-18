@@ -90,7 +90,7 @@ make netcheck-clean
 rx+tx), LLC_REFERENCE_MISSES_PER_SEC=735000000 (шторм на wrk-b7; соседние
 узлы при этом ~0 — стенд чист). ~50× против STAGE по LLC — bare-metal.
 
-## 5. In-cluster CH-дубль (обкатано на STAGE 06.08)
+## 5. In-cluster CH — чистый приёмник прода
 
 ```bash
 make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/prod   # ТОЛЬКО оверлей
@@ -98,12 +98,19 @@ make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/prod   # ТОЛЬ�
 # развернуть CH без привязки к ss-system там, где есть измерительные узлы.
 make ch-incluster-status                    # под Running на ss-system, schema-Job Complete
 make ch-forward   # заодно проверяет NetworkPolicy: port-forward обязан работать &                           # localhost:8124 -> in-cluster CH
-tar xzf ~/phd/sensitivityscore-ch-backup-<дата>.tar.gz -C /tmp
-CH=http://localhost:8124 /tmp/sensitivityscore-ch-backup-<дата>/restore.sh
 ```
-**Проверка:** счётчики строк из restore.sh == MANIFEST.txt архива.
+**Проверка:** под Running на ss-system, schema-Job Complete, таблицы пустые
+(`SELECT count()` == 0 в results и baselines).
 `base` вместо оверлея — нельзя: CH сядет на измерительный узел, preflight
 серий его завалит.
+
+**Решение 18.08.2026 — STAGE-историю сюда НЕ восстанавливать.** Ранняя
+редакция ступени (зеркало STAGE-обкатки 06.08) заливала сюда бэкап .72;
+на вводе прода так и сделали — и откатили (TRUNCATE): in-cluster CH держит
+только прод-серии, кросс-стендовый агрегатор и точка правды — CH на .72
+(`ch-analyze`/`axis-costs` ходят именно туда). Restore из архива остаётся
+механизмом disaster-recovery для .72; генерируемый restore.sh с 18.08 умеет
+таблицы, уже созданные schema-Job'ом (CREATE TABLE IF NOT EXISTS).
 
 ## 6. Смоук-серия
 

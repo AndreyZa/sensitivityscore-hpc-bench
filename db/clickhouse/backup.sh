@@ -65,7 +65,13 @@ curl -sS --fail-with-body "$CH/" --data-binary "CREATE DATABASE IF NOT EXISTS $D
 # в коде — иначе новая таблица снова оказалась бы вне восстановления.
 for f in "$here"/*.native; do
   T=$(basename "$f" .native)
-  curl -sS --fail-with-body "$CH/" --data-binary @"$here/$T.sql" >/dev/null   # схема таблицы
+  # Схема таблицы. IF NOT EXISTS обязателен: на проде таблицы к моменту
+  # восстановления уже созданы schema-Job'ом (ступень 5 runbook идёт после
+  # ch-incluster-deploy), и без него restore падает на TABLE_ALREADY_EXISTS
+  # (так и случилось 18.08.2026). Если существующая схема вдруг разойдётся с
+  # бэкапной — это всплывёт ошибкой на INSERT Native ниже, молча не пройдёт.
+  sed '1s/^CREATE TABLE/CREATE TABLE IF NOT EXISTS/' "$here/$T.sql" \
+    | curl -sS --fail-with-body "$CH/" --data-binary @- >/dev/null
   # данные: Native (точно); при несовместимости версий CH — заменить на Parquet
   curl -sS --fail-with-body "$CH/?query=INSERT%20INTO%20$DB.$T%20FORMAT%20Native" \
        --data-binary @"$here/$T.native" >/dev/null
