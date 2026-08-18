@@ -25,7 +25,11 @@ REGISTRY                ?= andreyza
 # `make scheduler-deploy`. v20260802-15fb1db собран из того же исходника,
 # что и прежний v20260714-5c212261 (дифф по входам бинаря пуст — сверено
 # перед переездом), различие только в том, что выпущен конвейером.
-SCHEDULER_RELEASE_VER   ?= v20260802-15fb1db
+# v20260818-8fa10a0: первая загрузка весов теперь логируется всегда — без
+# этого preflight серии (scripts/run-series.sh) валил прогон на исправном
+# планировщике, если веса совпали с дефолтными. Лаба .72 сознательно оставлена
+# на предыдущем теге (её состояние заморожено), прод развернётся уже с этим.
+SCHEDULER_RELEASE_VER   ?= v20260818-8fa10a0
 WORKLOAD_IMAGE          ?= $(REGISTRY)/geant4:11.2
 SCHEDULER_IMAGE         ?= $(REGISTRY)/sensitivityscore:$(SCHEDULER_RELEASE_VER)
 METRICS_AGENT_IMAGE     ?= $(REGISTRY)/metrics-agent:dev

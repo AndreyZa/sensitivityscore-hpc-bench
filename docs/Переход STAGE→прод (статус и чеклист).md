@@ -101,6 +101,15 @@ STAGE-прогонов нет.**
      `node-role.kubernetes.io/ss-system`+toleration (проверено — сел на .5).
      (2) ~~пробел с schema-Job~~ ЗАКРЫТ 07.08: оверлей теперь пинит и Job
      (`job-placement-patch.yaml`), на bench-узлы ничего из CH не садится.
+     (3) ~~миграции мимо развёртывания~~ ЗАКРЫТО 18.08: schema-Job применяет
+     `schema.sql`, а следом `migrations/*.sql` (ConfigMap
+     `clickhouse-migrations`) — раньше на свежем стенде не появлялась,
+     например, `energy_windows`, её накатывали руками через `make ch-migrate`.
+   - **Третий оверлей — `k8s/clickhouse/overlays/lab`** (лаборатория .72,
+     однонодовый k0s): статический hostPath-PV вместо провижионера и hostPort
+     8123 на loopback узла, чтобы `make ch-tunnel` работал как прежде. Это
+     оверлей ИМЕННО для лабы; на прод — только `overlays/prod` (там тома
+     выдаёт local-path-provisioner из `playbooks/storage.yml` провизионера).
 
 ### 3.3 Энергетика (партнёрское)
 - **PDU — РЕШЕНО (06.08): предоставляет партнёр** (скорее всего уже в серверах,
