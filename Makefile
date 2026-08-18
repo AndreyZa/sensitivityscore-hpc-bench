@@ -381,10 +381,13 @@ monitoring-clean: ## Снести стек мониторинга (TSDB в hostP
 	@echo "namespace удалён; данные Prometheus/Grafana остались в /var/lib/sensitivityscore на ss-system"
 
 .PHONY: trimaran-deps
-trimaran-deps: ## Установить metrics-server (нужен профилю trimaran; см. scheduler_variants в harness/config.yaml)
-	# LoadVariationRiskBalancing (плечо A-trimaran) читает утилизацию нод через
-	# metrics-server. На большинстве стендов он уже есть — тогда этот таргет не
-	# нужен. На kind/dev его нет: ставим и патчим --kubelet-insecure-tls (kind
+trimaran-deps: ## Установить metrics-server (нужен load-watcher'у, а через него — плечам trimaran/peaks/packing)
+	# С 17.08.2026 утилизацию узлов читает не сам плагин, а сервис load-watcher
+	# (k8s/scheduler-config/load-watcher.yaml, провайдер KubernetesMetricsServer)
+	# — он и есть потребитель metrics-server; плечи trimaran, peaks и packing
+	# ходят уже в него. На большинстве стендов metrics-server уже есть (у k0s
+	# свой) — тогда этот таргет не нужен.
+	# На kind/dev его нет: ставим и патчим --kubelet-insecure-tls (kind
 	# отдаёт kubelet-метрики по самоподписанному TLS, иначе metrics-server не
 	# стартует Ready). На настоящем стенде патч, как правило, не требуется.
 	$(KUBECTL) apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
