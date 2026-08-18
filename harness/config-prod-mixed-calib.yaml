@@ -1,0 +1,88 @@
+# config-prod-mixed-calib.yaml — ПЕРВАЯ калибровочная серия прода (ступень 8
+# runbook): смешанный трёхвекторный сценарий по образцу stage-mixed-calib,
+# из которого analysis/calibrate_axis_costs.py снимет цены осей (c⁰/cˢ) для
+# этого железа. Ключевое отличие от STAGE-предка: та серия была ПОВТОРОМ с
+# уже калиброванными весами, эта — ИСТОЧНИК калибровки, поэтому score_weights
+# здесь НЕ переопределяются: работает заглушка равных весов из
+# config-prod-base (серия по определению разведочная).
+#
+# После прогона (ступени 7-8 runbook):
+#   make ch-load-all STAND=prod RUN_LABEL=prod-mixed-calib \
+#       RESULTS_FILE=harness/results/results-prod-mixed-calib.parquet \
+#       BASELINES_FILE=harness/results/baselines-prod-mixed-calib.parquet
+#   make axis-costs CH_HOST=localhost     # на .72 поверх локального CH
+#   -> веса вписать в config-prod-base.yaml (score_weights) и в ConfigMap
+#      (make scheduler-apply-config), после чего серии перестают быть
+#      разведочными.
+#
+# Адаптации к железу (3× Dell R760, SMT off -> 64 ядра, 384 ГБ RAM, BOSS SSD):
+#   * дозы жертв — в run-prod-mixed-calib.sh: 28 CPU/28 потоков (влезает
+#     2 задачи на узел при 30 эксклюзивных ядрах на NUMA-домен), 60M частиц
+#     (~4 мин по замеру смоука: 5M = ~19 с);
+#   * дисковый шторм: --hdd-opts dsync ОБЯЗАТЕЛЕН — 384 ГБ page cache
+#     проглатывает буферизованную запись, и без dsync шторм был бы плацебо;
+#     --hdd-bytes 1g (а не 4g смоука): 4 воркера × 2 пода на узле держат
+#     до 8 ГБ живых файлов, а emptyDir агрессора ограничен 8Gi
+#     (aggressor-pod.yaml.j2) — 4g рисковали тихой эвикцией шторма.
+#     ВАЖНО: пилот смоука штормов НЕ гонял, на проде это их первый выход —
+#     после старта серии глазами проверить `kubectl -n sensitivityscore-bench
+#     get pods | grep aggressor` (Running, без OOM/Evicted);
+#   * сетевой шторм: 2 пода × 4000 Мбит/с ≈ 48% реализуемого агрегата
+#     (NET_REFERENCE_MBPS=16718, bond 2×25G) — та же доля, что 2×400 при
+#     референсе 1616 на STAGE;
+#   * high-s-net, как и на STAGE, номинальный (OUTPUT_MODE=none, без sink):
+#     реальный стрим на критическом пути — отдельная серия по образцу
+#     net-diff, здесь профиль различает ДЕКЛАРАЦИИ для плеча SS;
+#   * лимиты агрессоров (в т.ч. 4Gi под stream-буферы, кратные L3 60МБ на
+#     сокет) — уже в секции aggressor базового конфига.
+#
+# Оценка длительности: эталоны 4 профиля × 3 узла × (1 warmup + 3 реп),
+# узлы параллельно ≈ 1.2 ч; серия 3 плеча × 10 реп × 6 жертв ≈ 3.5-4 ч.
+# Запуск: STAND=prod make series SERIES=mixed-calib   (БЕЗ PILOT)
+
+extends: config-prod-base.yaml
+
+profiles:
+  - low-s      # контраст fingerprint; в pressure-потоке не участвует
+  - high-s
+  - high-s-io
+  - high-s-net
+
+pressure_scenarios:
+  - name: mixed3
+    # Жертвы трёх профилей одним потоком (round-robin по прибытию); у каждой
+    # свой токсичный узел — материал для калибровки всех трёх осей разом.
+    victims:
+      - { profile: high-s, count: 2 }      # кэш/membw-шторм (wrk-b6) токсичен
+      - { profile: high-s-io, count: 2 }   # дисковый шторм (wrk-b7) токсичен
+      - { profile: high-s-net, count: 2 }  # сетевой шторм (wrk-b8) номинально токсичен
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    storms:
+      - node: wrk-b6
+        mode: stress
+        args: ["--stream", "2"]
+        per_node: 2
+        toxic_for: [high-s]
+      - node: wrk-b7
+        mode: stress
+        # dsync и 1g — см. шапку (page cache 384 ГБ / emptyDir 8Gi).
+        args: ["--hdd", "4", "--hdd-bytes", "1g", "--hdd-opts", "dsync"]
+        per_node: 2
+        toxic_for: [high-s-io]
+      - node: wrk-b8
+        mode: net
+        per_node: 2
+        net_bitrate_mbps: 4000
+        toxic_for: [high-s-net]
+    # Bare-metal: шторму нужно выйти на режим (page cache, прогрев iperf) —
+    # как в смоуке, дольше STAGE-овских 30 с.
+    stabilize_seconds: 60
+    repetitions: 10
+
+output:
+  results_dir: "results"
+  results_file: "results-prod-mixed-calib.parquet"
+  baselines_file: "baselines-prod-mixed-calib.parquet"
