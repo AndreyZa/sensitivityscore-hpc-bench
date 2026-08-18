@@ -294,7 +294,7 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 			return redisclient.Sample{}, podDeltas{}, false, err
 		}
 		if ok {
-			numaRatio = perf.Ratio(deltas.numaNum, deltas.numaDen)
+			numaRatio = perf.RemoteShare(deltas.numaNum, deltas.numaDen) // num=misses(remote), den=loads(local) — см. perf.RemoteShare
 		}
 	}
 
@@ -531,7 +531,7 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		} else {
 			nodeAgg.LLCMissRate = clamp01(perf.Ratio(nodeDeltas.llcNum, nodeDeltas.llcDen))
 		}
-		nodeAgg.NUMARemoteRatio = clamp01(perf.Ratio(nodeDeltas.numaNum, nodeDeltas.numaDen))
+		nodeAgg.NUMARemoteRatio = clamp01(perf.RemoteShare(nodeDeltas.numaNum, nodeDeltas.numaDen))
 	}
 	ioPressure, psiOK := nodePSI.pressure()
 	nodeAgg.IOPressure = clamp01(ioPressure)

@@ -136,6 +136,28 @@ func Ratio(deltaNum, deltaDen uint64) float64 {
 	return float64(deltaNum) / float64(deltaDen)
 }
 
+// RemoteShare — доля удалённых DRAM-чтений для NUMA-оси:
+// remote / (local + remote), НЕ misses/loads.
+//
+// Причина отдельной формулы — семантика generic node-событий на современных
+// Intel НЕ «misses ⊂ loads»: ground truth на прод-узле (Sapphire Rapids
+// 8462Y+, ядро 6.8, 18.08.2026, perf bench mem memcpy 512MB под numactl):
+//   cpu0+mem0 (локально):  node-loads 11.5M, node-load-misses 27K
+//   cpu0+mem1 (удалённо):  node-loads 4.7K,  node-load-misses 12.9M
+// т.е. node-loads считает ТОЛЬКО локальные чтения, node-load-misses — ТОЛЬКО
+// удалённые: события дизъюнктны. Прежний misses/loads на любом реальном
+// удалённом трафике улетал в тысячи и клампился в 1.0 — ось стояла насыщенной
+// на всех узлах (наблюдалось на проде как вечные 0.99-1.0). На платформах со
+// старой семантикой (loads = все чтения) эта формула занижает (r/(1+r)), но
+// остаётся монотонной и в [0,1); прежняя на SPR не значила ничего.
+func RemoteShare(deltaRemote, deltaLocal uint64) float64 {
+	total := deltaRemote + deltaLocal
+	if total == 0 {
+		return 0
+	}
+	return float64(deltaRemote) / float64(total)
+}
+
 // Close releases both counters and the cgroup fd. Safe to call on a
 // partially-constructed sampler.
 func (s *RatioSampler) Close() {
