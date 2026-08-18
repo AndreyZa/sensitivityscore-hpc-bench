@@ -14,7 +14,12 @@
 # Переменные:
 #   SERIES       какую серию показывать (без неё — дефолтные файлы, см. ниже)
 #   STATUS_PORT  порт на хосте (по умолчанию 8787)
-#   STAND        подпись стенда в шапке страницы
+#   STAND        подпись стенда в шапке страницы (заглавными: STAGE/PROD)
+#   STAND_FILES  стенд в ИМЕНАХ файлов серии (строчными: stage|prod) — лог,
+#                конфиг и отчёт называются <стенд>-<серия>.*; до 18.08.2026
+#                здесь был зашит stage, и на проде страница молча искала
+#                config-stage-smoke.yaml вместо config-prod-smoke.yaml,
+#                показывая «ожидание запуска» при идущей серии
 #   RESULTS/BASELINES  пути к parquet ОТНОСИТЕЛЬНО корня репозитория. Их
 #                передаёт run-series.sh, который берёт имена из секции output
 #                конфига серии — там единственный источник правды. Дефолты
@@ -65,11 +70,11 @@ services:
       # терминале оператора.
       TZ: ${TZ:-Europe/Moscow}
     command:
-      - --log=/repo/harness/stage-${SERIES:-pressure}.log
-      - --config=/repo/harness/config-stage${SERIES:+-${SERIES}}.yaml
-      - --results=/repo/${RESULTS:-harness/results/results-stage${SERIES:+-${SERIES}}.parquet}
-      - --baselines=/repo/${BASELINES:-harness/results/baselines-stage${SERIES:+-${SERIES}}.parquet}
-      - --report=/repo/analysis/report-stage${SERIES:+-${SERIES}}
+      - --log=/repo/harness/${STAND_FILES:-stage}-${SERIES:-pressure}.log
+      - --config=/repo/harness/config-${STAND_FILES:-stage}${SERIES:+-${SERIES}}.yaml
+      - --results=/repo/${RESULTS:-harness/results/results-${STAND_FILES:-stage}${SERIES:+-${SERIES}}.parquet}
+      - --baselines=/repo/${BASELINES:-harness/results/baselines-${STAND_FILES:-stage}${SERIES:+-${SERIES}}.parquet}
+      - --report=/repo/analysis/report-${STAND_FILES:-stage}${SERIES:+-${SERIES}}
       - --scope=full
       - --stand=${STAND:-STAGE}
     # Страница переживает перезагрузку хоста и падение процесса. Гасить её

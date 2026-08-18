@@ -173,6 +173,7 @@ STATUS_PORT='$3'
 RESULTS='$4'
 BASELINES='$5'
 KUBECONFIG='$6'
+STAND_FILES='$7'
 EOF
 }
 
@@ -236,6 +237,10 @@ status_page_up() {
     # уже всегда задан, а страница показывает его как есть.
     local stand_up
     stand_up=$(printf %s "$STAND" | tr "[:lower:]" "[:upper:]")
+    # Отдельная копия для префикса compose-команды: там STAND="$stand_up"
+    # выполняется раньше, и STAND_FILES="$STAND" увидел бы уже ЗАГЛАВНОЕ
+    # значение (присваивания в префиксе идут слева направо).
+    local stand_files=$STAND
 
     # Идемпотентность: функцию зовут и start(), и сам harness/run-stage-<имя>.sh
     # (чтобы страница поднималась и при ручном запуске скрипта серии). Если
@@ -247,7 +252,7 @@ status_page_up() {
        && docker inspect ss-status --format '{{json .Args}}' 2>/dev/null \
           | grep -q -- "$logpat" \
        && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
-        status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg"
+        status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
         ok "статус-страница уже поднята: http://localhost:$port"
         return 0
     fi
@@ -255,7 +260,7 @@ status_page_up() {
     # Вывод сборки НЕ в /dev/null: при провале build compose выходит, не
     # тронув контейнеры, и на порту продолжает жить страница прошлой серии —
     # WARN и работающая страница одновременно читаются как «ложная тревога».
-    if ! SERIES="$cseries" STAND="$stand_up" STATUS_PORT="$port" \
+    if ! SERIES="$cseries" STAND="$stand_up" STAND_FILES="$stand_files" STATUS_PORT="$port" \
          RESULTS="$results" BASELINES="$baselines" KUBECONFIG="$kcfg" \
          docker compose -f statusserver/docker-compose.yaml up -d --build \
          > "$buildlog" 2>&1; then
@@ -289,7 +294,7 @@ status_page_up() {
         echo "      docker compose -f statusserver/docker-compose.yaml down && повторить"
         return 0
     fi
-    status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg"
+    status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
     ok "статус-страница: http://localhost:$port"
 }
 
