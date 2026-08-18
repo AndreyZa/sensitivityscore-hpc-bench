@@ -75,12 +75,20 @@ make perfcheck-clean
 
 ```bash
 make netcheck-run && make netcheck-logs      # -> NET_REFERENCE_MBPS
-# LLC_REFERENCE_MISSES_PER_SEC — из perfcheck ступени 3 (§1а аудита)
+# LLC_REFERENCE_MISSES_PER_SEC — это llc_misses_per_sec УЗЛА ПОД ЭТАЛОННЫМ
+# ШТОРМОМ (2 пода aggressor --stream 2 на одном bench-узле; см. «Ввод
+# прод-стенда (Этап 0)» и Методику), НЕ число из perfcheck. Снять: поды
+# шторма -> 45с -> Prometheus ss_node_llc_misses_per_sec{node=<шторм>}.
+# ВАЖНО: mem_limit агрессора на проде 4Gi — stream-буферы кратны L3 (60МБ
+# на сокет у 8462Y+), со STAGE-лимитом 512Mi поды падают OOMKilled.
 make calibration-apply NET_REFERENCE_MBPS=<N> LLC_REFERENCE_MISSES_PER_SEC=<M>
 make netcheck-clean
 ```
 **Проверка:** `make calibration-show` — оба значения непустые (пустой Net =
 ось выключена; пустой LLC = сырой инвертирующий ratio).
+**Выполнено 18.08.2026:** NET_REFERENCE_MBPS=16718 (bond 2×25G, realizable
+rx+tx), LLC_REFERENCE_MISSES_PER_SEC=735000000 (шторм на wrk-b7; соседние
+узлы при этом ~0 — стенд чист). ~50× против STAGE по LLC — bare-metal.
 
 ## 5. In-cluster CH-дубль (обкатано на STAGE 06.08)
 
