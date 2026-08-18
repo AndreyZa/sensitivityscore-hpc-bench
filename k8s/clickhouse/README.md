@@ -10,23 +10,35 @@ ClickHouse внутри кластера как приёмник результ�
 StatefulSet ОБЯЗАН стоять на **системной ноде** (`node-role.kubernetes.io/
 ss-system`, taint NoSchedule), не на измерительных: инсерты/мержи CH едят
 CPU/IO и загрязнили бы LLC/IO/Net-метрики эксперимента. Это делает
-prod-overlay; base — без placement (для теста).
+prod-overlay (он же дефолт `CH_KUSTOMIZE`); base — без placement, только для
+dev и только явным указанием; lab — оверлей однонодовой лаборатории .72.
 
 ## Деплой
 
 ```bash
-# тест на docker-desktop / dev (без ограничений по нодам):
-make ch-incluster-deploy                                   # CH_KUSTOMIZE=k8s/clickhouse/base
-# прод (пин на ss-system):
-make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/prod
+# прод — он же ДЕФОЛТ (пин на ss-system):
+make ch-incluster-deploy
+# лаборатория .72 (однонодовый k0s: hostPath-том + hostPort на loopback):
+make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/overlays/lab
+# dev/docker-desktop, без ограничений по узлам — только ЯВНО:
+make ch-incluster-deploy CH_KUSTOMIZE=k8s/clickhouse/base
 
 make ch-incluster-status
 make ch-incluster-clean            # ВНИМАНИЕ: удаляет PVC с данными
 ```
 
+Дефолт — прод-оверлей намеренно: `base` не пинит CH ни к какому узлу, и на
+стенде он молча сел бы на измерительный. Обратный промах (прод-оверлей на
+dev-кластере без роли ss-system) безобиден и виден сразу — под висит Pending.
+Сверх дефолта деплой сторожит `scripts/ch-placement-guard.sh`: если в кластере
+есть узлы с ролью bench, а в рендере StatefulSet или Job без привязки к
+ss-system — таргет отказывает (обход: `CH_ALLOW_UNPINNED=1`).
+
 Таргет создаёт namespace, ConfigMap `clickhouse-schema` из
 `db/clickhouse/schema.sql`, применяет kustomize. Schema-Job ждёт готовности
-CH и накатывает таблицы (results + baselines).
+CH и накатывает таблицы (`schema.sql`: results + baselines), а следом
+миграции из `db/clickhouse/migrations/*.sql` (ConfigMap `clickhouse-migrations`,
+оттуда же берётся, например, `energy_windows`).
 
 ## Доступ
 

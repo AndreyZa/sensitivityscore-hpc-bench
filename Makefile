@@ -1015,11 +1015,19 @@ paper-check: venv-analysis ## Сверить несущие числа стат�
 
 # --- In-cluster ClickHouse (StatefulSet на системной ноде; см. k8s/clickhouse) ---
 CH_INCLUSTER_NS ?= sensitivityscore-system
-# Прод: k8s/clickhouse/overlays/prod (комментарий отдельной строкой — см. выше).
-CH_KUSTOMIZE    ?= k8s/clickhouse/base
+# ДЕФОЛТ — прод-оверлей, а не base. base не пинит CH ни к какому узлу: на
+# стенде он сел бы на измерительный узел, загрязнил LLC/IO-метрики серии и
+# завалил preflight, причём тихо. Промах в другую сторону безобиден и
+# нагляден: на dev-кластере без роли ss-system под просто повиснет Pending.
+# Лаба .72 — свой оверлей: CH_KUSTOMIZE=k8s/clickhouse/overlays/lab.
+# База как таковая (без размещения) — только для dev, явным указанием.
+CH_KUSTOMIZE    ?= k8s/clickhouse/overlays/prod
 
 .PHONY: ch-incluster-deploy
-ch-incluster-deploy: ## Развернуть in-cluster ClickHouse (CH_KUSTOMIZE=base|k8s/clickhouse/overlays/prod)
+ch-incluster-deploy: ## Развернуть in-cluster ClickHouse (CH_KUSTOMIZE=k8s/clickhouse/overlays/{prod,lab}|k8s/clickhouse/base)
+	# Страховка от размещения CH на измерительном узле — не полагаемся на то,
+	# что оверлей указали правильно (обход: CH_ALLOW_UNPINNED=1).
+	KUBECTL="$(KUBECTL)" ./scripts/ch-placement-guard.sh $(CH_KUSTOMIZE)
 	$(KUBECTL) create namespace $(CH_INCLUSTER_NS) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n $(CH_INCLUSTER_NS) create configmap clickhouse-schema \
 		--from-file=schema.sql=db/clickhouse/schema.sql --dry-run=client -o yaml | $(KUBECTL) apply -f -
