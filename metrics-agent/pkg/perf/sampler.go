@@ -142,8 +142,10 @@ func Ratio(deltaNum, deltaDen uint64) float64 {
 // Причина отдельной формулы — семантика generic node-событий на современных
 // Intel НЕ «misses ⊂ loads»: ground truth на прод-узле (Sapphire Rapids
 // 8462Y+, ядро 6.8, 18.08.2026, perf bench mem memcpy 512MB под numactl):
-//   cpu0+mem0 (локально):  node-loads 11.5M, node-load-misses 27K
-//   cpu0+mem1 (удалённо):  node-loads 4.7K,  node-load-misses 12.9M
+//
+//	cpu0+mem0 (локально):  node-loads 11.5M, node-load-misses 27K
+//	cpu0+mem1 (удалённо):  node-loads 4.7K,  node-load-misses 12.9M
+//
 // т.е. node-loads считает ТОЛЬКО локальные чтения, node-load-misses — ТОЛЬКО
 // удалённые: события дизъюнктны. Прежний misses/loads на любом реальном
 // удалённом трафике улетал в тысячи и клампился в 1.0 — ось стояла насыщенной
