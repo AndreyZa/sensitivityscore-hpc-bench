@@ -35,11 +35,30 @@ spec:
                 echo "ждём сервис clickhouse..."; sleep 3;
               done
               clickhouse-client --host clickhouse --multiquery < /schema/schema.sql
+              # Миграции — вторым шагом и в лексикографическом порядке (001,
+              # 002, 003...). Без них свежий стенд получал схему БЕЗ таблиц и
+              # колонок, добавленных после первой версии schema.sql: например
+              # energy_windows (003) не появлялась нигде, кроме стендов, где
+              # миграции накатывали руками через `make ch-migrate`. Все
+              # миграции идемпотентны (IF NOT EXISTS), повтор безвреден.
+              for m in /schema/migrations/*.sql; do
+                [ -e "$m" ] || continue
+                echo "миграция: $(basename "$m")"
+                clickhouse-client --host clickhouse --multiquery < "$m"
+              done
               echo "схема применена:"; clickhouse-client --host clickhouse -q "SHOW TABLES FROM sensitivityscore"
           volumeMounts:
             - name: schema
               mountPath: /schema
+            - name: migrations
+              mountPath: /schema/migrations
       volumes:
         - name: schema
           configMap:
             name: clickhouse-schema
+        # Отдельный ConfigMap, а не ключи в clickhouse-schema: ключи одного
+        # ConfigMap плоские, и миграции подмешались бы к schema.sql в одном
+        # каталоге — glob по /schema/*.sql зацепил бы схему второй раз.
+        - name: migrations
+          configMap:
+            name: clickhouse-migrations

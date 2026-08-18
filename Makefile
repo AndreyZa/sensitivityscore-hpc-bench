@@ -270,6 +270,15 @@ scheduler-undeploy: ## Убрать Deployment планировщика и ег�
 deploy-metrics-agent: ## Развернуть DaemonSet metrics-agent
 	$(KUBECTL) apply -f metrics-agent/deploy/daemonset.yaml
 
+.PHONY: deploy-load-watcher
+deploy-load-watcher: ## Развернуть load-watcher (утилизация узлов для плечей trimaran/peaks/packing)
+	# До 18.08.2026 этот манифест не разворачивал НИ ОДИН таргет: на стенде он
+	# оказывался только руками, а без него все три load-aware плеча молча
+	# вырождаются в «без различения» (коллектор в планировщике не падает, а
+	# отдаёт всем узлам минимальный балл).
+	$(KUBECTL) apply -f k8s/scheduler-config/load-watcher.yaml
+	$(KUBECTL) -n $(NAMESPACE) rollout status deploy/load-watcher --timeout=180s
+
 .PHONY: net-sink-deploy
 net-sink-deploy: ## Развернуть sink-приёмник сетевого вывода high-s-net (OUTPUT_MODE=stream)
 	$(KUBECTL) apply -f k8s/net-sink/sink.yaml
@@ -511,7 +520,7 @@ netcheck-clean: ## Убрать поды и Service netcheck
 # ($(REGISTRY)), кластер пуллит их сам (imagePullPolicy: Always). См.
 # image-workload-push / scheduler-plugin-image / image-metrics-agent.
 .PHONY: setup-cluster
-setup-cluster: bootstrap scheduler-deploy deploy-metrics-agent ## Подготовка кластера: namespace+Redis, планировщик, агент (образы уже в Docker Hub)
+setup-cluster: bootstrap scheduler-deploy deploy-metrics-agent deploy-load-watcher ## Подготовка кластера: namespace+Redis, планировщик, агент, load-watcher (образы уже в Docker Hub)
 
 # ---------------------------------------------------------------------------
 # Отладка планировщика: логи, статус, правка метрик/весов "на лету"
@@ -1007,6 +1016,12 @@ ch-incluster-deploy: ## Развернуть in-cluster ClickHouse (CH_KUSTOMIZE
 	$(KUBECTL) create namespace $(CH_INCLUSTER_NS) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) -n $(CH_INCLUSTER_NS) create configmap clickhouse-schema \
 		--from-file=schema.sql=db/clickhouse/schema.sql --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	# Миграции едут тем же путём, что и схема, и применяются schema-Job'ом
+	# следом за ней: до 18.08.2026 они не входили НИ В ОДИН путь развёртывания
+	# (ни сюда, ни в provision), и на свежем стенде не было, например, таблицы
+	# energy_windows — её приходилось накатывать вручную через `make ch-migrate`.
+	$(KUBECTL) -n $(CH_INCLUSTER_NS) create configmap clickhouse-migrations \
+		--from-file=db/clickhouse/migrations --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) apply -k $(CH_KUSTOMIZE)
 
 .PHONY: ch-incluster-status

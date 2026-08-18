@@ -24,17 +24,26 @@ trap 'rm -rf "$WORK"' EXIT
 q(){ curl -sS --fail-with-body "$CH/?database=$DB" --data-binary "$1"; }
 
 VER=$(curl -sS --fail-with-body "$CH/" --data-binary 'SELECT version()')
-RES_N=$(q 'SELECT count() FROM results')
-BAS_N=$(q 'SELECT count() FROM baselines')
+
+# Список таблиц берём ИЗ БАЗЫ, а не зашиваем: до 18.08.2026 здесь были жёстко
+# прописаны results и baselines, поэтому energy_windows (миграция 003, данные
+# энерговетки) в бэкап не попадала вовсе — молча, без единого предупреждения.
+# Любая будущая таблица теперь подхватывается сама.
+TABLES=$(q "SELECT name FROM system.tables WHERE database = '$DB' AND engine NOT LIKE '%View' ORDER BY name FORMAT TSV")
+[ -n "$TABLES" ] || { echo "в БД '$DB' нет таблиц — нечего бэкапить"; exit 1; }
+
+COUNTS=""
+for T in $TABLES; do
+  N=$(q "SELECT count() FROM $T")
+  COUNTS="$COUNTS  $T=$N"
+done
 LABELS=$(q "SELECT groupUniqArray(run_label) FROM (SELECT run_label FROM results UNION ALL SELECT run_label FROM baselines)")
 
-echo "CH $VER @ $CH | results=$RES_N baselines=$BAS_N"
+echo "CH $VER @ $CH |$COUNTS"
 
 # DDL по таблице (по одному стейтменту — HTTP выполняет по одному запросу)
-q 'SHOW CREATE TABLE results FORMAT TSVRaw'   > "$BK/results.sql"
-q 'SHOW CREATE TABLE baselines FORMAT TSVRaw' > "$BK/baselines.sql"
-
-for T in results baselines; do
+for T in $TABLES; do
+  q "SHOW CREATE TABLE $T FORMAT TSVRaw" > "$BK/$T.sql"
   q "SELECT * FROM $T FORMAT Native"  > "$BK/$T.native"
   q "SELECT * FROM $T FORMAT Parquet" > "$BK/$T.parquet"
 done
@@ -52,7 +61,10 @@ DB=sensitivityscore
 here="$(cd "$(dirname "$0")" && pwd)"
 echo "CH=$CH  DB=$DB"
 curl -sS --fail-with-body "$CH/" --data-binary "CREATE DATABASE IF NOT EXISTS $DB" >/dev/null
-for T in results baselines; do
+# Набор таблиц восстановления задаёт сам архив (файлы *.native), а не список
+# в коде — иначе новая таблица снова оказалась бы вне восстановления.
+for f in "$here"/*.native; do
+  T=$(basename "$f" .native)
   curl -sS --fail-with-body "$CH/" --data-binary @"$here/$T.sql" >/dev/null   # схема таблицы
   # данные: Native (точно); при несовместимости версий CH — заменить на Parquet
   curl -sS --fail-with-body "$CH/?query=INSERT%20INTO%20$DB.$T%20FORMAT%20Native" \
@@ -69,24 +81,24 @@ cat > "$BK/MANIFEST.txt" <<MAN
 Бэкап ClickHouse БД '$DB' — исследование SensitivityScore
 Дата бэкапа : $DATE
 Источник    : $CH, сервер ClickHouse $VER
-Таблицы     : results ($RES_N строк, RAW со всеми версиями ReplacingMergeTree)
-              baselines ($BAS_N строк)
+Таблицы     :$COUNTS
+              (строки RAW, со всеми версиями ReplacingMergeTree)
 Метки серий : $LABELS
 
 Провенанс (stand/run_label/commit/config/weights) — внутри строк: дамп
 самодостаточен для воспроизведения отчётов.
 
-СОДЕРЖИМОЕ:
-  results.sql / baselines.sql   — DDL (SHOW CREATE TABLE)
-  results.native / *.native     — данные, формат ClickHouse Native (точное восстановление)
-  results.parquet / *.parquet   — те же данные, Parquet (переносимо; хедж при version skew)
-  restore.sh                    — восстановление (CREATE DB + DDL + INSERT Native)
+СОДЕРЖИМОЕ (по одному комплекту на каждую таблицу выше):
+  <таблица>.sql       — DDL (SHOW CREATE TABLE)
+  <таблица>.native    — данные, формат ClickHouse Native (точное восстановление)
+  <таблица>.parquet   — те же данные, Parquet (переносимо; хедж при version skew)
+  restore.sh          — восстановление (CREATE DB + DDL + INSERT Native)
 
 ВОССТАНОВЛЕНИЕ:
   CH=http://<host>:8123 ./restore.sh
   затем сверить счётчики строк с этим файлом.
   Проверка после FINAL схлопывания версий:
-    SELECT count() FROM $DB.results   -- ожидаемо <= $RES_N (RAW), уникальных меньше
+    SELECT count() FROM $DB.results   -- ожидаемо <= RAW-числа выше, уникальных меньше
 MAN
 
 # --- ВЕРИФИКАЦИЯ: развернуть во временную БД на том же сервере, сверить, снести ---
@@ -95,7 +107,7 @@ TDB=${DB}_bkptest
 curl -sS "$CH/" --data-binary "DROP DATABASE IF EXISTS $TDB" >/dev/null
 curl -sS "$CH/" --data-binary "CREATE DATABASE $TDB" >/dev/null
 ok=1
-for T in results baselines; do
+for T in $TABLES; do
   curl -sS "$CH/" --data-binary "CREATE TABLE $TDB.$T AS $DB.$T" >/dev/null
   curl -sS "$CH/?query=INSERT%20INTO%20$TDB.$T%20FORMAT%20Native" --data-binary @"$BK/$T.native" >/dev/null
   got=$(curl -sS "$CH/" --data-binary "SELECT count() FROM $TDB.$T")

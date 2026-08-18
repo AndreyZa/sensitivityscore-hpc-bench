@@ -58,6 +58,15 @@ spec:
     metadata:
       labels: {app: load-watcher}
     spec:
+      # Системный компонент — там же, где redis и планировщик: на измерительных
+      # узлах ему делать нечего (посторонний процесс шумит в LLC/IO, а preflight
+      # серии считает такой под нарушением чистоты стенда).
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
       serviceAccountName: load-watcher
       containers:
         - name: load-watcher
