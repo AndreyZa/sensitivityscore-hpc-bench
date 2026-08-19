@@ -89,6 +89,14 @@ spec:
             # (ss_agent_rapl_zones=0), это штатно.
             - name: RAPL_SYSFS_ROOT
               value: "/host/sys/class/powercap"
+            # Порог валидности numa-оси (события node-loads+node-load-misses
+            # в секунду): ниже него доля remote считается от фоновых чтений
+            # ядра/разделяемых страниц и не значит ничего — зонд 19.08.2026
+            # на кэш-резидентной жертве дал ~7К соб/с при «remote 0.97»
+            # (§C5 аудита). Настоящий DRAM-трафик — миллионы соб/с. Значение
+            # совпадает с дефолтом агента; "0" отключает гейт.
+            - name: NUMA_MIN_DRAM_EVENTS_PER_SEC
+              value: "100000"
           volumeMounts:
             # NOTE: no /host/proc mount — hostPID: true already makes the
             # container's own /proc show every host process (net.go reads

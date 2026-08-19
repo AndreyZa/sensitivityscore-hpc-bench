@@ -83,6 +83,16 @@ func main() {
 			"(inverts under streaming load; calibrate via llc_misses_per_sec under a reference storm)")
 	}
 
+	// Порог валидности numa-оси: доля remote имеет смысл только при заметном
+	// DRAM-трафике (perf.RemoteShareGated; зонд 19.08.2026 в §C5 аудита).
+	numaMinEventsPerSec = numaMinEventsFromEnv()
+	if numaMinEventsPerSec > 0 {
+		log.Printf("numa gate: NUMA_MIN_DRAM_EVENTS_PER_SEC=%.0f — numa_remote_ratio=0 below this node-event rate", numaMinEventsPerSec)
+	} else {
+		log.Printf("WARNING: numa gate disabled (NUMA_MIN_DRAM_EVENTS_PER_SEC=0) — cache-resident pods " +
+			"report a meaningless remote share from background-noise denominators")
+	}
+
 	writer := redisclient.NewWriter(redisAddr, redisTTL)
 	defer writer.Close()
 
@@ -242,6 +252,10 @@ var (
 	numaEventsUnavailableWarned bool
 )
 
+// numaMinEventsPerSec — порог валидности numa-оси (NUMA_MIN_DRAM_EVENTS_PER_SEC,
+// выставляется один раз в main до старта тикера; см. numaMinEventsFromEnv).
+var numaMinEventsPerSec float64
+
 func (ps *podSampler) close() {
 	if ps.llc != nil {
 		ps.llc.Close()
@@ -294,7 +308,11 @@ func (ps *podSampler) sample(cgroupPath string, syntheticLLC float64) (redisclie
 			return redisclient.Sample{}, podDeltas{}, false, err
 		}
 		if ok {
-			numaRatio = perf.RemoteShare(deltas.numaNum, deltas.numaDen) // num=misses(remote), den=loads(local) — см. perf.RemoteShare
+			// num=misses(remote), den=loads(local) — см. perf.RemoteShare;
+			// гейт по скорости событий отсекает вырожденный режим
+			// кэш-резидентных подов (perf.RemoteShareGated).
+			numaRatio = perf.RemoteShareGated(deltas.numaNum, deltas.numaDen,
+				now.Sub(ps.lastTS).Seconds(), numaMinEventsPerSec)
 		}
 	}
 
@@ -531,7 +549,16 @@ func sampleOnce(ctx context.Context, clientset *kubernetes.Clientset, writer *re
 		} else {
 			nodeAgg.LLCMissRate = clamp01(perf.Ratio(nodeDeltas.llcNum, nodeDeltas.llcDen))
 		}
-		nodeAgg.NUMARemoteRatio = clamp01(perf.RemoteShare(nodeDeltas.numaNum, nodeDeltas.numaDen))
+		// Тот же гейт, что на пер-подовой доле: узел без DRAM-трафика
+		// (простой, кэш-резидентные жертвы) пишет честный 0, а не долю
+		// фоновых чтений ядра. Сырая скорость публикуется рядом — по ней
+		// видно, в каком режиме узел (см. help гейджа).
+		nodeAgg.NUMARemoteRatio = clamp01(perf.RemoteShareGated(
+			nodeDeltas.numaNum, nodeDeltas.numaDen, elapsed.Seconds(), numaMinEventsPerSec))
+		if elapsed > 0 {
+			exporter.SetNUMADRAMEventsPerSec(
+				float64(nodeDeltas.numaNum+nodeDeltas.numaDen) / elapsed.Seconds())
+		}
 	}
 	ioPressure, psiOK := nodePSI.pressure()
 	nodeAgg.IOPressure = clamp01(ioPressure)
@@ -636,6 +663,25 @@ func llcReferenceFromEnv() float64 {
 			"measured via the llc_misses_per_sec node field under a reference storm)", v)
 	}
 	return mps
+}
+
+// numaMinEventsFromEnv читает NUMA_MIN_DRAM_EVENTS_PER_SEC — порог валидности
+// numa-оси (см. perf.RemoteShareGated): ниже этой скорости node-событий доля
+// remote считается от мусорного знаменателя (кэш-резидентная нагрузка, зонд
+// 19.08.2026: ~7К соб/с при «remote 0.97») и ось честно пишет 0. Дефолт 100К
+// соб/с — на 3+ порядка ниже настоящего DRAM-трафика и на порядок выше фона.
+// Явный "0" отключает гейт (поведение до 19.08); кривое значение — падаем
+// громко, как с остальными калибровками.
+func numaMinEventsFromEnv() float64 {
+	v := os.Getenv("NUMA_MIN_DRAM_EVENTS_PER_SEC")
+	if v == "" {
+		return 100_000
+	}
+	rate, err := strconv.ParseFloat(v, 64)
+	if err != nil || rate < 0 {
+		log.Fatalf("invalid NUMA_MIN_DRAM_EVENTS_PER_SEC: %q (want events/s >= 0; 0 disables the gate)", v)
+	}
+	return rate
 }
 
 func sampleIntervalFromEnv() time.Duration {

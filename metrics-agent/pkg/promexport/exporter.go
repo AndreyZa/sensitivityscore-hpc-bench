@@ -39,6 +39,7 @@ type Exporter struct {
 	llcMissRate     prometheus.Gauge
 	llcMissesPerSec prometheus.Gauge
 	numaRemoteRatio prometheus.Gauge
+	numaDRAMRate    prometheus.Gauge
 	netBW           prometheus.Gauge
 	netPressure     prometheus.Gauge
 	ioIOPS          prometheus.Gauge
@@ -104,7 +105,15 @@ func New(nodeName string) *Exporter {
 				"obtain LLC_REFERENCE_MISSES_PER_SEC."),
 		numaRemoteRatio: gauge("ss_node_numa_remote_ratio",
 			"Share of DRAM reads served by a remote NUMA node, [0,1]. Stays 0 where the CPU has no kernel "+
-				"mapping for node-level cache events (single-NUMA STAGE nodes included)."),
+				"mapping for node-level cache events (single-NUMA STAGE nodes included), AND when the node's "+
+				"DRAM read rate is below NUMA_MIN_DRAM_EVENTS_PER_SEC: a cache-resident workload makes a few "+
+				"thousand node events/s of kernel/shared-page background whose remote share is meaningless "+
+				"(measured 0.97 on an idle pinned victim, 19.08.2026). Check ss_node_numa_dram_events_per_sec "+
+				"to see which regime the node is in."),
+		numaDRAMRate: gauge("ss_node_numa_dram_events_per_sec",
+			"Raw node-loads+node-load-misses per second summed over pods - the denominator behind "+
+				"ss_node_numa_remote_ratio. Below NUMA_MIN_DRAM_EVENTS_PER_SEC the ratio is gated to 0; "+
+				"genuine DRAM-bound traffic (stream storm, memcpy) runs millions of events/s."),
 		netBW: gauge("ss_node_net_bw_bytes_per_second",
 			"Raw node rx+tx rate in bytes/s, summed over pods. Analysis-side activity metric - additive, "+
 				"always recorded regardless of calibration."),
@@ -192,6 +201,10 @@ func (e *Exporter) SetPSIAvailable(ok bool) { e.psiAvailable.Set(b2f(ok)) }
 // SetRAPLZones — сколько powercap-зон агент реально читает (0 = RAPL на узле
 // нет: ВМ или нет прав). Выставляется один раз на старте, по итогам Discover.
 func (e *Exporter) SetRAPLZones(n int) { e.raplZones.Set(float64(n)) }
+
+// SetNUMADRAMEventsPerSec publishes the node's raw DRAM-read event rate — the
+// validity context for the gated numa_remote_ratio (see the gauge help).
+func (e *Exporter) SetNUMADRAMEventsPerSec(rate float64) { e.numaDRAMRate.Set(rate) }
 
 // AddRAPLJoules накапливает прирост энергии зоны. Counter, а не Gauge с сырым
 // energy_uj: sysfs-счётчик переполняется (диапазон max_energy_range_uj), и

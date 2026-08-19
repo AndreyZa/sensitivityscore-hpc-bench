@@ -160,6 +160,25 @@ func RemoteShare(deltaRemote, deltaLocal uint64) float64 {
 	return float64(deltaRemote) / float64(total)
 }
 
+// RemoteShareGated — RemoteShare с порогом минимального DRAM-трафика: доля
+// remote имеет смысл только когда чтений из DRAM вообще заметное количество.
+// Кэш-резидентная нагрузка (зонд 19.08.2026 на wrk-b6: Guaranteed Geant4,
+// 28 ядер, память на 94% локальная) даёт ~7 тыс. node-событий/с — и «долю
+// remote 0.97» от мусорного знаменателя: считанные события — фоновые чтения
+// ядра/разделяемых страниц, а не память задачи. Настоящий DRAM-трафик
+// (stream-шторм, memcpy) — миллионы событий/с и выше, зазор к вырожденному
+// режиму — 3+ порядка, поэтому порог не режет ничего настоящего. Ниже порога
+// давление честно 0 — та же политика, что у net-оси без калибровки.
+func RemoteShareGated(deltaRemote, deltaLocal uint64, elapsedSeconds, minEventsPerSec float64) float64 {
+	if elapsedSeconds <= 0 {
+		return 0
+	}
+	if float64(deltaRemote+deltaLocal)/elapsedSeconds < minEventsPerSec {
+		return 0
+	}
+	return RemoteShare(deltaRemote, deltaLocal)
+}
+
 // Close releases both counters and the cgroup fd. Safe to call on a
 // partially-constructed sampler.
 func (s *RatioSampler) Close() {
