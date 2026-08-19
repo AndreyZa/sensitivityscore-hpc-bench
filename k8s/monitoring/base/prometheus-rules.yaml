@@ -6,7 +6,11 @@ metadata:
 data:
   stand.yaml: |
     # Alertmanager намеренно НЕ развёрнут (экономия ~80 Mi на 2-ГБ ss-system):
-    # правила всё равно вычисляются и видны в Prometheus /alerts и в Grafana.
+    # правила всё равно вычисляются, и с 19.08.2026 сработавшие видны в Grafana
+    # без открытия Prometheus — панель «Активные алерты» на дашборде
+    # «Стенд — инфраструктура» (запрос ALERTS{alertstate="firing"}). До неё
+    # правила формально работали, но посмотреть их результат было негде, а
+    # Prometheus снаружи не публикуется: коллегам отдан только порт Grafana.
     # Смысл этих правил — не «дежурство», а защита от МОЛЧАЛИВО НЕВЕРНЫХ
     # СЕРИЙ: почти всё ниже описывает состояние, при котором стенд продолжает
     # писать цифры, но цифры уже нельзя нести в диссертацию.
@@ -262,6 +266,40 @@ data:
             labels: {severity: critical}
             annotations:
               summary: "ClickHouse недоступен — результаты кампании некуда складывать"
+
+          - alert: SSClickHouseInsertsFailing
+            # Отказ вставки = потерянная точка серии. Харнесс пишет результат
+            # один раз и дальше идёт к следующей точке.
+            expr: increase(ClickHouseProfileEvents_FailedInsertQuery[15m]) > 0
+            labels: {severity: critical}
+            annotations:
+              summary: "ClickHouse отбивает вставки"
+              description: "Строки результатов не доезжают. Смотреть system.errors и место на диске ss-system."
+
+          - alert: SSClickHouseTooManyParts
+            # Классический предвестник отказа вставок в MergeTree: слияния не
+            # успевают за вставками, и при ~300 кусках на партицию CH начинает
+            # отбивать INSERT'ы. Порог с запасом — чинить надо заранее.
+            expr: ClickHouseAsyncMetrics_MaxPartCountForPartition > 200
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "ClickHouse: {{ $value }} кусков в партиции"
+
+          - alert: SSClickHouseSystemLogsFat
+            # Тонкость размещения: том CH — local-path, то есть hostPath, и
+            # запрошенные 5Gi НЕ ограничивают ничего — CH видит весь 100-ГБ
+            # диск ss-system, где рядом лежит TSDB Prometheus. Системные
+            # таблицы самого CH (query_log, trace_log, part_log) растут без
+            # TTL и на 19.08.2026 занимали 93 МБ из 93 МБ всех MergeTree —
+            # то есть данные исследования на их фоне почти невидимы. Правило
+            # ловит момент, когда журналы CH начинают отъедать общий диск.
+            expr: ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem > 5e9
+            for: 30m
+            labels: {severity: warning}
+            annotations:
+              summary: "Системные таблицы ClickHouse заняли >5 ГБ"
+              description: "Это журналы самого CH, а не результаты. Лечится TTL на system.*_log либо TRUNCATE."
 
           - alert: SSEnergyPollStale
             # Именно этот случай и маскирует pushgateway: он продолжает

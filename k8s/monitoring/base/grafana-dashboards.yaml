@@ -607,6 +607,155 @@ data:
             }
           },
           "id": 16
+        },
+        {
+          "type": "row",
+          "title": "Диагностика сбора: чего не было видно",
+          "id": 17,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 29
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Мультиплексирование PMU",
+          "id": 18,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 0,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (node) (ss_agent_pmu_multiplex_ratio{node=~\"$node\"})",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "description": "1.0 = все группы событий читались всё время. Меньше единицы означает, что ядро делило счётчики по времени и агент ЭКСТРАПОЛИРОВАЛ значения: LLC и NUMA становятся оценкой, а не измерением. Правило SSPMUMultiplexed следит за этим же, но панели до 19.08.2026 не было — сработавший алерт нельзя было посмотреть глазами."
+        },
+        {
+          "type": "timeseries",
+          "title": "Ошибки сэмплирования, в минуту",
+          "id": 19,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 6,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (node) (rate(ss_agent_sample_errors_total{node=~\"$node\"}[5m])) * 60",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "description": "Неудачные проходы агента: пропавший cgroup пода, отказ perf_event_open, недоступный /sys. Пропущенный тик — это дырка в осях ровно там, где шёл прогон. Метрика не была ни на одной панели и ни в одном правиле."
+        },
+        {
+          "type": "timeseries",
+          "title": "Ошибки записи в Redis, в минуту",
+          "id": 20,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 12,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (node) (rate(ss_agent_redis_write_errors_total{node=~\"$node\"}[5m])) * 60",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "description": "Агент посчитал оси, но не смог положить их в Redis — планировщик скорит по протухшему ключу (TTL 30s). Правило SSRedisWriteErrors есть, панели не было."
+        },
+        {
+          "type": "timeseries",
+          "title": "NUMA: события DRAM — знаменатель оси",
+          "id": 21,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 18,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (node) (ss_node_numa_dram_events_per_sec{node=~\"$node\"})",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "description": "Ось NUMA считается как remote/(local+remote) — это её знаменатель. При малом потоке событий DRAM отношение шумит на пустом месте, и «высокая доля удалённых обращений» может оказаться делением единиц на единицы. Смотреть вместе с панелью NUMA remote ratio выше."
         }
       ],
       "annotations": {
@@ -1009,6 +1158,271 @@ data:
             }
           },
           "id": 11
+        },
+        {
+          "type": "row",
+          "title": "Сбор данных: следим за самим мониторингом",
+          "id": 12,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 29
+          }
+        },
+        {
+          "type": "table",
+          "title": "Активные алерты",
+          "id": 13,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "expr": "ALERTS{alertstate=\"firing\"}"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true,
+                  "alertstate": true
+                }
+              }
+            }
+          ],
+          "description": "Alertmanager намеренно не развёрнут, поэтому это ЕДИНСТВЕННОЕ место, где сработавшее правило видно без открытия Prometheus. Пустая таблица = ни одно из правил не активно. Смысл правил стенда — не дежурство, а защита от молчаливо неверных серий: почти каждое описывает состояние, при котором цифры продолжают писаться, но нести их в диссертацию уже нельзя."
+        },
+        {
+          "type": "table",
+          "title": "Недоступные цели",
+          "id": 14,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 30
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "expr": "up == 0"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true
+                }
+              }
+            }
+          ],
+          "description": "«Нет метрики» — это не «метрика плохая»: панели по замолчавшей цели просто пусты, а алерты по ней вечно неактивны, что неотличимо от «всё хорошо». Метрик etcd на этом стенде не было месяцами именно так. Пустая таблица здесь — норма."
+        },
+        {
+          "type": "stat",
+          "title": "Рядов в TSDB",
+          "id": 15,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 5,
+            "x": 0,
+            "y": 38
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "prometheus_tsdb_head_series"
+            }
+          ],
+          "description": "Резкий рост = кто-то добавил метку с высокой кардинальностью (метки Job'ов серии — типичный источник; поэтому у kube-state-metrics стоит закрытый allowlist на две метки харнесса)."
+        },
+        {
+          "type": "stat",
+          "title": "Объём TSDB на диске",
+          "id": 16,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 5,
+            "x": 5,
+            "y": 38
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 45000000000.0
+                  },
+                  {
+                    "color": "red",
+                    "value": 57000000000.0
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "prometheus_tsdb_storage_blocks_bytes"
+            }
+          ],
+          "description": "Прод хранит год при потолке 60 ГБ. На потолке retention.size начнёт удалять САМЫЕ СТАРЫЕ блоки — то есть историю первых серий кампании, а не свежие данные."
+        },
+        {
+          "type": "stat",
+          "title": "Отставание последнего скрейпа",
+          "id": 17,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 10,
+            "y": 38
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 120
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(time() - timestamp(up))"
+            }
+          ],
+          "description": "Худшая цель по свежести. Растёт, если Prometheus не успевает опрашивать всё за интервал."
+        },
+        {
+          "type": "timeseries",
+          "title": "Длительность скрейпа, максимум по job",
+          "id": 18,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 10,
+            "x": 14,
+            "y": 38
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (job) (scrape_duration_seconds)",
+              "legendFormat": "{{job}}"
+            }
+          ],
+          "description": "Приближение к scrape_interval (30s, у агента 10s) означает, что цель скоро начнёт таймаутиться и в данных появятся дырки. cAdvisor на 128-поточных узлах — первый кандидат."
         }
       ],
       "annotations": {
@@ -1111,6 +1525,127 @@ data:
             {"color": "red", "value": null}, {"color": "green", "value": 5}
           ]}}, "overrides": []},
           "targets": [{"refId": "A", "expr": "min(ss_agent_rapl_zones{node=~\"wrk-.*\"})"}]
+        },
+        {
+          "type": "row",
+          "title": "Входы блоков питания",
+          "id": 9,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 18
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Мощность по входам БП",
+          "id": 10,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 16,
+            "x": 0,
+            "y": 19
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "idrac_psu_input_watts",
+              "legendFormat": "{{node}} / {{psu}}"
+            }
+          ],
+          "description": "Вход КАЖДОГО БП по отдельности — то, что понадобится для сверки с банками PDU, когда партнёр даст карту розеток. На 19.08.2026 картина такая: PS1 несёт нагрузку (240–270 Вт), PS2 стоит в дежурке ~5 Вт. Для карты розеток суммировать оба входа: они воткнуты в разные розетки и, возможно, в разные банки."
+        },
+        {
+          "type": "stat",
+          "title": "Сумма входов PSU по стойке",
+          "id": 11,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 16,
+            "y": 19
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(idrac_psu_input_watts)"
+            }
+          ],
+          "description": "Ближайшая к розетке величина, которую стенд знает сам. С Metered-PDU (AP8853) сверять можно только на уровне суммы узлов или банка — по-розеточного учёта у этой модели нет."
+        },
+        {
+          "type": "stat",
+          "title": "Потери БП (вход − система)",
+          "id": 12,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 20,
+            "y": 19
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(idrac_psu_input_watts) - sum(idrac_power_watts)"
+            }
+          ],
+          "description": "Разность входа БП и потребления системы: КПД блоков плюс дежурное питание второго БП. Отрицательное значение означало бы рассогласование сенсоров, то есть недоверие инструменту (критерий Э0.4)."
         }
       ],
       "annotations": {"list": []},
@@ -2384,8 +2919,1557 @@ data:
           "id": 31,
           "options": {
             "mode": "markdown",
-            "content": "Дашборд собирает **три источника**, и это важно понимать, глядя на цифры.\n\n1. **С самих ВМ** (node_exporter, ставится ролью `nodeexporter` провизионера): железо и\n   состояние службы `k0scontroller`. Контроллеры k0s работают без kubelet, поэтому в\n   `kubectl get nodes` их нет и обычный мониторинг узлов до них не достаёт.\n2. **С etcd** (порт 2381): fsync WAL, лидер, размер БД. Слушатель открыт конфигом k0s\n   (`storage.etcd.extraArgs.listen-metrics-urls`) — по умолчанию k0s держит его на localhost,\n   и до 19.08.2026 этих метрик не было вовсе.\n3. **С apiserver, планировщика и controller-manager**: очереди, задержки, коды ответов.\n\nЕсли панели etcd, планировщика или controller-manager пусты — на этом стенде ещё не применён\nконфиг k0s, открывающий их слушатели: цели будут DOWN в Prometheus. Применяется вместе с\nперезапуском контроллеров, то есть в окно между кампаниями.\n\nПланировщик стенда `sensitivityscore` здесь НЕ показан — он работает подом и живёт на своём\nдашборде вместе с осями чувствительности."
+            "content": "Дашборд собирает **три источника**, и это важно понимать, глядя на цифры.\n\n1. **С самих ВМ** (node_exporter, ставится ролью `nodeexporter` провизионера): железо и\n   состояние службы `k0scontroller`. Контроллеры k0s работают без kubelet, поэтому в\n   `kubectl get nodes` их нет и обычный мониторинг узлов до них не достаёт.\n2. **С etcd** (порт 2381): fsync WAL, лидер, размер БД. Слушатель открыт конфигом k0s\n   (`storage.etcd.extraArgs.listen-metrics-urls`) — по умолчанию k0s держит его на localhost,\n   и до 19.08.2026 этих метрик не было вовсе.\n3. **С apiserver, планировщика и controller-manager**: очереди, задержки, коды ответов.\n\nЕсли панели etcd, планировщика или controller-manager пусты — на этом стенде ещё не применён\nконфиг k0s, открывающий их слушатели: цели будут DOWN в Prometheus. Применяется вместе с\nперезапуском контроллеров, то есть в окно между кампаниями.\n\nПланировщик стенда `sensitivityscore` здесь НЕ показан — он работает подом и живёт на\nотдельном дашборде «Планировщик — плечи и стоимость» (uid ss-scheduler), где разложен по\nчетырём профилям-плечам."
           }
         }
       ]
     }
+  # Дашборд 5 — сам планировщик стенда. Появился 19.08.2026, и до него метрик
+  # нашего бинаря не снимал никто: job kube-scheduler в prometheus-configmap
+  # смотрит на ВСТРОЕННЫЙ планировщик k0s на контроллерах, поэтому в проде
+  # scheduler_schedule_attempts_total существовал ровно с одним значением
+  # profile="default-scheduler". Стоимость плеча — половина утверждения работы,
+  # и она была ненаблюдаема.
+  scheduler.json: |
+    {
+      "uid": "ss-scheduler",
+      "title": "Планировщик — плечи и стоимость",
+      "tags": [
+        "sensitivityscore",
+        "scheduler"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Состояние",
+          "id": 1,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Планировщик на связи",
+          "id": 2,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "up{job=\"sensitivityscore-scheduler\"}"
+            }
+          ],
+          "description": "Скрейп идёт по https с bearer-токеном пода Prometheus; планировщик проверяет запрос делегированием в apiserver. Ноль здесь = цель DOWN, а не обязательно «планировщик умер» — сверять с рестартами на дашборде инфраструктуры."
+        },
+        {
+          "type": "stat",
+          "title": "Плеч активно",
+          "id": 3,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 4
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(count by (profile) (scheduler_schedule_attempts_total{job=\"sensitivityscore-scheduler\"}))"
+            }
+          ],
+          "description": "Профилей, которые хоть раз что-то планировали. Ожидается 4: sensitivityscore, trimaran, peaks, packing. Счётчик накопительный, поэтому после перезапуска пода плечо появляется здесь только с первым прошедшим через него подом."
+        },
+        {
+          "type": "stat",
+          "title": "Подов в очереди",
+          "id": 4,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 10
+                  },
+                  {
+                    "color": "red",
+                    "value": 50
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(scheduler_pending_pods{job=\"sensitivityscore-scheduler\"})"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Неудачных попыток за час",
+          "id": 5,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(scheduler_schedule_attempts_total{job=\"sensitivityscore-scheduler\", result!=\"scheduled\"}[1h]))"
+            }
+          ],
+          "description": "result=unschedulable (нет подходящего узла) или error. На кампании ненулевое значение означает, что часть точек плана ждала места дольше, чем считала."
+        },
+        {
+          "type": "stat",
+          "title": "Вытеснений за сутки",
+          "id": 6,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(scheduler_preemption_attempts_total{job=\"sensitivityscore-scheduler\"}[24h]))"
+            }
+          ],
+          "description": "Вытеснение на стенде — аномалия: жертвы Guaranteed и идут на заранее освобождённый узел. Ненулевое значение ставит под вопрос изоляцию прогона."
+        },
+        {
+          "type": "stat",
+          "title": "Кэш планировщика",
+          "id": 7,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(scheduler_cache_size{job=\"sensitivityscore-scheduler\"})"
+            }
+          ],
+          "description": "Узлы + поды + предположения в кэше. Резкий обвал = переподписка watch. Именно на этом пути жил баг с надгробием в OnDelete (паника валила процесс целиком, со всеми плечами), починен 19.08.2026."
+        },
+        {
+          "type": "row",
+          "title": "Плечи: результат и стоимость",
+          "id": 10,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 6
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Успешных планирований в минуту, по плечам",
+          "id": 11,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 7
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (profile) (rate(scheduler_schedule_attempts_total{job=\"sensitivityscore-scheduler\", result=\"scheduled\"}[5m])) * 60",
+              "legendFormat": "{{profile}}"
+            }
+          ],
+          "description": "Профиль = schedulerName в манифесте Job'а (SCHEDULER_NAME_BY_CONFIG в k8s_submit.py). Разложение кампании по плечам видно прямо здесь."
+        },
+        {
+          "type": "timeseries",
+          "title": "Исходы попыток, по плечам",
+          "id": 12,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 7
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (profile, result) (rate(scheduler_schedule_attempts_total{job=\"sensitivityscore-scheduler\"}[5m])) * 60",
+              "legendFormat": "{{profile}} / {{result}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Задержка попытки планирования, p99 по плечам",
+          "id": 13,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 15
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (profile, le) (rate(scheduler_scheduling_attempt_duration_seconds_bucket{job=\"sensitivityscore-scheduler\"}[5m])))",
+              "legendFormat": "{{profile}}"
+            }
+          ],
+          "description": "Полный цикл попытки: фильтры + скоринг + резервирование + bind. Верхняя граница «сколько стоит плечо» с точки зрения задержки постановки задачи."
+        },
+        {
+          "type": "timeseries",
+          "title": "Время в точке Score, p99 по плечам",
+          "id": 14,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 15
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (profile, le) (rate(scheduler_framework_extension_point_duration_seconds_bucket{job=\"sensitivityscore-scheduler\", extension_point=\"Score\"}[5m])))",
+              "legendFormat": "{{profile}}"
+            }
+          ],
+          "description": "Главная панель сравнения накладных расходов. Точка расширения Score меряется целиком и НЕ сэмплируется — в отличие от панели по отдельным плагинам ниже. Здесь SensitivityScore (чтение Redis) честно сопоставим с Trimaran/Peaks/Packing (чтение load-watcher)."
+        },
+        {
+          "type": "table",
+          "title": "Средняя стоимость Score на под, по плечам (окно 30 мин)",
+          "id": 15,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 23
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Value"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 6
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "expr": "sum by (profile) (rate(scheduler_framework_extension_point_duration_seconds_sum{job=\"sensitivityscore-scheduler\", extension_point=\"Score\"}[30m])) / sum by (profile) (rate(scheduler_framework_extension_point_duration_seconds_count{job=\"sensitivityscore-scheduler\", extension_point=\"Score\"}[30m]))"
+            }
+          ],
+          "description": "Ровно то число, которое просится в таблицу накладных расходов: среднее время скоринга одного пода каждым плечом, в секундах. Смотреть на окне, когда кампания реально шла — на простое пусто."
+        },
+        {
+          "type": "timeseries",
+          "title": "Время в точках расширения, p99 (все плечи)",
+          "id": 16,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 23
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (extension_point, le) (rate(scheduler_framework_extension_point_duration_seconds_bucket{job=\"sensitivityscore-scheduler\"}[5m])))",
+              "legendFormat": "{{extension_point}}"
+            }
+          ],
+          "description": "Куда вообще уходит время цикла. Если Score теряется на фоне PreBind/Bind — накладные расходы плеча несущественны, и это тоже результат."
+        },
+        {
+          "type": "row",
+          "title": "Плагины",
+          "id": 20,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 31
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Оценок плагина в секунду, по плечу",
+          "id": 21,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 32
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (profile, plugin) (rate(scheduler_plugin_evaluation_total{job=\"sensitivityscore-scheduler\", extension_point=\"Score\"}[5m]))",
+              "legendFormat": "{{profile}} / {{plugin}}"
+            }
+          ],
+          "description": "Счётчик считает вызовы ПО УЗЛАМ: один под на трёх bench-узлах даёт +3. Метрика не сэмплируется, поэтому по ней видно, что плагин плеча действительно участвовал в решении, а не был молча отключён конфигом."
+        },
+        {
+          "type": "timeseries",
+          "title": "Длительность плагина, p99 — ВЫБОРКА 10%",
+          "id": 22,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 32
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (plugin, le) (rate(scheduler_plugin_execution_duration_seconds_bucket{job=\"sensitivityscore-scheduler\", extension_point=\"Score\"}[10m])))",
+              "legendFormat": "{{plugin}}"
+            }
+          ],
+          "description": "ВАЖНО: kube-scheduler пишет эту гистограмму лишь для ~10% циклов планирования (pluginMetricsSamplePercent), и метки profile у неё НЕТ. На коротком прогоне часть плагинов здесь просто отсутствует — это выборка, а не «плагин не работал». Для сравнения плеч брать панель «Время в точке Score»."
+        },
+        {
+          "type": "row",
+          "title": "Очередь и события",
+          "id": 30,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 40
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Очереди планировщика",
+          "id": 31,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 41
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "scheduler_pending_pods{job=\"sensitivityscore-scheduler\"}",
+              "legendFormat": "{{queue}}"
+            }
+          ],
+          "description": "active — готовы к попытке; backoff — ждут после неудачи; unschedulable — не нашли узел; gated — задержаны PreEnqueue."
+        },
+        {
+          "type": "timeseries",
+          "title": "Приток подов в очередь",
+          "id": 32,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 41
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (event) (rate(scheduler_queue_incoming_pods_total{job=\"sensitivityscore-scheduler\"}[5m])) * 60",
+              "legendFormat": "{{event}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Обработка watch-событий, p99",
+          "id": 33,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 41
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, sum by (event, le) (rate(scheduler_event_handling_duration_seconds_bucket{job=\"sensitivityscore-scheduler\"}[5m])))",
+              "legendFormat": "{{event}}"
+            }
+          ],
+          "description": "Обработка событий от apiserver. Этот путь и ломался при надгробиях в OnDelete: обработчик получал DeletedFinalStateUnknown вместо пода и ронял процесс."
+        },
+        {
+          "type": "text",
+          "title": "Как этим пользоваться",
+          "id": 40,
+          "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 48
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "**Что здесь показано.** Это НАШ планировщик — под `sensitivityscore-scheduler` в `sensitivityscore-system`, один процесс с четырьмя профилями. Встроенный планировщик k0s на контроллерах живёт на дашборде «Control plane — ВМ и API» и с этими цифрами не смешивается: у него job `kube-scheduler` и единственный профиль `default-scheduler`.\n\n**Профиль = плечо эксперимента.** Метка `profile` — это `schedulerName` из манифеста Job'а, поэтому «сравнить стоимость плеч» здесь буквально: одна панель, четыре линии.\n\n**Что можно нести в текст, а что нет.** Точка расширения `Score` меряется в каждом цикле (панели «Время в точке Score» и «Средняя стоимость Score на под») — это надёжные числа. Гистограмма по отдельным плагинам сэмплируется на 10% и не знает профиля: годится посмотреть порядок величины, но не для таблицы в статье.\n\n**На простое панели пусты.** Счётчики нарастают только когда через планировщик идут поды; между кампаниями пустота — норма, а не поломка."
+          }
+        }
+      ],
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "graphTooltip": 1,
+      "links": [],
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "version": 1
+    }
+
+  # Дашборд 6 — путь данных эксперимента: прогоны серии (объекты Job) и
+  # хранилище, куда стекаются результаты. Оба конца этого пути были вне
+  # мониторинга: kube_job_* не использовала ни одна панель, а ClickHouse не
+  # скрейпился вовсе.
+  campaign.json: |
+    {
+      "uid": "ss-campaign",
+      "title": "Кампания и хранилище",
+      "tags": [
+        "sensitivityscore",
+        "campaign"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {
+        "from": "now-12h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Прогоны серии",
+          "id": 1,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Активных прогонов",
+          "id": 2,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_job_status_active{namespace=\"sensitivityscore-bench\"})"
+            }
+          ],
+          "description": "Job'ы в неймспейсе серии. Харнесс удаляет Job после снятия результата, поэтому это «прямо сейчас в полёте», а не «всего за кампанию»."
+        },
+        {
+          "type": "stat",
+          "title": "Точек завершено",
+          "id": 3,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_job_status_succeeded{namespace=\"sensitivityscore-bench\"})"
+            }
+          ],
+          "description": "Считается по живым объектам Job. Харнесс их подчищает (cleanup в k8s_submit.py), так что число падает по ходу кампании — точка правды по прогонам всё равно ClickHouse, а не эта панель."
+        },
+        {
+          "type": "stat",
+          "title": "Упало",
+          "id": 4,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_job_status_failed{namespace=\"sensitivityscore-bench\"})"
+            }
+          ],
+          "description": "backoffLimit=0, поэтому любое падение — потерянная точка плана, а не ретрай."
+        },
+        {
+          "type": "stat",
+          "title": "Подов серии на узлах",
+          "id": 5,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(kube_pod_info{namespace=\"sensitivityscore-bench\"})"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Старейший активный прогон",
+          "id": 6,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(time() - (kube_job_created{namespace=\"sensitivityscore-bench\"} and on (job_name, namespace) (kube_job_status_active{namespace=\"sensitivityscore-bench\"} > 0)))"
+            }
+          ],
+          "description": "Зависший прогон виден здесь раньше, чем в логе харнесса: тот ждёт условия Complete и молчит."
+        },
+        {
+          "type": "stat",
+          "title": "ClickHouse на связи",
+          "id": 7,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 1
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "up{job=\"clickhouse\"}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Активные прогоны по плечам",
+          "id": 10,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 6
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (label_sensitivityscore_phd_profile) (kube_job_status_active{namespace=\"sensitivityscore-bench\"} * on (job_name, namespace) group_left(label_sensitivityscore_phd_profile) kube_job_labels{namespace=\"sensitivityscore-bench\"})",
+              "legendFormat": "{{label_sensitivityscore_phd_profile}}"
+            }
+          ],
+          "description": "Метки Job'ов экспортируются kube-state-metrics только по явному allowlist (--metric-labels-allowlist); до 19.08.2026 kube_job_labels был пуст, и такого разреза не существовало."
+        },
+        {
+          "type": "timeseries",
+          "title": "Поды серии по узлам",
+          "id": 11,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 6
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count by (node) (kube_pod_info{namespace=\"sensitivityscore-bench\"})",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "description": "Куда планировщик реально раскладывает жертвы. Перекос на один узел при простаивающих остальных — это либо задумка плеча (packing/peaks консолидируют), либо признак того, что оси чувствительности молчат и все узлы получают одинаковый score."
+        },
+        {
+          "type": "table",
+          "title": "Точек плана завершено: конфигурация × плечо",
+          "id": 12,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 13
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "expr": "sum by (label_sensitivityscore_phd_config, label_sensitivityscore_phd_profile) (kube_job_status_succeeded{namespace=\"sensitivityscore-bench\"} * on (job_name, namespace) group_left(label_sensitivityscore_phd_config, label_sensitivityscore_phd_profile) kube_job_labels{namespace=\"sensitivityscore-bench\"})"
+            }
+          ],
+          "description": "Живая раскладка кампании по плану. Пусто, если Job'ы уже подчищены харнессом."
+        },
+        {
+          "type": "timeseries",
+          "title": "Прогоны заканчиваются, в час",
+          "id": 13,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 13
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(kube_job_status_succeeded{namespace=\"sensitivityscore-bench\"}[1h]))",
+              "legendFormat": "успешно"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(increase(kube_job_status_failed{namespace=\"sensitivityscore-bench\"}[1h]))",
+              "legendFormat": "с ошибкой"
+            }
+          ],
+          "description": "Темп кампании: по нему прикидывается, когда серия дойдёт до конца."
+        },
+        {
+          "type": "row",
+          "title": "ClickHouse — точка правды чисел",
+          "id": 20,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 20
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Данные исследования",
+          "id": 21,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables - ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem"
+            }
+          ],
+          "description": "Все таблицы MergeTree минус системные. Именно этот объём и есть результаты серий; он мал (десятки-сотни МБ) — числа компактные."
+        },
+        {
+          "type": "stat",
+          "title": "Журналы самого CH",
+          "id": 22,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 4,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 5000000000.0
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem"
+            }
+          ],
+          "description": "system.query_log / trace_log / part_log. Растут без TTL и на 19.08.2026 занимали практически весь объём MergeTree — то есть данные исследования на их фоне почти невидимы. Это не ошибка, но диск они съедают общий."
+        },
+        {
+          "type": "stat",
+          "title": "Свободно на томе CH",
+          "id": 23,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 8,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_DiskAvailable_default"
+            }
+          ],
+          "description": "ВНИМАНИЕ: это свободное место на ДИСКЕ ss-system, а не в PVC. Том выдаёт local-path, то есть hostPath, и запрошенные 5Gi ничего не ограничивают — CH видит весь диск узла, где рядом лежит TSDB Prometheus."
+        },
+        {
+          "type": "stat",
+          "title": "Кусков в партиции, максимум",
+          "id": 24,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 12,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 200
+                  },
+                  {
+                    "color": "red",
+                    "value": 300
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_MaxPartCountForPartition"
+            }
+          ],
+          "description": "При ~300 кусках MergeTree начинает отбивать INSERT'ы: слияния не успевают за вставками. Для харнесса это потерянные точки плана."
+        },
+        {
+          "type": "stat",
+          "title": "Аптайм CH",
+          "id": 25,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 16,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_Uptime"
+            }
+          ],
+          "description": "Обнуление = перезапуск пода. Данные на PVC переживают его, но идущая заливка результатов — нет."
+        },
+        {
+          "type": "stat",
+          "title": "Память CH",
+          "id": 26,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 20,
+            "y": 21
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseAsyncMetrics_MemoryResident"
+            }
+          ],
+          "description": "Лимит пода — 2 ГиБ. Приближение = риск OOMKill посреди заливки."
+        },
+        {
+          "type": "timeseries",
+          "title": "Вставлено строк в секунду",
+          "id": 27,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 0,
+            "y": 26
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(ClickHouseProfileEvents_InsertedRows[5m])",
+              "legendFormat": "строк/с"
+            }
+          ],
+          "description": "Прямой признак того, что результаты кампании доезжают. Ноль при активных прогонах = заливка встала (ch-load / энергоокна)."
+        },
+        {
+          "type": "timeseries",
+          "title": "Запросы в секунду по типам",
+          "id": 28,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 8,
+            "y": 26
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(ClickHouseProfileEvents_SelectQuery[5m])",
+              "legendFormat": "SELECT"
+            },
+            {
+              "refId": "B",
+              "expr": "rate(ClickHouseProfileEvents_InsertQuery[5m])",
+              "legendFormat": "INSERT"
+            },
+            {
+              "refId": "C",
+              "expr": "rate(ClickHouseProfileEvents_FailedQuery[5m])",
+              "legendFormat": "с ошибкой"
+            },
+            {
+              "refId": "D",
+              "expr": "rate(ClickHouseProfileEvents_FailedInsertQuery[5m])",
+              "legendFormat": "вставка с ошибкой"
+            }
+          ],
+          "description": "Отдельная линия под неудачные вставки не для симметрии: отказ INSERT — это молча потерянная строка результата."
+        },
+        {
+          "type": "timeseries",
+          "title": "Слияния и куски",
+          "id": 29,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 26
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ClickHouseMetrics_Merge",
+              "legendFormat": "слияний в полёте"
+            },
+            {
+              "refId": "B",
+              "expr": "ClickHouseAsyncMetrics_LongestRunningMerge",
+              "legendFormat": "самое долгое, с"
+            },
+            {
+              "refId": "C",
+              "expr": "ClickHouseAsyncMetrics_TotalPartsOfMergeTreeTables",
+              "legendFormat": "кусков всего"
+            }
+          ],
+          "description": "ReplacingMergeTree дедуплицирует строки именно слияниями, поэтому «слияния встали» = дубли в выборках держатся дольше обычного (сверять с canonical_numbers)."
+        },
+        {
+          "type": "text",
+          "title": "Что здесь можно и нельзя считать правдой",
+          "id": 30,
+          "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 33
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "**Прогоны.** Панели серии строятся на объектах Job, а харнесс их **удаляет** после снятия результата (`cleanup` в `harness/submit/k8s_submit.py`). Поэтому это картина «что идёт сейчас», а не журнал кампании. Журнал — таблицы ClickHouse, и там же точка правды всех чисел (`analysis/canonical_numbers.py --recompute`).\n\n**Разрез по плечам** появляется из `kube_job_labels`: метки объектов kube-state-metrics экспортирует только по явному allowlist, и он ограничен двумя метками харнесса (`sensitivityscore.phd/config`, `sensitivityscore.phd/profile`) — метки Job'ов иначе разносят кардинальность TSDB на каждую точку плана.\n\n**Том ClickHouse — не 5 ГБ.** PVC запрошен на 5Gi, но выдаёт его `local-path`, то есть hostPath, и квоты там нет: CH видит весь диск ss-system, на котором рядом лежит TSDB Prometheus. Занятость тома через kubelet посмотреть нельзя вовсе — `kubelet_volume_stats_*` для hostPath не публикуются, поэтому все дисковые панели здесь идут из самого CH."
+          }
+        }
+      ],
+      "annotations": {
+        "list": []
+      },
+      "editable": true,
+      "graphTooltip": 1,
+      "links": [],
+      "fiscalYearStartMonth": 0,
+      "weekStart": "",
+      "version": 1
+    }
+

@@ -302,6 +302,14 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+        metric_relabel_configs:
+          # CH отдаёт 2879 семейств (1380 ProfileEvents + 661 код ошибки +
+          # 521 Metrics + ...), и почти все — безлейбловые одиночные ряды.
+          # Оставить всё = ~6 ГБ TSDB в год ради полутора десятков панелей
+          # при потолке хранилища 60 ГБ. Держим закрытый список.
+          - source_labels: [__name__]
+            action: keep
+            regex: ClickHouse(AsyncMetrics_(Disk(Used|Total|Available)_default|TotalBytesOfMergeTreeTables(System)?|TotalPartsOfMergeTreeTables(System)?|MaxPartCountForPartition|LongestRunningMerge|MemoryResident|Uptime)|Metrics_(Query|Merge|MemoryTracking|TCPConnection|HTTPConnection|ReadonlyReplica|BackgroundMergesAndMutationsPoolTask)|ProfileEvents_((Select|Insert|Failed|FailedInsert)?Query|Inserted(Rows|Bytes)|MergedRows|SelectedRows|QueryTimeMicroseconds))
 
       # --- metrics-agent: оси чувствительности ----------------------------
       # Отдельная job с ЧАСТЫМ интервалом. Причина — разрешение по времени, а
