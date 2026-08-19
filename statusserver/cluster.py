@@ -37,6 +37,26 @@ def _kubectl(args: list[str], timeout: int = KUBECTL_TIMEOUT_SECONDS) -> tuple[b
         return False, "", str(e)
 
 
+def _mem_human(quantity: str) -> str:
+    """K8s-quantity памяти («378848116Ki») -> человеческое «361.3 ГиБ».
+
+    Сырые кибибайты в таблице узлов нечитаемы (замечание пользователя
+    19.08.2026). Непонятный формат возвращается как есть — честнее сырого
+    числа, чем молчаливый ноль."""
+    mult = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
+            "K": 1000, "M": 1000**2, "G": 1000**3, "T": 1000**4}
+    for suf, m in sorted(mult.items(), key=lambda kv: -len(kv[0])):
+        if quantity.endswith(suf):
+            try:
+                return f"{float(quantity[:-len(suf)]) * m / 1024**3:.1f} ГиБ"
+            except ValueError:
+                return quantity
+    try:
+        return f"{float(quantity) / 1024**3:.1f} ГиБ"   # голые байты
+    except ValueError:
+        return quantity
+
+
 def stand_info(label: str = "") -> dict:
     """API-сервер + ноды кластера. Кэш на STAND_TTL_SECONDS — не дёргать API
     каждые 10с; подпись стенда подставляется поверх кэша при каждом вызове.
@@ -83,7 +103,8 @@ def stand_info(label: str = "") -> dict:
         data["bench"] = bench
 
         data["nodes"] = [
-            [row[0], ("bench" if row[0] in set(bench) else "система")] + row[1:]
+            [row[0], ("bench" if row[0] in set(bench) else "система")]
+            + row[1:-1] + [_mem_human(row[-1])]
             for row in rows if row
         ] or list(prev.get("nodes") or [])
         if problems:
