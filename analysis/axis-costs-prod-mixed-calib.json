@@ -1,0 +1,72 @@
+{
+  "source": "clickhouse",
+  "coefficients": {
+    "gamma": 0.0027,
+    "alpha_llc": 0.0138,
+    "beta_llc": 0.0,
+    "alpha_io": 0.0,
+    "beta_io": 1.3074,
+    "alpha_net": 0.0088,
+    "beta_net": 0.0005,
+    "intercept_mixed3": 0.0016,
+    "r2": 0.6375
+  },
+  "ci95": {
+    "gamma": [
+      0.0001,
+      0.0071
+    ],
+    "alpha_llc": [
+      0.0118,
+      0.0163
+    ],
+    "beta_llc": [
+      0.0,
+      0.0
+    ],
+    "alpha_io": [
+      0.0,
+      0.0271
+    ],
+    "beta_io": [
+      1.0146,
+      1.5853
+    ],
+    "alpha_net": [
+      0.0058,
+      0.012
+    ],
+    "beta_net": [
+      0.0,
+      0.0092
+    ],
+    "intercept_mixed3": [
+      0.0,
+      0.0027
+    ],
+    "r2": [
+      0.4459,
+      0.7769
+    ]
+  },
+  "weights_only": {
+    "llc": 0.01,
+    "io": 1.0,
+    "net": 0.01,
+    "numa": 0.0
+  },
+  "base_plus_sensitivity": {
+    "llc": {
+      "base": 0.014,
+      "sensitivity": 0.0
+    },
+    "io": {
+      "base": 0.0,
+      "sensitivity": 1.307
+    },
+    "net": {
+      "base": 0.009,
+      "sensitivity": 0.001
+    }
+  }
+}
