@@ -199,7 +199,8 @@ def submit_job(
         profile=profile,
         namespace=namespace,
         scheduler_name=scheduler_name,
-        image=cfg["images"]["workload"],
+        # Пер-профильный образ (ML-жертва) поверх общего workload-образа серии.
+        image=spec.image or cfg["images"]["workload"],
         env=spec.env,
         sensitivity=spec.sensitivity,
         resources=spec.resources,

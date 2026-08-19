@@ -37,6 +37,11 @@ class ProfileSpec:
     env: dict[str, str]
     sensitivity: Sensitivity
     resources: dict[str, str]
+    # Образ профиля; None = общий workload-образ серии (cfg["images"]["workload"]).
+    # Появился 19.08.2026 под ML-жертву (llc/membw-чувствительный класс, который
+    # Geant4/TestEm5 дать не может — кэш-резидентен, см. комментарий ниже);
+    # поддержан k8s-бекендом, slurm_submit образов не знает (ML-профили k8s-only).
+    image: str | None = None
 
 
 # ВАЖНО про PHYSICS_LIST (найдено 19.08.2026 зондами на проде): бинарь
@@ -193,6 +198,32 @@ PROFILES: dict[str, ProfileSpec] = {
             "memory_request": _ov("high-s-io", "MEM_REQ", "4Gi"),
             "memory_limit": _ov("high-s-io", "MEM_LIM", "6Gi"),
         },
+    ),
+    # ML-жертва (введена 19.08.2026, рекалибровка v2): батч-инференс
+    # ResNet50 fp32 в ONNX Runtime — N_INFER инференсов и выход, ложится в
+    # makespan-модель харнесса как обычный job. Единственный профиль с
+    # НАСТОЯЩИМ DRAM-трафиком (замер на wrk-b6: 49М DRAM-чтений/с против
+    # ~7К у кэш-резидентного Geant4) — представляет llc/membw/numa-чувстви-
+    # тельный класс, который TestEm5 дать не может. Образ свой (mlprobe,
+    # собран 07.08 по доке ML-направления), k8s-only. Дозы прода: 28
+    # потоков = ядра одного NUMA-домена (Guaranteed => пиннинг), соло
+    # ~199 инференсов/с на 28 ядрах => N_INFER=40000 ~ 3.5 мин.
+    # ВНИМАНИЕ (двухсокетная ловушка, зонд 19.08): плавающий шторм жертву
+    # НЕ задевает — шторма для этой оси обязаны целить сокет жертвы
+    # (--taskset CPU её домена / --mbind её домен памяти).
+    "ml-inference": ProfileSpec(
+        env={
+            "ORT_THREADS": _ov("ml-inference", "THREADS", "28"),
+            "N_INFER": _ov("ml-inference", "N_INFER", "40000"),
+            "N_WARMUP": _ov("ml-inference", "N_WARMUP", "20"),
+        },
+        sensitivity=Sensitivity(llc="high", numa="high", net="low", io="low"),
+        resources={
+            "cpu": _ov("ml-inference", "CPU", "28"),
+            "memory_request": _ov("ml-inference", "MEM_REQ", "16Gi"),
+            "memory_limit": _ov("ml-inference", "MEM_LIM", "16Gi"),
+        },
+        image="andreyza/mlprobe:dev",
     ),
 }
 
