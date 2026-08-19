@@ -37,6 +37,7 @@ PROVENANCE_COLUMNS = (
     "calibration",
     "score_weights",
     "profile_overrides",
+    "bios_profile",
 )
 
 
@@ -144,6 +145,57 @@ def score_weights(namespace: str, configmap: str = "sensitivity-config") -> str:
         return raw[:200]
 
 
+def bios_profile(monitoring_namespace: str = "sensitivityscore-monitoring") -> str:
+    """Настройки BIOS измерительных узлов -> "wrk-b6:SysProfile=...;ProcPwrPerf=...|wrk-b7:...".
+
+    Зачем в провенансе строки результата. Это не справка о железе, а ПАРАМЕТРЫ
+    МОДЕЛИ. `SysProfile`/`ProcPwrPerf` задают, кто и по какому критерию
+    управляет частотой (на проде BIOS оптимизирует производительность на ватт,
+    а не держит максимум). `EnergyEfficientTurbo` разрешает платформе САМОЙ
+    снижать турбо на памяти-зависимых задачах — а memory-bound это ровно то,
+    что создают агрессоры, и тогда замедление от интерференции и от снижения
+    частоты в данных неразличимы. Префетчеры формируют промахи LLC, то есть
+    главную ось. `SubNumaCluster` задаёт знаменатель NUMA-оси. Их тихая смена
+    между кампаниями рассорит серии, и по данным это не восстановить — ровно
+    так уже терялись калибровки 18.07.2026.
+
+    Источник — Prometheus, а не iDRAC напрямую: доступ к BMC и пароль есть у
+    поллера (он их и снимает раз в час), и заводить второй путь с теми же
+    учётными данными ради провенанса незачем.
+
+    Пусто = «не собрано»; как и у остальных полей, это честно читается как
+    «доверять нельзя», и ошибка сбора не имеет права ронять серию.
+    """
+    query = "idrac_bios_attribute_info"
+    raw = _run([
+        "kubectl", "-n", monitoring_namespace, "exec", "deploy/prometheus",
+        "-c", "prometheus", "--", "wget", "-qO-",
+        f"http://localhost:9090/api/v1/query?query={query}",
+    ], timeout=30)
+    if not raw:
+        return ""
+    try:
+        rows = json.loads(raw)["data"]["result"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return ""
+    by_node: dict[str, dict[str, str]] = {}
+    for row in rows:
+        labels = row.get("metric", {})
+        node = labels.get("node")
+        name = labels.get("attribute")
+        if not node or not name:
+            continue
+        by_node.setdefault(node, {})[name] = labels.get("value", "")
+    if not by_node:
+        return ""
+    # Канонизация: порядок узлов и атрибутов не должен создавать «разные»
+    # платформы там, где настройки одинаковы.
+    return "|".join(
+        node + ":" + ";".join(f"{k}={by_node[node][k]}" for k in sorted(by_node[node]))
+        for node in sorted(by_node)
+    )
+
+
 def collect(cfg: dict, system_namespace: str) -> dict[str, str]:
     """Постоянная в пределах серии часть провенанса — собрать один раз."""
     prov = {
@@ -153,7 +205,11 @@ def collect(cfg: dict, system_namespace: str) -> dict[str, str]:
         "calibration": calibration(system_namespace),
         "score_weights": score_weights(system_namespace),
         "profile_overrides": profile_overrides(),
+        "bios_profile": bios_profile(),
     }
+    # bios_profile не в optional намеренно: пустое значение здесь означает, что
+    # платформу измерения нечем описать, и об этом надо знать до серии, а не
+    # при разборе. Но и ронять прогон из-за него нельзя — только предупреждаем.
     optional = ("workload_image", "profile_overrides")
     missing = [k for k, v in prov.items() if not v and k not in optional]
     if missing:

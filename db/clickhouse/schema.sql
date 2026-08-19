@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.results
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
     storm_nodes        String DEFAULT '',                  -- узлы под агрессорами, ';'-разделитель
+    bios_profile       String DEFAULT '',                  -- настройки BIOS узлов: параметры модели, не справка (миграция 005)
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
@@ -124,6 +125,7 @@ CREATE TABLE IF NOT EXISTS sensitivityscore.baselines
     score_weights      String DEFAULT '',                  -- веса из ConfigMap, канонизированный JSON
     profile_overrides  String DEFAULT '',                  -- активные HARNESS_OVERRIDE_* (доза нагрузки)
     storm_nodes        String DEFAULT '',                  -- узлы под агрессорами, ';'-разделитель
+    bios_profile       String DEFAULT '',                  -- настройки BIOS узлов: параметры модели, не справка (миграция 005)
     ingested_at        DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(ingested_at)
