@@ -3,7 +3,7 @@
 # Measures the realizable pod-to-pod throughput through the physical uplink
 # NIC + CNI overlay between TWO DISTINCT worker nodes — this is the honest
 # reference for normalizing net_bw into net_pressure (see
-# docs/Технический план экспериментов.md §3.4). NOT same-node: same-node
+# docs/Программа и технический план экспериментов.md §3). NOT same-node: same-node
 # pod-to-pod traffic is bridged locally over veth and never touches the
 # physical NIC, so it would measure memory/bridge speed and hugely
 # overestimate the ceiling.

@@ -3,7 +3,7 @@
 netcheck-client pod's logs) into the NET_REFERENCE_MBPS value the
 metrics-agent will use to normalize net_bw into net_pressure.
 
-See docs/Технический план экспериментов.md §3.4. Deliberately stdlib-only
+See docs/Программа и технический план экспериментов.md §3. Deliberately stdlib-only
 so it runs anywhere python3 does, no venv.
 
 net_bw in the agent is rx+tx (pkg/cgroup/net.go TotalBytes), so the

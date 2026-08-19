@@ -285,7 +285,7 @@ interference_chosen | placement_regret | sensitivity_{llc,numa,net,io}
   `k8s/scheduler-config/scheduler-config.yaml`.
 - Конфигурация **D** (Slinky) автоматически пропускает точки плана с
   `overcommit > 1.0` — whole-node allocation не поддерживает co-location
-  (Программа экспериментов §3.1).
+  (Программа и технический план экспериментов §2).
 - Конфигурация **B** сабмитится в харнессе как обычный `Job` (не `VirtualMachineInstance`)
   для единообразия submit/wait-логики; для реального прогона на стенде замените
   `k8s_submit.py` на работу с `k8s/config-b-kubevirt/vmi-*.yaml` и polling через
