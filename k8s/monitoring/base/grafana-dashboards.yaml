@@ -1121,4 +1121,789 @@ data:
       "weekStart": "",
       "version": 1
     }
-
+  control-plane.json: |
+    {
+      "uid": "ss-control-plane",
+      "title": "Control plane — ВМ и API",
+      "tags": [
+        "sensitivityscore",
+        "control-plane"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Состояние control-plane",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Контроллеров на связи",
+          "description": "node_exporter на ВМ control-plane. Ожидается 3: ВМ не являются узлами Kubernetes (контроллеры k0s работают без kubelet), поэтому их состояние видно ТОЛЬКО отсюда — в kubectl get nodes их нет.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 1
+          },
+          "targets": [
+            {
+              "expr": "count(up{job=\"control-plane-nodes\"} == 1)",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 3
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "id": 2
+        },
+        {
+          "type": "stat",
+          "title": "apiserver отвечает",
+          "description": "Кворум etcd переживёт потерю одного контроллера, но инструментарий серии ходит по адресу одного из них (README провизионера).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 1
+          },
+          "targets": [
+            {
+              "expr": "count(up{job=\"kubernetes-apiservers\"} == 1)",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 3
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "id": 3
+        },
+        {
+          "type": "stat",
+          "title": "k0scontroller активен",
+          "description": "Состояние службы прямо с ВМ: падение и рестарт контроллера видно без захода по ssh.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 1
+          },
+          "targets": [
+            {
+              "expr": "count(node_systemd_unit_state{job=\"control-plane-nodes\",name=\"k0scontroller.service\",state=\"active\"} == 1)",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 3
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "id": 4
+        },
+        {
+          "type": "stat",
+          "title": "Минимальный аптайм ВМ",
+          "description": "Незапланированная перезагрузка контроллера посреди кампании — повод проверить целостность серии.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 1
+          },
+          "targets": [
+            {
+              "expr": "min(time() - node_boot_time_seconds{job=\"control-plane-nodes\"})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 3600
+                  }
+                ]
+              },
+              "unit": "s",
+              "decimals": 0
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "id": 5
+        },
+        {
+          "type": "row",
+          "title": "Железо ВМ (4 vCPU / 8 ГБ / SSD)",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "id": 6,
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Загрузка CPU",
+          "description": "Контроллер под нагрузкой = задержки apiserver для всей обвязки серии.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 6
+          },
+          "targets": [
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{job=\"control-plane-nodes\",mode=\"idle\"}[$__rate_interval])) * 100)",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "percent",
+              "max": 100
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 7
+        },
+        {
+          "type": "timeseries",
+          "title": "Ожидание диска (iowait)",
+          "description": "Главный симптом голодания etcd: fsync не успевает, и apiserver начинает медленно отвечать всем клиентам.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 6
+          },
+          "targets": [
+            {
+              "expr": "avg by (instance) (rate(node_cpu_seconds_total{job=\"control-plane-nodes\",mode=\"iowait\"}[$__rate_interval])) * 100",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 8
+        },
+        {
+          "type": "timeseries",
+          "title": "Память доступно",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 14
+          },
+          "targets": [
+            {
+              "expr": "node_memory_MemAvailable_bytes{job=\"control-plane-nodes\"}",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 9
+        },
+        {
+          "type": "timeseries",
+          "title": "Свободно на корне",
+          "description": "etcd на заполненном диске уходит в read-only: смотреть заранее, а не по факту отказа.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 14
+          },
+          "targets": [
+            {
+              "expr": "node_filesystem_avail_bytes{job=\"control-plane-nodes\",mountpoint=\"/\"}",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 10
+        },
+        {
+          "type": "timeseries",
+          "title": "Средняя задержка записи на диск",
+          "description": "Замена серверной метрике etcd_disk_wal_fsync_duration_seconds, недоступной сейчас (k0s держит метрики etcd на 127.0.0.1:2381). Ориентир стенда — p99 fsync < 10 мс; здесь среднее по устройству, порядок величины тот же.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 14
+          },
+          "targets": [
+            {
+              "expr": "rate(node_disk_write_time_seconds_total{job=\"control-plane-nodes\"}[$__rate_interval]) / clamp_min(rate(node_disk_writes_completed_total{job=\"control-plane-nodes\"}[$__rate_interval]), 1)",
+              "legendFormat": "{{instance}} {{device}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 11
+        },
+        {
+          "type": "row",
+          "title": "Хранилище (вид со стороны apiserver)",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "id": 12,
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Задержка обращений к etcd, p99",
+          "description": "Клиентский вид: сколько apiserver ждёт хранилище. Рост при спокойном CPU указывает на диск контроллера.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 23
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(etcd_request_duration_seconds_bucket{job=\"kubernetes-apiservers\"}[$__rate_interval])))",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 13
+        },
+        {
+          "type": "timeseries",
+          "title": "Объектов в хранилище (топ-10 ресурсов)",
+          "description": "Разрастание объектов (например, брошенных подов серии) удлиняет list/watch и косвенно замедляет планирование.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 23
+          },
+          "targets": [
+            {
+              "expr": "topk(10, sum by (resource) (apiserver_storage_objects{job=\"kubernetes-apiservers\"}))",
+              "legendFormat": "{{resource}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 14
+        },
+        {
+          "type": "row",
+          "title": "apiserver",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 31
+          },
+          "id": 15,
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Запросов в секунду по глаголам",
+          "description": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 32
+          },
+          "targets": [
+            {
+              "expr": "sum by (verb) (rate(apiserver_request_total{job=\"kubernetes-apiservers\"}[$__rate_interval]))",
+              "legendFormat": "{{verb}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 16
+        },
+        {
+          "type": "timeseries",
+          "title": "Задержка apiserver, p99",
+          "description": "WATCH и CONNECT исключены намеренно: это долгоживущие соединения, их длительность не является задержкой.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 32
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(apiserver_request_duration_seconds_bucket{job=\"kubernetes-apiservers\",verb!~\"WATCH|CONNECT\"}[$__rate_interval])))",
+              "legendFormat": "{{verb}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 17
+        },
+        {
+          "type": "timeseries",
+          "title": "Ответы 5xx",
+          "description": "Ненулевая линия во время серии — прямая угроза прогону: харнесс отправляет задачи через этот же API.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 40
+          },
+          "targets": [
+            {
+              "expr": "sum by (code) (rate(apiserver_request_total{job=\"kubernetes-apiservers\",code=~\"5..\"}[$__rate_interval]))",
+              "legendFormat": "{{code}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 18
+        },
+        {
+          "type": "timeseries",
+          "title": "Запросов в полёте",
+          "description": "Упор в предел (--max-requests-inflight) выглядит как полка на графике.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 40
+          },
+          "targets": [
+            {
+              "expr": "sum by (instance, request_kind) (apiserver_current_inflight_requests{job=\"kubernetes-apiservers\"})",
+              "legendFormat": "{{instance}} {{request_kind}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 8,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "id": 19
+        },
+        {
+          "type": "text",
+          "title": "Чего здесь нет и почему",
+          "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 48
+          },
+          "id": 20,
+          "options": {
+            "mode": "markdown",
+            "content": "**Серверных метрик etcd здесь нет** — ни `etcd_disk_wal_fsync_duration_seconds`, ни\n`etcd_server_has_leader`, ни смен лидера, ни размера БД. Причина: k0s поднимает etcd со\nслушателем метрик на `127.0.0.1:2381`, снаружи порт закрыт (проверено 18.08.2026 со всех трёх\nВМ). Чтобы их получить, нужно задать `spec.storage.etcd.extraArgs.listen-metrics-urls` в конфиге\nk0s и **перезапустить контроллеры** по одному — работа для окна между кампаниями, не под серией.\n\nПока их нет, замена такая: **ожидание диска** и **средняя задержка записи** выше (со стороны ВМ)\nплюс **p99 обращений к etcd** (со стороны apiserver). Этой пары хватает, чтобы поймать\nдеградацию диска под etcd — то самое узкое место, ради которого `make check` гоняет пробу fsync.\n\nТо же с `kube-scheduler` и `kube-controller-manager`: они слушают `127.0.0.1` (порты 10259 и\n10257) и в сборе не участвуют. Планировщик стенда `sensitivityscore` — другое дело, он работает\nподом и собирается как обычная цель."
+          }
+        }
+      ]
+    }
