@@ -130,6 +130,80 @@ def check_costly_counter() -> bool:
     return bool(problems)
 
 
+def check_recent_pace() -> bool:
+    """Темп не должен верить всплеску пачечной подачи.
+
+    Регрессия, ради которой это здесь: в смешанном сценарии 6 жертв уходят в
+    кластер за минуту, дальше плечо десять минут работает. Окно из последних
+    12 сабмитов — это ровно две пачки, и если мерить его по РАЗНИЦЕ МЕТОК,
+    рабочее время плеча в замер почти не попадает: темп выходит в полтора
+    раза бодрее настоящего, а страница обещает финиш на два часа раньше
+    (19.08, серия mixed-calib-v2 — «завершится ~02:26» при реальных ~05:00).
+
+    Синтетика повторяет ту же форму: плечо 660 с, внутри пачка из 6 сабмитов
+    с реальными смещениями подачи."""
+    import time as _t
+
+    from statusserver.progress import recent_pace
+
+    ARM, OFFSETS = 660.0, (0.0, 10.0, 20.0, 30.0, 90.0, 94.0)
+    true_rate = len(OFFSETS) / ARM
+
+    def lines(stamps):
+        return [
+            _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(s))
+            + f" INFO submit: job_id=J{i} config=A profile=p overcommit=2.0 rep=0"
+            for i, s in enumerate(stamps)
+        ]
+
+    # «Сейчас» — середина текущего плеча: последняя пачка ушла 300 с назад.
+    now = _t.time()
+    last_arm = now - 300.0 - OFFSETS[-1]
+    stamps = [
+        last_arm - k * ARM + off
+        for k in range(3, -1, -1)
+        for off in OFFSETS
+    ]
+    got = recent_pace(lines(stamps))
+
+    problems = []
+    if got is None:
+        problems.append("темп не посчитан на 24 сабмитах")
+    else:
+        tail = stamps[-12:]
+        by_marks = (len(tail) - 1) / (tail[-1] - tail[0])   # прежняя формула
+        if got >= by_marks:
+            problems.append(
+                f"всплеск не погашен: {got:.5f}/с >= замера по меткам {by_marks:.5f}/с"
+            )
+        if not 0.7 * true_rate <= got <= 1.4 * true_rate:
+            problems.append(
+                f"темп {got:.5f}/с далёк от истинного {true_rate:.5f}/с "
+                f"(допуск 0.7–1.4×)"
+            )
+
+    # Часы лога впереди часов процесса (страница в контейнере с чужим TZ):
+    # абсолютное сравнение с «сейчас» дало бы отрицательный интервал, а с ним
+    # ETA в прошлом. Ожидаем откат к разнице меток — она от зоны не зависит.
+    skewed = [s + 3 * 3600 for s in stamps]
+    got_skew = recent_pace(lines(skewed))
+    tail_s = skewed[-12:]
+    want_skew = (len(tail_s) - 1) / (tail_s[-1] - tail_s[0])
+    if got_skew is None or abs(got_skew - want_skew) > 1e-9:
+        problems.append(
+            f"сдвиг TZ: ожидался откат к меткам {want_skew:.5f}/с, получено {got_skew}"
+        )
+
+    if recent_pace(lines(stamps[:3])) is not None:
+        problems.append("на трёх сабмитах темп обязан быть None (нечего мерить)")
+
+    for p in problems:
+        print(f"FAIL recent pace: {p}")
+    if not problems:
+        print("recent pace: ok")
+    return bool(problems)
+
+
 def main() -> int:
     failed = False
 
@@ -163,6 +237,7 @@ def main() -> int:
     print("node --check: ok" if node else "node --check: пропущен (node не найден)")
 
     failed = check_costly_counter() or failed
+    failed = check_recent_pace() or failed
 
     if failed:
         return 1
