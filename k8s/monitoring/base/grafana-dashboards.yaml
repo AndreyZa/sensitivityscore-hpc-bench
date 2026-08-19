@@ -1866,6 +1866,110 @@ data:
             }
           ],
           "description": "Относительное расхождение двух независимых групп сенсоров ОДНОГО BMC. Это НЕ КПД блоков: PowerConsumedWatts у Dell — величина уже со стороны входа, поэтому по построению обе цифры должны совпадать. На простое 19.08.2026 наблюдалось −3% (771 Вт против 795 Вт) — это в пределах точности сенсоров BMC, а не нарушение физики. Смотреть здесь надо не знак, а СИСТЕМАТИЧЕСКИЙ уход: если под нагрузкой расхождение растёт до десятков процентов, значит одна из групп сенсоров врёт, и цепочку Э0.4 нельзя замыкать на iDRAC."
+        },
+        {
+          "type": "row",
+          "title": "Платформа измерения: настройки BIOS",
+          "id": 13,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 26
+          }
+        },
+        {
+          "type": "table",
+          "title": "Настройки BIOS bench-узлов",
+          "id": 14,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 18,
+            "x": 0,
+            "y": 27
+          },
+          "description": "Не справка о железе, а ПАРАМЕТРЫ МОДЕЛИ. `SysProfile` и `ProcPwrPerf` задают, кто и по какому критерию управляет частотой; на проде это PerfPerWattOptimizedDapc + SysDbpm — BIOS оптимизирует производительность на ватт, а не держит максимум. `EnergyEfficientTurbo=Enabled` означает, что платформа САМА снижает турбо, когда считает задачу памяти-зависимой — а memory-bound это ровно то, что создают агрессоры: замедление от интерференции и от такого снижения частоты в данных неразличимы. Префетчеры формируют промахи LLC, то есть главную ось стенда; `SubNumaCluster`/`NodeInterleave` задают знаменатель NUMA-оси; `LogicalProc` — независимая от ОС проверка того, что SMT выключен. Опрашивается раз в час; смена любого значения поднимает SSBiosProfileChanged.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "expr": "idrac_bios_attribute_info"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true,
+                  "instance": true,
+                  "job": true,
+                  "exported_job": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Отпечаток настроек",
+          "id": 15,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 6,
+            "x": 18,
+            "y": 27
+          },
+          "description": "Одинаковое число на всех узлах = стенд однороден, и серии сравнимы между собой. Разное — узлы настроены по-разному, и разница между ними войдёт в результат как систематическая ошибка. Изменение числа во времени = платформа поменялась под экспериментом (правило SSBiosProfileChanged). Значение само по себе смысла не имеет — важны только совпадение и постоянство.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "idrac_bios_profile_hash",
+              "legendFormat": "{{node}}"
+            }
+          ]
         }
       ],
       "annotations": {
