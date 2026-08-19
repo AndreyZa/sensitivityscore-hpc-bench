@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/cgroup"
+	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/cputhrottle"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/perf"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/promexport"
 	"github.com/andrey-phd/sensitivityscore-hpc-bench/metrics-agent/pkg/rapl"
@@ -138,6 +139,34 @@ func main() {
 		exporter.SetRAPLZones(raplSampler.Zones())
 	}
 
+	// Тепловой троттлинг и частота ядер (pkg/cputhrottle): читаются из того же
+	// хостового /sys, что и RAPL. Сигнал нужен затем, что троттлинг УДЛИНЯЕТ
+	// задачу молча — жертва досчитывает, харнесс пишет её runtime, и
+	// удлинение приписывается интерференции, то есть ровно измеряемому
+	// эффекту. В ВМ счётчиков нет: метрика тогда отсутствует, а не равна нулю.
+	throttleSampler, throttleErr := cputhrottle.Discover(
+		envOr("CPU_SYSFS_ROOT", "/sys/devices/system/cpu"))
+	if throttleErr != nil {
+		log.Printf("WARNING: cputhrottle discover: %v — thermal metrics off", throttleErr)
+		throttleSampler = nil
+		exporter.SetCPUThrottleAvailable(false)
+	} else {
+		exporter.SetCPUThrottleAvailable(throttleSampler.ThrottleAvailable())
+		if !throttleSampler.ThrottleAvailable() {
+			log.Printf("cputhrottle: no thermal_throttle counters (normal on VMs) — thermal metrics off")
+		} else {
+			log.Printf("cputhrottle: %d online CPUs, thermal counters present, freq=%v",
+				throttleSampler.CPUs(), throttleSampler.FreqAvailable())
+		}
+	}
+
+	// Частота — своим, редким циклом. scaling_cur_freq на intel_pstate читает
+	// MSR APERF/MPERF НА ЦЕЛЕВОМ ядре, и делать это каждые 5 секунд на 64
+	// измеряемых ядрах незачем: факт просадки дают бесплатные счётчики
+	// троттлинга, а частота отвечает лишь на вопрос «насколько».
+	freqInterval := time.Duration(envInt("CPU_FREQ_INTERVAL_SECONDS", 60)) * time.Second
+	lastFreq := time.Time{}
+
 	log.Printf("metrics-agent starting on node=%s, sampling every %s", nodeName, sampleInterval)
 
 	// Per-pod sampling state, keyed by pod UID, kept across ticks: perf
@@ -167,6 +196,28 @@ func main() {
 			}
 			if err != nil {
 				log.Printf("rapl sample: %v", err)
+			}
+		}
+
+		// Троттлинг — там же и по тем же причинам: тепловое состояние узла не
+		// входит в PressureVector и в Redis не пишется, его потребитель —
+		// только Prometheus. Ошибка чтения не считается sample error.
+		if throttleSampler != nil && throttleSampler.ThrottleAvailable() {
+			counts, err := throttleSampler.SampleThrottle()
+			exporter.AddThrottleEvents("core", counts.Core)
+			exporter.AddThrottleEvents("package", counts.Package)
+			if err != nil {
+				log.Printf("cputhrottle sample: %v", err)
+			}
+		}
+		if throttleSampler != nil && throttleSampler.FreqAvailable() && now.Sub(lastFreq) >= freqInterval {
+			lastFreq = now
+			f, err := throttleSampler.SampleFreq()
+			if err != nil {
+				log.Printf("cpufreq sample: %v", err)
+			}
+			if f.CPUs > 0 {
+				exporter.SetCPUFreq(f.AvgHertz, f.MinHertz)
 			}
 		}
 	}
@@ -599,6 +650,22 @@ func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
 		log.Fatalf("required env var %s not set", key)
+	}
+	return v
+}
+
+// envInt — числовой envOr. Кричит в лог при мусоре вместо молчаливого
+// отката к дефолту: опечатка в манифесте иначе вернула бы частый опрос
+// частоты, то есть лишние MSR-чтения на измеряемых ядрах, и никто бы не узнал.
+func envInt(key string, def int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		log.Printf("WARNING: %s=%q — не положительное целое, беру %d", key, raw, def)
+		return def
 	}
 	return v
 }

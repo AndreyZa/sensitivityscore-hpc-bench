@@ -89,6 +89,19 @@ spec:
             # (ss_agent_rapl_zones=0), это штатно.
             - name: RAPL_SYSFS_ROOT
               value: "/host/sys/class/powercap"
+            # Тепловой троттлинг и частота ядер (pkg/cputhrottle) — из того же
+            # хостового /sys. Через свой /sys контейнера читать не пробуем: с
+            # powercap runc уже показал, что маскировка бывает неочевидной, а
+            # ro-mount и так есть.
+            - name: CPU_SYSFS_ROOT
+              value: "/host/sys/devices/system/cpu"
+            # Частота опрашивается своим редким циклом: scaling_cur_freq на
+            # intel_pstate читает MSR APERF/MPERF НА ЦЕЛЕВОМ ядре, и делать
+            # это каждые 5 секунд на 64 измеряемых ядрах незачем — факт
+            # просадки дают бесплатные счётчики троттлинга, а частота говорит
+            # лишь «насколько».
+            - name: CPU_FREQ_INTERVAL_SECONDS
+              value: "60"
             # Порог валидности numa-оси (события node-loads+node-load-misses
             # в секунду): ниже него доля remote считается от фоновых чтений
             # ядра/разделяемых страниц и не значит ничего — зонд 19.08.2026

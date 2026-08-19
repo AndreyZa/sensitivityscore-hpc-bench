@@ -61,6 +61,13 @@ type Exporter struct {
 	// Энерговетка (P0): накопительные RAPL-джоули по powercap-зонам узла.
 	raplJoules *prometheus.CounterVec
 	raplZones  prometheus.Gauge
+
+	// Тепловой троттлинг и частота ядер (pkg/cputhrottle): признак того, что
+	// узел работал не на полную, а замедление жертвы объясняется не только
+	// интерференцией.
+	throttleEvents *prometheus.CounterVec
+	cpuFreq        *prometheus.GaugeVec
+	throttleAvail  prometheus.Gauge
 }
 
 // New собирает экспортёр с собственным реестром (не DefaultRegisterer): в него
@@ -84,6 +91,11 @@ func New(nodeName string) *Exporter {
 		c := prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: help}, labels)
 		r.MustRegister(c)
 		return c
+	}
+	gaugeVec := func(name, help string, labels []string) *prometheus.GaugeVec {
+		g := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: name, Help: help}, labels)
+		r.MustRegister(g)
+		return g
 	}
 
 	reg.MustRegister(
@@ -175,6 +187,27 @@ func New(nodeName string) *Exporter {
 			"Powercap zones the agent actually samples. 0 = RAPL unavailable (VM, or no permission to "+
 				"read energy_uj) - the energy branch must not trust rapl totals from such a node; "+
 				"bare-metal 2-socket SPR is expected to show 5 (2x package + 2x dram + psys)."),
+
+		throttleEvents: counterVec("ss_node_cpu_throttle_events_total",
+			"Thermal throttle events on the node, deduplicated by topology (pkg/cputhrottle). Any "+
+				"increase during a run means the CPU ran below full speed and the victim's runtime got "+
+				"longer for a reason that is NOT interference - the measured slowdown is then partly an "+
+				"artefact. scope=core counts per-core events, scope=package per-socket ones; the sysfs "+
+				"files repeat across siblings, so a naive sum would multiply the package counter by the "+
+				"core count. Absent on VMs - see ss_agent_cpu_throttle_available.",
+			[]string{"scope"}),
+		cpuFreq: gaugeVec("ss_node_cpu_freq_hertz",
+			"Current core frequency on the node, hertz (pkg/cputhrottle). Sampled on its OWN slow cycle "+
+				"(CPU_FREQ_INTERVAL_SECONDS, 60s by default), not every tick: scaling_cur_freq on "+
+				"intel_pstate reads APERF/MPERF MSRs on the target core, and the measured cores should "+
+				"not be poked every 5 seconds for a number that only says HOW MUCH the throttling cost. "+
+				"stat=min matters more than stat=avg: throttling usually drags down part of the cores, "+
+				"and an average over 64 of them hides it.",
+			[]string{"stat"}),
+		throttleAvail: gauge("ss_agent_cpu_throttle_available",
+			"1 when the node exposes thermal_throttle counters in sysfs. 0 on VMs (ss-system, STAGE) - "+
+				"the thermal signal is then absent rather than zero, and a run on such a node cannot be "+
+				"cleared of thermal artefacts at all."),
 	}
 }
 
@@ -205,6 +238,28 @@ func (e *Exporter) SetRAPLZones(n int) { e.raplZones.Set(float64(n)) }
 // SetNUMADRAMEventsPerSec publishes the node's raw DRAM-read event rate — the
 // validity context for the gated numa_remote_ratio (see the gauge help).
 func (e *Exporter) SetNUMADRAMEventsPerSec(rate float64) { e.numaDRAMRate.Set(rate) }
+
+// SetCPUThrottleAvailable — есть ли на узле счётчики теплового троттлинга.
+// Выставляется один раз на старте: в ВМ их нет, и сигнал тогда ОТСУТСТВУЕТ, а
+// не равен нулю — разницу обязан видеть тот, кто читает дашборд.
+func (e *Exporter) SetCPUThrottleAvailable(ok bool) { e.throttleAvail.Set(b2f(ok)) }
+
+// AddThrottleEvents накапливает прирост счётчиков троттлинга. Counter с
+// приростом, а не Gauge с сырым значением: sysfs отдаёт накопительное с
+// момента загрузки узла, и первый тик приписал бы серии весь троттлинг за
+// время жизни машины (дедупликация и прайминг — в pkg/cputhrottle).
+func (e *Exporter) AddThrottleEvents(scope string, delta uint64) {
+	if delta == 0 {
+		return
+	}
+	e.throttleEvents.WithLabelValues(scope).Add(float64(delta))
+}
+
+// SetCPUFreq публикует частоту ядер узла (среднюю и минимальную).
+func (e *Exporter) SetCPUFreq(avgHertz, minHertz float64) {
+	e.cpuFreq.WithLabelValues("avg").Set(avgHertz)
+	e.cpuFreq.WithLabelValues("min").Set(minHertz)
+}
 
 // AddRAPLJoules накапливает прирост энергии зоны. Counter, а не Gauge с сырым
 // energy_uj: sysfs-счётчик переполняется (диапазон max_energy_range_uj), и

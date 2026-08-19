@@ -4908,6 +4908,121 @@ data:
               "legendFormat": "{{pod}}"
             }
           ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Тепловой троттлинг узла, событий в час",
+          "id": 32,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 52
+          },
+          "description": "Второй способ получить удлинение задачи, не имеющее отношения к интерференции (первый — квота cgroup, панель выше). Жертва досчитывает честно, харнесс пишет её runtime, и замедление приписывается соседям. Отличие от CFS: причина вне кластера, и увидеть её можно только счётчиками ядра, которые снимает metrics-agent (pkg/cputhrottle, счётчики дедуплицированы по топологии — иначе пакетный умножился бы на число ядер). Любой ненулевой столбик во время серии делает её точки подозрительными.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 40,
+                "showPoints": "never",
+                "drawStyle": "bars"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (node, scope) (rate(ss_node_cpu_throttle_events_total[10m])) * 3600",
+              "legendFormat": "{{node}} / {{scope}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Частота ядер: минимум и среднее",
+          "id": 33,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 12,
+            "y": 52
+          },
+          "description": "Насколько дорого обошёлся троттлинг. Минимум важнее среднего: троттлинг сажает часть ядер, и среднее по 64 это размывает. Опрашивается раз в минуту, а не каждый тик — scaling_cur_freq на intel_pstate читает MSR на целевом ядре, и трогать измеряемые ядра ради этого числа чаще незачем.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "hertz",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 0,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ss_node_cpu_freq_hertz{stat=\"min\"}",
+              "legendFormat": "{{node}} мин"
+            },
+            {
+              "refId": "B",
+              "expr": "ss_node_cpu_freq_hertz{stat=\"avg\"}",
+              "legendFormat": "{{node}} среднее"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Тепловой сигнал доступен",
+          "id": 34,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 20,
+            "y": 52
+          },
+          "description": "0 означает, что счётчиков thermal_throttle на узле нет (так в ВМ) — сигнал ОТСУТСТВУЕТ, а не равен нулю, и серию на таком узле от тепловых артефактов очистить нечем. На bench-узлах ожидается 1.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "min(ss_agent_cpu_throttle_available{node=~\"wrk-.*\"})"
+            }
+          ]
         }
       ],
       "annotations": {
