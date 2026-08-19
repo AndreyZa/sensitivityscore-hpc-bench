@@ -123,9 +123,10 @@ spec:
           args:
             - --config.file=/etc/alertmanager/alertmanager.yml
             - --storage.path=/alertmanager
-            # Перечитать конфиг без перезапуска пода — тем же способом, что у
-            # Prometheus (POST /-/reload).
-            - --web.enable-lifecycle
+            # Флага --web.enable-lifecycle у Alertmanager НЕТ (проверено:
+            # v0.27.0 падает с «unknown long flag»). Перечитать конфиг он и
+            # так умеет — POST /-/reload включён всегда, в отличие от
+            # Prometheus, где это надо разрешать флагом.
           ports:
             - name: http
               containerPort: 9093
