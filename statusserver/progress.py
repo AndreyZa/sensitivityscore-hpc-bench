@@ -202,6 +202,18 @@ def progress(
                     "%H:%M", time.localtime(time.time() + remaining)
                 )
                 out["eta_minutes"] = round(remaining / 60)
+                # Финальный ETA серии. Честно он известен только когда текущий
+                # этап — последний (основная фаза, либо baseline-only добор):
+                # тогда финиш этапа и есть финиш серии. Пока впереди основная
+                # фаза, оценки нет вовсе — темп эталонов ей не мера (см.
+                # комментарий выше), а «финал», завышенный или заниженный в
+                # разы, хуже отсутствующего. Рендер в этом случае прямо
+                # обещает оценку с началом основной фазы.
+                if phase == "pressure" or not p_exp:
+                    out["series_eta"] = out["eta"]
+                    out["series_eta_minutes"] = out["eta_minutes"]
+                else:
+                    out["series_eta_pending"] = True
     elif phase == "DONE":
         # НЕ рисуем 100% по одному лишь маркеру в логе. Маркер
         # «=== PRESSURE DONE ... ===» печатается run-stage-*.sh безусловно,

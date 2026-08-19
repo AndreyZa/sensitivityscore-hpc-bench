@@ -591,11 +591,21 @@ def render_html(d: dict) -> str:
 
     bar = ""
     if pct is not None:
-        eta = (
-            f"этап завершится ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
-            if "eta" in prog
-            else ""
-        )
+        # Когда текущий этап — последний, его финиш и есть финиш серии:
+        # пишем про серию, не дублируя ту же цифру дважды. Раньше основной
+        # фазы финальный ETA не оценивается (см. progress.progress) — вместо
+        # ложной цифры страница говорит, когда оценка появится.
+        if "series_eta" in prog:
+            eta = (
+                f"серия завершится ~{prog['series_eta']} "
+                f"(осталось ~{prog['series_eta_minutes']} мин, это последний этап)"
+            )
+        elif "eta" in prog:
+            eta = f"этап завершится ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
+            if prog.get("series_eta_pending"):
+                eta += " · ETA всей серии — с началом основной фазы"
+        else:
+            eta = ""
         phase_pct = f"этап «{phase_word}»: {prog['phase_pct']}%" if "phase_pct" in prog else ""
         elapsed = (
             f"идёт уже {fmt_dur(prog['phase_elapsed_min'])}"
