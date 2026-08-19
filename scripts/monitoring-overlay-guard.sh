@@ -35,6 +35,51 @@ if [ "${MONITORING_ALLOW_OVERLAY:-0}" = "1" ]; then
     exit 0
 fi
 
+# Второй класс расхождений, который стенд уже ловил на себе: прод-патч задаёт
+# args Prometheus СПИСКОМ ЦЕЛИКОМ, а strategic merge список скаляров не сливает,
+# а заменяет. Флаг, добавленный в base, на прод не приезжает и молчит об этом.
+# Сверяем НАБОР ИМЁН флагов (значения различаться обязаны — retention на проде
+# свой), и только для Prometheus: у остальных компонентов args не патчатся.
+flags_of() {
+    $KUBECTL kustomize "$1" | python3 -c '
+import re, sys
+# Документ Deployment/prometheus целиком, из него — все флаги вида "- --flag".
+# Разбор по документам, а не построчно с оглядкой на "name: prometheus":
+# kustomize печатает ключи по алфавиту, и args идут ВЫШЕ name — построчный
+# парсер на этом и сломался при первой попытке.
+docs = sys.stdin.read().split("\n---\n")
+flags = set()
+for d in docs:
+    if "kind: Deployment" not in d:
+        continue
+    if not re.search(r"^  name: prometheus$", d, re.M):
+        continue
+    flags |= set(re.findall(r"^\s+- (--[a-zA-Z0-9._-]+)", d, re.M))
+print(" ".join(sorted(flags)))
+'
+}
+
+base_flags=$(flags_of k8s/monitoring/base 2>/dev/null || true)
+over_flags=$(flags_of "$DIR" 2>/dev/null || true)
+if [ -n "$base_flags" ] && [ -n "$over_flags" ]; then
+    missing=""
+    for f in $base_flags; do
+        case " $over_flags " in *" $f "*) ;; *) missing="$missing $f" ;; esac
+    done
+    if [ -n "$missing" ]; then
+        cat >&2 <<MSG
+[mon-guard] ОТКАЗ: в рендере '$DIR' нет флагов Prometheus, которые есть в base:
+           $missing
+
+  Прод-патч задаёт args списком целиком, а strategic merge список скаляров
+  ЗАМЕНЯЕТ, а не сливает — новый флаг из base на этот стенд сам не приедет и
+  не сообщит об этом. Допиши его в оверлей (k8s/monitoring/overlays/*/
+  prometheus-prod-patch.yaml) и повтори.
+MSG
+        exit 1
+    fi
+fi
+
 bench=$($KUBECTL get nodes --selector="$ROLE_BENCH" -o name 2>/dev/null | wc -l | tr -d ' ')
 if [ "$bench" = "0" ]; then
     echo "[mon-guard] измерительных узлов (роль bench) нет — оверлей мониторинга не критичен"

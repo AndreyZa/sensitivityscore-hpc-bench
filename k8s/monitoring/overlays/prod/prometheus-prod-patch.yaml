@@ -2,6 +2,15 @@
 # (docs «Ввод прод-стенда (Этап 0)» §4), и bench-узлы — 3× R760 по 64 ядра /
 # 128 потоков. Целей и рядов будет ощутимо больше, чем на STAGE, а места под
 # них наконец хватает.
+#
+# ОСТОРОЖНО: этот патч задаёт args СПИСКОМ ЦЕЛИКОМ, а strategic merge для
+# списка скаляров не сливает, а ЗАМЕНЯЕТ. Значит, любой новый флаг, добавленный
+# в base, на прод сам не приедет — и не сообщит об этом: под останется Running,
+# а поведение будет базовым только на STAGE. Поймано 19.08.2026 на
+# --web.enable-admin-api: он лёг в base, `make monitoring-backup` упал, и
+# причина была видна только в args живого пода. С тех пор расхождение ловит
+# scripts/monitoring-overlay-guard.sh — он сверяет НАБОР ИМЁН флагов base и
+# оверлея (значения различаться и должны: retention здесь другой).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,6 +32,9 @@ spec:
             - --storage.tsdb.retention.size=60GB
             - --enable-feature=expand-external-labels
             - --web.enable-lifecycle
+            # Снимки TSDB (make monitoring-backup). Закрыт NetworkPolicy от
+            # неймспейса серии — флаг открывает и delete_series.
+            - --web.enable-admin-api
             - --web.console.libraries=/usr/share/prometheus/console_libraries
             - --web.console.templates=/usr/share/prometheus/consoles
           env:
