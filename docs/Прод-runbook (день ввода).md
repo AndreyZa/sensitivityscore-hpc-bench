@@ -322,20 +322,25 @@ ConfigMap: base={llc 0.014, net 0.009}, sensitivity={io 1.31}, numa=0
 --taskset/--mbind) поднимет нулевые цены — дозы v1 их не раскрывают.
 Регрет-метрика серии: SS значимо лучше default (Holm p 0.01–0.03).
 
-## 9. Вернуть постоянные сервисы .72 (отключены 07.08 при заморозке STAGE)
+## 9. Постоянные сервисы .72
+
+На .72 остался **один** юнит-шаблон — `ss-forward@`, три инстанса. Всё
+остальное уехало в кластеры: ss-notifier и поллер iDRAC — в прод, статус-
+страница — в лабный k0s (Deployment `ss-status`, hostPort 127.0.0.1:8787,
+переживает ребут силами кластера). Юниты `ss-status`, `ss-notifier`,
+`ss-idrac-poller` удалены 19.08 — не поднимать заново: докерная страница
+подерётся с k8s-страницей за порт 8787, а докерный ss-notifier — с пробросом
+за 8790, и уведомления молча уйдут в старый чат.
+
+Зачем нужен каждый проброс:
+- **grafana** — единственный способ открыть дашборды прода с рабочего ПК;
+- **ss-notifier** — `notify()` в `run-series.sh` шлёт на `127.0.0.1:8790` и
+  при мёртвом адресе молчит по построению: уведомления о зависшей серии
+  пропали бы без следа (раздел 2б);
+- **pushgateway** — маркеры серий, см. ниже.
 
 ```bash
 ssh andrey@192.168.1.72
-sudo systemctl enable ss-status               # страницу поднимет первая же серия
-# в /etc/systemd/system/ss-forward@.service поправить:
-#   Environment=KUBECONFIG=/home/andrey/.kube/configs/prod
-sudo systemctl daemon-reload && sudo systemctl enable --now ss-forward@grafana
-```
-ss-notifier на .72 **погашен 19.08.2026** — служба переехала в прод-кластер
-(раздел 2б). Но проброс до неё нужен, иначе уведомления о серии пропадут без
-следа: `notify()` в `run-series.sh` шлёт на `127.0.0.1:8790`, и при мёртвом
-адресе он молча ничего не делает.
-```bash
 make monitoring-uptime-unit SERVICES="grafana ss-notifier pushgateway"
 curl -sf http://127.0.0.1:8790/healthz && echo " проброс уведомлений жив"
 curl -sf http://127.0.0.1:9091/-/healthy && echo " проброс pushgateway жив"
