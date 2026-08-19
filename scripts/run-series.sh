@@ -188,7 +188,101 @@ EOF
 # Причина, вопреки прежнему объяснению, не в версии python, а в дефолтном
 # аллокаторе pyarrow (см. ARROW_DEFAULT_MEMORY_POOL в statusserver/Dockerfile);
 # в контейнере он выключен.
+# Бэкенд статус-страницы: prod -> k0s лабы (миграция 19.08.2026 по образцу
+# переезда ClickHouse: цельная инсталляция, страница переживает ребут силами
+# кластера, докер-демон не нужен); stage и прочее -> docker compose, как
+# раньше. Переопределение: STATUS_BACKEND=compose|k8s.
+status_page_backend() {
+    if [ -n "${STATUS_BACKEND:-}" ]; then
+        printf %s "$STATUS_BACKEND"
+    elif [ "$STAND" = prod ]; then
+        printf %s k8s
+    else
+        printf %s compose
+    fi
+}
+
+# Страница в k0s лабы: рендер k8s/statusserver/statusserver-lab.yaml
+# (sed-подстановка путей серии в args — тот же приём, что подстановка образа
+# в scheduler-deploy) -> kubectl apply. Прод-серии гоняются с .72, где этот
+# k0s и живёт; на чужой машине без local72-kubeconfig — WARN и выход
+# (страница никогда не валит серию).
+status_page_up_k8s() {
+    local port=${STATUS_PORT:-8787}
+    local cseries=$SERIES
+    case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
+    local logpat="$STAND-${cseries:-pressure}\.log"
+
+    local kc=${PAGE_KUBECONFIG:-$HOME/.kube/configs/local72.yaml}
+    if [ ! -f "$kc" ]; then
+        echo "WARN: kubeconfig лабного k0s '$kc' не найден — статус-страница пропущена"
+        echo "      (k8s-бэкенд живёт на .72; на другой машине — STATUS_BACKEND=compose)"
+        return 0
+    fi
+
+    local results baselines
+    { read -r results; read -r baselines; } < <(results_paths) 2>/dev/null || true
+    local kcfg=${KUBECONFIG%%:*}
+    [ -f "$kcfg" ] || kcfg=/dev/null
+    local stand_up
+    stand_up=$(printf %s "$STAND" | tr "[:lower:]" "[:upper:]")
+
+    # Идемпотентность — как у compose-пути: нужная страница уже отвечает,
+    # значит не трогаем (передеплой на ходу перезапустил бы её посреди серии).
+    local curargs
+    curargs=$(kubectl --kubeconfig "$kc" -n sensitivityscore-system get deploy ss-status \
+        -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || true)
+    if grep -q -- "$logpat" <<<"$curargs" \
+       && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
+        ok "статус-страница уже поднята (k0s лабы): http://localhost:$port"
+        return 0
+    fi
+
+    # Докерная страница (старый бэкенд) держит тот же порт 8787 — hostPort
+    # пода с ней не уживётся: сначала уступает порт.
+    if command -v docker >/dev/null 2>&1 && docker inspect ss-status >/dev/null 2>&1; then
+        echo "  докерная статус-страница уступает порт k0s-странице (compose down)"
+        docker compose -f statusserver/docker-compose.yaml down >/dev/null 2>&1 \
+            || docker rm -f ss-status >/dev/null 2>&1 || true
+    fi
+
+    local log_p="/repo/harness/$STAND-${cseries:-pressure}.log"
+    local config_p="/repo/harness/config-$STAND${cseries:+-$cseries}.yaml"
+    local results_p="/repo/${results:-harness/results/results-$STAND${cseries:+-$cseries}.parquet}"
+    local baselines_p="/repo/${baselines:-harness/results/baselines-$STAND${cseries:+-$cseries}.parquet}"
+    local report_p="/repo/analysis/report-$STAND${cseries:+-$cseries}"
+    local rendered=harness/.statuspage-$SERIES.yaml
+    sed -e "s|__LOG__|$log_p|" -e "s|__CONFIG__|$config_p|" \
+        -e "s|__RESULTS__|$results_p|" -e "s|__BASELINES__|$baselines_p|" \
+        -e "s|__REPORT__|$report_p|" -e "s|__STAND__|$stand_up|" \
+        k8s/statusserver/statusserver-lab.yaml > "$rendered"
+    if ! kubectl --kubeconfig "$kc" apply -f "$rendered" > "harness/.statuspage-$SERIES.log" 2>&1; then
+        echo "WARN: статус-страница не применилась в k0s лабы (серию это не трогает)"
+        tail -5 "harness/.statuspage-$SERIES.log" | sed 's/^/      /'
+        return 0
+    fi
+    # Первый запуск тянет образ по Wi-Fi лабы — ждём щедро, но серию не валим.
+    kubectl --kubeconfig "$kc" -n sensitivityscore-system rollout status deploy/ss-status \
+        --timeout=300s >/dev/null 2>&1 || true
+    for _ in $(seq 60); do
+        curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null && break
+        sleep 1
+    done
+    if ! curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+        echo "WARN: страница в k0s не отвечает (серию это не трогает); смотреть:"
+        echo "      kubectl --kubeconfig $kc -n sensitivityscore-system describe deploy ss-status"
+        return 0
+    fi
+    status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
+    ok "статус-страница (k0s лабы): http://localhost:$port"
+}
+
 status_page_up() {
+    if [ "$(status_page_backend)" = k8s ]; then
+        status_page_up_k8s
+        return $?
+    fi
     local port=${STATUS_PORT:-8787}
     local buildlog=harness/.statuspage-$SERIES.log
 
@@ -643,7 +737,29 @@ EOF
     # рабочую страницу.
     local port=${STATUS_PORT:-8787}
     echo "--- статус-страница ---"
-    if ! command -v docker >/dev/null 2>&1; then
+    if [ "$(status_page_backend)" = k8s ]; then
+        local kc=${PAGE_KUBECONFIG:-$HOME/.kube/configs/local72.yaml}
+        local cseries=$SERIES
+        case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
+        local pstate pargs
+        pstate=$(kubectl --kubeconfig "$kc" -n sensitivityscore-system get pods -l app=ss-status \
+            -o jsonpath='{.items[0].status.phase} (рестартов {.items[0].status.containerStatuses[0].restartCount})' 2>/dev/null)
+        if [ -z "$pstate" ]; then
+            echo "не запущена в k0s лабы (поднять: STAND=$STAND make status-page SERIES=$SERIES)"
+        else
+            pargs=$(kubectl --kubeconfig "$kc" -n sensitivityscore-system get deploy ss-status \
+                -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null)
+            echo "под (k0s): $pstate"
+            if grep -q -- "$STAND-${cseries:-pressure}\.log" <<<"$pargs"; then
+                echo "серия:     $SERIES — совпадает"
+            else
+                echo "серия:     !!! страница показывает ДРУГУЮ серию, цифрам на ней не верить"
+            fi
+            curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null \
+                && echo "адрес:     http://localhost:$port" \
+                || echo "адрес:     не отвечает на http://localhost:$port"
+        fi
+    elif ! command -v docker >/dev/null 2>&1; then
         echo "docker не найден — страница не поднималась"
     elif ! docker inspect ss-status >/dev/null 2>&1; then
         echo "не запущена (поднять: make status-page SERIES=$SERIES)"

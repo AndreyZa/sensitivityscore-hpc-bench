@@ -1,0 +1,73 @@
+# Статус-страница на ЛАБЕ (.72) — в местном k0s вместо docker compose
+# (миграция 19.08.2026, по образцу переезда ClickHouse 17.08: цельная
+# инсталляция, страница переживает ребут силами кластера — костыль
+# ss-status.service/status-page-boot.sh для k8s-пути не нужен).
+#
+# НЕ ПРИМЕНЯТЬ НАПРЯМУЮ: __ПЛЕЙСХОЛДЕРЫ__ в args подставляет
+# scripts/run-series.sh (status_page_up, ветка k8s — STAND=prod) sed'ом
+# перед apply — ровно как scheduler-deploy подставляет образ. Руками:
+#   STAND=prod make status-page SERIES=<имя>
+#
+# Устройство (зеркало docker-compose.yaml, отличия только в обвязке):
+#   * репозиторий монтируется hostPath READ-ONLY — страница только читает;
+#   * kubeconfig ПРОДА монтируется файлом (секция кластера показывает стенд,
+#     на котором идёт серия; маршрут до 10.40/16 у подов есть через WG хоста);
+#   * hostPort 8787 ТОЛЬКО на loopback узла — как у лабного ClickHouse:
+#     привычный http://localhost:8787 и ssh -L работают без изменений;
+#   * образ — КЛАСТЕРНЫЙ andreyza/statusserver:dev (CI, linux/amd64; лаба
+#     x86_64). imagePullPolicy IfNotPresent сознательно: Wi-Fi лабы медленный
+#     и моргает — страница обязана подниматься после ребута БЕЗ сети.
+#     Обновить образ: kubectl -n sensitivityscore-system rollout restart
+#     deploy/ss-status ПОСЛЕ sudo k0s ctr images rm docker.io/andreyza/statusserver:dev
+#   * TZ хоста — маркеры фаз в логах локальным временем (см. compose).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ss-status
+  namespace: sensitivityscore-system
+  labels: { app: ss-status }
+spec:
+  replicas: 1
+  # hostPort: два пода одновременно не поднимутся — сначала снести старый.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: ss-status }
+  template:
+    metadata:
+      labels: { app: ss-status }
+    spec:
+      containers:
+        - name: statusserver
+          image: andreyza/statusserver:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --log=__LOG__
+            - --config=__CONFIG__
+            - --results=__RESULTS__
+            - --baselines=__BASELINES__
+            - --report=__REPORT__
+            - --scope=full
+            - --stand=__STAND__
+          env:
+            - { name: KUBECONFIG, value: /kube/config }
+            - { name: TZ, value: Europe/Moscow }
+          ports:
+            - containerPort: 8787
+              hostPort: 8787
+              hostIP: 127.0.0.1
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8787 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - { name: repo, mountPath: /repo, readOnly: true }
+            - { name: kubeconfig, mountPath: /kube/config, readOnly: true }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+      volumes:
+        - name: repo
+          hostPath: { path: /home/andrey/phd/sensitivityscore-hpc-bench, type: Directory }
+        - name: kubeconfig
+          hostPath: { path: /home/andrey/.kube/configs/prod, type: File }
