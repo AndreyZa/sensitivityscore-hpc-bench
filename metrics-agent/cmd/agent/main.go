@@ -145,7 +145,8 @@ func main() {
 	// удлинение приписывается интерференции, то есть ровно измеряемому
 	// эффекту. В ВМ счётчиков нет: метрика тогда отсутствует, а не равна нулю.
 	throttleSampler, throttleErr := cputhrottle.Discover(
-		envOr("CPU_SYSFS_ROOT", "/sys/devices/system/cpu"))
+		envOr("CPU_SYSFS_ROOT", "/sys/devices/system/cpu"),
+		envOr("CPUINFO_PATH", "/proc/cpuinfo"))
 	if throttleErr != nil {
 		log.Printf("WARNING: cputhrottle discover: %v — thermal metrics off", throttleErr)
 		throttleSampler = nil
@@ -154,11 +155,12 @@ func main() {
 	} else {
 		exporter.SetCPUThrottleAvailable(throttleSampler.ThrottleAvailable())
 		exporter.SetCPUFreqAvailable(throttleSampler.FreqAvailable())
+		exporter.SetCPUFreqSource(throttleSampler.FreqSource())
 		if !throttleSampler.ThrottleAvailable() {
 			log.Printf("cputhrottle: no thermal_throttle counters (normal on VMs) — thermal metrics off")
 		} else {
-			log.Printf("cputhrottle: %d online CPUs, thermal counters present, freq=%v",
-				throttleSampler.CPUs(), throttleSampler.FreqAvailable())
+			log.Printf("cputhrottle: %d online CPUs, thermal counters present, freq source=%q",
+				throttleSampler.CPUs(), throttleSampler.FreqSource())
 		}
 	}
 
@@ -219,7 +221,7 @@ func main() {
 				log.Printf("cpufreq sample: %v", err)
 			}
 			if f.CPUs > 0 {
-				exporter.SetCPUFreq(f.AvgHertz, f.MinHertz)
+				exporter.SetCPUFreq(f.AvgHertz, f.MinHertz, f.MaxHertz)
 			}
 		}
 	}

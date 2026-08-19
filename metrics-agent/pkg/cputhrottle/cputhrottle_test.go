@@ -85,7 +85,7 @@ func TestПакетныйСчётчикНеУмножаетсяНаЯдра(t *t
 	root := fakeSysfs(t, 8, func(i int) int { return i / 4 }, func(i int) int { return i % 4 },
 		core, pkg, nil)
 
-	s, err := Discover(root)
+	s, err := Discover(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestПервыйВызовНеОтдаётИсториюОтЗагрузк�
 	// приписать серии весь троттлинг за время жизни машины.
 	root := fakeSysfs(t, 2, func(int) int { return 0 }, func(i int) int { return i },
 		map[int]string{0: "9999", 1: "9999"}, map[int]string{0: "777"}, nil)
-	s, err := Discover(root)
+	s, err := Discover(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,10 +135,64 @@ func TestПервыйВызовНеОтдаётИсториюОтЗагрузк�
 	}
 }
 
+func TestЧастотаИзCpuinfoКогдаCpufreqНет(t *testing.T) {
+	// Прод-узлы (Dell R760): каталога cpufreq нет вовсе, P-states держит BIOS.
+	// Но ядро считает эффективную частоту по APERF/MPERF и публикует её в
+	// /proc/cpuinfo — значит, «частоты нет» это неверный вывод.
+	root := fakeSysfs(t, 3, func(int) int { return 0 }, func(i int) int { return i }, nil, nil, nil)
+	cpuinfo := filepath.Join(t.TempDir(), "cpuinfo")
+	write(t, cpuinfo, "processor\t: 0\ncpu MHz\t\t: 2800.000\nprocessor\t: 1\ncpu MHz\t\t: 797.370\nprocessor\t: 2\ncpu MHz\t\t: 785.970")
+
+	s, err := Discover(root, cpuinfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.FreqAvailable() {
+		t.Fatal("частота обязана быть доступна через /proc/cpuinfo")
+	}
+	if got := s.FreqSource(); got != "cpuinfo" {
+		t.Fatalf("источник = %q, ожидался cpuinfo", got)
+	}
+	f, err := s.SampleFreq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.CPUs != 3 {
+		t.Fatalf("CPUs = %d, ожидалось 3", f.CPUs)
+	}
+	if f.MaxHertz != 2.8e9 {
+		t.Fatalf("максимум = %v, ожидалось 2.8e9", f.MaxHertz)
+	}
+	if f.MinHertz != 785.97e6 {
+		t.Fatalf("минимум = %v, ожидалось 785.97e6", f.MinHertz)
+	}
+}
+
+func TestCpufreqВажнееCpuinfo(t *testing.T) {
+	// Где cpufreq есть, берём его: scaling_cur_freq и /proc/cpuinfo means
+	// разное (запрошенная у драйвера против эффективной по APERF/MPERF), и
+	// смешивать их в одном ряду нельзя.
+	root := fakeSysfs(t, 1, func(int) int { return 0 }, func(int) int { return 0 },
+		nil, nil, map[int]string{0: "1500000"})
+	cpuinfo := filepath.Join(t.TempDir(), "cpuinfo")
+	write(t, cpuinfo, "cpu MHz\t\t: 2800.000")
+	s, err := Discover(root, cpuinfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.FreqSource(); got != "cpufreq" {
+		t.Fatalf("источник = %q, ожидался cpufreq", got)
+	}
+	f, _ := s.SampleFreq()
+	if f.AvgHertz != 1.5e9 {
+		t.Fatalf("частота = %v, ожидалось 1.5e9 (из cpufreq, а не из cpuinfo)", f.AvgHertz)
+	}
+}
+
 func TestЧастотаСреднееИМинимум(t *testing.T) {
 	root := fakeSysfs(t, 3, func(int) int { return 0 }, func(i int) int { return i },
 		nil, nil, map[int]string{0: "3000000", 1: "2000000", 2: "1000000"})
-	s, err := Discover(root)
+	s, err := Discover(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,13 +212,16 @@ func TestЧастотаСреднееИМинимум(t *testing.T) {
 	if f.MinHertz != 1e9 {
 		t.Fatalf("минимум = %v, ожидалось 1e9 (троттлинг сажает ЧАСТЬ ядер, среднее это размывает)", f.MinHertz)
 	}
+	if f.MaxHertz != 3e9 {
+		t.Fatalf("максимум = %v, ожидалось 3e9 — по нему видно, до чего разгонялись занятые ядра", f.MaxHertz)
+	}
 }
 
 func TestВМБезSysfsЭтоНеОшибка(t *testing.T) {
 	// В ВМ (ss-system, STAGE) ни thermal_throttle, ни cpufreq нет. Агент обязан
 	// честно погасить метрику, а не выдавать нули за измерение.
 	root := fakeSysfs(t, 2, func(int) int { return 0 }, func(i int) int { return i }, nil, nil, nil)
-	s, err := Discover(root)
+	s, err := Discover(root, "")
 	if err != nil {
 		t.Fatalf("отсутствие счётчиков — свойство узла, а не ошибка: %v", err)
 	}
@@ -180,7 +237,7 @@ func TestOfflineCPUПропускается(t *testing.T) {
 	root := fakeSysfs(t, 2, func(int) int { return 0 }, func(i int) int { return i },
 		map[int]string{0: "1", 1: "1"}, nil, nil)
 	write(t, filepath.Join(root, "cpu1", "online"), "0")
-	s, err := Discover(root)
+	s, err := Discover(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}

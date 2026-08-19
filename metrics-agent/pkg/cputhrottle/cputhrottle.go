@@ -50,6 +50,14 @@ type cpu struct {
 }
 
 // Sampler держит найденные CPU и прошлые показания счётчиков троттлинга.
+//
+// cpuinfoPath — запасной источник частоты. На прод-узлах (Dell R760, проверено
+// 19.08.2026) каталога cpufreq нет вовсе: P-states держит BIOS, драйвер в ядро
+// не грузится. Но частота при этом ЕСТЬ и она честная: у CPU выставлен флаг
+// aperfmperf, и ядро считает эффективную частоту каждого ядра по счётчикам
+// APERF/MPERF, публикуя её в /proc/cpuinfo. Значения там реальные и разные по
+// ядрам (на простое наблюдалось 785-797 МГц при номинале 2800) — то есть ядра
+// СНИЖАЮТ частоту, просто управляет этим BIOS, а не ОС.
 type Sampler struct {
 	cpus []cpu
 	// Представители: по одному CPU на (пакет, ядро) и по одному на пакет —
@@ -60,6 +68,8 @@ type Sampler struct {
 	lastCore uint64
 	lastPkg  uint64
 	primed   bool
+
+	cpuinfoPath string
 }
 
 // Counts — ПРИРОСТ счётчиков троттлинга с прошлого вызова.
@@ -69,9 +79,15 @@ type Counts struct {
 }
 
 // Freq — частота ядер узла на момент опроса, в герцах.
+//
+// Три величины, а не одна, потому что одна вводит в заблуждение. На стенде
+// заняты не все ядра (жертве отдают 28 CPU из 64), и незанятые сидят на
+// нижней ступени: минимум всегда покажет простаивающее ядро, а среднее будет
+// размыто ими же. Максимум говорит, до чего разгонялись работающие ядра.
 type Freq struct {
 	AvgHertz float64
 	MinHertz float64
+	MaxHertz float64
 	CPUs     int
 }
 
@@ -101,12 +117,12 @@ func existing(path string) string {
 // Отсутствие thermal_throttle или cpufreq — не ошибка конфигурации, а
 // свойство узла: в ВМ их нет, и вызывающий обязан честно погасить метрику,
 // а не выдавать нули за измерение.
-func Discover(root string) (*Sampler, error) {
+func Discover(root, cpuinfo string) (*Sampler, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("cputhrottle: читаю %s: %w", root, err)
 	}
-	s := &Sampler{}
+	s := &Sampler{cpuinfoPath: cpuinfo}
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasPrefix(name, "cpu") {
@@ -167,14 +183,58 @@ func (s *Sampler) CPUs() int { return len(s.cpus) }
 // ThrottleAvailable — есть ли на узле счётчики теплового троттлинга.
 func (s *Sampler) ThrottleAvailable() bool { return len(s.coreReps) > 0 || len(s.pkgReps) > 0 }
 
-// FreqAvailable — отдаёт ли узел текущую частоту ядер.
+// FreqAvailable — отдаёт ли узел текущую частоту ядер хоть каким-то способом.
 func (s *Sampler) FreqAvailable() bool {
 	for _, c := range s.cpus {
 		if c.freqPath != "" {
 			return true
 		}
 	}
-	return false
+	return len(s.freqFromCpuinfo()) > 0
+}
+
+// FreqSource — откуда взята частота: "cpufreq" | "cpuinfo" | "" (нет).
+// Наружу идёт меткой: величина из /proc/cpuinfo считается ядром по APERF/MPERF
+// и означает ЭФФЕКТИВНУЮ частоту за интервал, а scaling_cur_freq — запрошенную
+// у драйвера. Смешивать их в одном ряду, не различая, нельзя.
+func (s *Sampler) FreqSource() string {
+	for _, c := range s.cpus {
+		if c.freqPath != "" {
+			return "cpufreq"
+		}
+	}
+	if len(s.freqFromCpuinfo()) > 0 {
+		return "cpuinfo"
+	}
+	return ""
+}
+
+// freqFromCpuinfo вытаскивает строки "cpu MHz : <value>" — по одной на CPU.
+// Пусто, если поля нет (так бывает не на x86 и на ядрах без aperfmperf).
+func (s *Sampler) freqFromCpuinfo() []float64 {
+	if s.cpuinfoPath == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(s.cpuinfoPath)
+	if err != nil {
+		return nil
+	}
+	var out []float64
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(line, "cpu MHz") {
+			continue
+		}
+		_, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		mhz, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || mhz <= 0 {
+			continue
+		}
+		out = append(out, mhz*1e6)
+	}
+	return out
 }
 
 // SampleThrottle возвращает ПРИРОСТ счётчиков с прошлого вызова.
@@ -226,9 +286,7 @@ func (s *Sampler) SampleThrottle() (Counts, error) {
 // Минимум важнее среднего: троттлинг обычно сажает часть ядер, и среднее по
 // 64 ядрам это размывает.
 func (s *Sampler) SampleFreq() (Freq, error) {
-	var sum float64
-	var min float64
-	var n int
+	var values []float64
 	var firstErr error
 	for _, c := range s.cpus {
 		if c.freqPath == "" {
@@ -241,15 +299,30 @@ func (s *Sampler) SampleFreq() (Freq, error) {
 			}
 			continue
 		}
-		hz := float64(v) * 1000 // sysfs отдаёт кГц
-		sum += hz
-		if n == 0 || hz < min {
-			min = hz
-		}
-		n++
+		values = append(values, float64(v)*1000) // sysfs отдаёт кГц
 	}
-	if n == 0 {
+	if len(values) == 0 {
+		// Запасной источник. Он не хуже: ядро считает частоту по APERF/MPERF,
+		// то есть отдаёт ЭФФЕКТИВНУЮ за интервал, а не запрошенную у драйвера.
+		values = s.freqFromCpuinfo()
+	}
+	if len(values) == 0 {
 		return Freq{}, firstErr
 	}
-	return Freq{AvgHertz: sum / float64(n), MinHertz: min, CPUs: n}, firstErr
+	sum, min, max := 0.0, values[0], values[0]
+	for _, hz := range values {
+		sum += hz
+		if hz < min {
+			min = hz
+		}
+		if hz > max {
+			max = hz
+		}
+	}
+	return Freq{
+		AvgHertz: sum / float64(len(values)),
+		MinHertz: min,
+		MaxHertz: max,
+		CPUs:     len(values),
+	}, firstErr
 }

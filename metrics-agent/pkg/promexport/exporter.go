@@ -69,6 +69,7 @@ type Exporter struct {
 	cpuFreq        *prometheus.GaugeVec
 	throttleAvail  prometheus.Gauge
 	freqAvail      prometheus.Gauge
+	freqSource     *prometheus.GaugeVec
 }
 
 // New собирает экспортёр с собственным реестром (не DefaultRegisterer): в него
@@ -199,12 +200,23 @@ func New(nodeName string) *Exporter {
 			[]string{"scope"}),
 		cpuFreq: gaugeVec("ss_node_cpu_freq_hertz",
 			"Current core frequency on the node, hertz (pkg/cputhrottle). Sampled on its OWN slow cycle "+
-				"(CPU_FREQ_INTERVAL_SECONDS, 60s by default), not every tick: scaling_cur_freq on "+
-				"intel_pstate reads APERF/MPERF MSRs on the target core, and the measured cores should "+
-				"not be poked every 5 seconds for a number that only says HOW MUCH the throttling cost. "+
-				"stat=min matters more than stat=avg: throttling usually drags down part of the cores, "+
-				"and an average over 64 of them hides it.",
+				"(CPU_FREQ_INTERVAL_SECONDS, 60s by default), not every tick: reading it costs an IPI or "+
+				"an MSR read per core, and the measured cores should not be poked every 5 seconds for a "+
+				"number that only says HOW MUCH the throttling cost. Read stat=max together with "+
+				"stat=min: the stand leaves most cores idle (28 CPUs of 64 go to the victim), so the "+
+				"minimum always shows an idle core and the average is diluted by them - the maximum is "+
+				"what the busy cores actually reached. See ss_agent_cpu_freq_source for where the number "+
+				"comes from: on the prod bench nodes there is no cpufreq at all and the value is the "+
+				"kernel's APERF/MPERF-derived effective frequency from /proc/cpuinfo.",
 			[]string{"stat"}),
+		freqSource: gaugeVec("ss_agent_cpu_freq_source",
+			"Where the frequency reading comes from: source=cpufreq (scaling_cur_freq, the value the "+
+				"driver was asked for) or source=cpuinfo (the kernel's effective frequency computed from "+
+				"APERF/MPERF). They are not the same quantity, so the label exists to keep them apart. On "+
+				"the prod bench nodes (Dell R760, 19.08.2026) it is cpuinfo: P-states are managed by the "+
+				"BIOS and no cpufreq driver loads - yet the cores DO scale (785-797 MHz observed at idle "+
+				"against a 2800 MHz nominal), so 'BIOS-managed' must not be read as 'pinned at maximum'.",
+			[]string{"source"}),
 		freqAvail: gauge("ss_agent_cpu_freq_available",
 			"1 when the node exposes per-core scaling_cur_freq. 0 means the cpufreq directory is absent "+
 				"entirely - on the prod bench nodes (Dell R760, 19.08.2026) that is the case: P-states are "+
@@ -261,9 +273,18 @@ func (e *Exporter) SetCPUThrottleAvailable(ok bool) {
 	}
 }
 
-// SetCPUFreqAvailable — отдаёт ли узел частоту ядер. На прод-стенде 0: у
-// R760 нет каталога cpufreq вовсе, P-states держит BIOS.
+// SetCPUFreqAvailable — отдаёт ли узел частоту ядер хоть каким-то способом.
 func (e *Exporter) SetCPUFreqAvailable(ok bool) { e.freqAvail.Set(b2f(ok)) }
+
+// SetCPUFreqSource фиксирует, откуда взята частота. Пустая строка — источника
+// нет; тогда ряд не заводим вовсе, чтобы «нет источника» не выглядело как
+// «источник cpufreq со значением 0».
+func (e *Exporter) SetCPUFreqSource(source string) {
+	if source == "" {
+		return
+	}
+	e.freqSource.WithLabelValues(source).Set(1)
+}
 
 // AddThrottleEvents накапливает прирост счётчиков троттлинга. Counter с
 // приростом, а не Gauge с сырым значением: sysfs отдаёт накопительное с
@@ -277,9 +298,10 @@ func (e *Exporter) AddThrottleEvents(scope string, delta uint64) {
 }
 
 // SetCPUFreq публикует частоту ядер узла (среднюю и минимальную).
-func (e *Exporter) SetCPUFreq(avgHertz, minHertz float64) {
+func (e *Exporter) SetCPUFreq(avgHertz, minHertz, maxHertz float64) {
 	e.cpuFreq.WithLabelValues("avg").Set(avgHertz)
 	e.cpuFreq.WithLabelValues("min").Set(minHertz)
+	e.cpuFreq.WithLabelValues("max").Set(maxHertz)
 }
 
 // AddRAPLJoules накапливает прирост энергии зоны. Counter, а не Gauge с сырым
