@@ -100,8 +100,14 @@ def ch(sql, ch_url, data=None):
     req = urllib.request.Request(
         ch_url + "/?" + urllib.parse.urlencode({"query": sql}),
         data=data if data is not None else b"", method="POST")
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return resp.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        # Тело ответа важнее кода: ClickHouse объясняет причину именно в нём
+        # («Cannot parse input: expected ...»), а по 400 не догадаться.
+        body = exc.read().decode("utf-8", "replace")[:400]
+        raise RuntimeError(f"ClickHouse ответил {exc.code}: {body}") from exc
 
 
 def watermark(ch_url, database, stand):
@@ -134,10 +140,20 @@ def rows_from(result, metric, stand):
             # для рядов это «точки не было», а не ноль.
             if value in ("NaN", "+Inf", "-Inf"):
                 continue
+            # ВРЕМЯ СТРОКОЙ, а не числом. ClickHouse принимает в DateTime64
+            # число только как ЦЕЛЫЕ секунды и падает на дробной части
+            # («Cannot parse input: expected ','»), а Prometheus отдаёт
+            # timestamp с плавающей точкой. Строка в ISO разбирается
+            # однозначно и не зависит от date_time_input_format.
+            whole = int(ts)
+            millis = int(round((float(ts) - whole) * 1000))
+            if millis == 1000:                     # округление вверх на границе
+                whole, millis = whole + 1, 0
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(whole)) + f".{millis:03d}"
             yield {
                 "stand": stand, "metric": metric, "node": node,
                 "series_key": series_key, "labels": labels,
-                "ts": float(ts), "value": float(value),
+                "ts": stamp, "value": float(value),
             }
 
 
