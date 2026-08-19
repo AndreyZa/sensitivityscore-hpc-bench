@@ -67,6 +67,9 @@ SENSITIVITY = {
     "high-s-io": {"llc": 1.0, "io": 1.0, "net": 0.0},
     "high-s-net": {"llc": 0.0, "io": 0.0, "net": 1.0},
     "low-s": {"llc": 0.0, "io": 0.0, "net": 0.0},
+    # ML-жертва рекалибровки v2 (19.08.2026): llc high (плюс numa high в
+    # профиле, но numa в AXES фита нет — см. комментарий у AXES).
+    "ml-inference": {"llc": 1.0, "io": 0.0, "net": 0.0},
 }
 
 NODE_SHORT = {
