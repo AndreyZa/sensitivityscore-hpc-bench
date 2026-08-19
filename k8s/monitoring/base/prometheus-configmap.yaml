@@ -76,6 +76,77 @@ data:
           - target_label: role
             replacement: control-plane
 
+      # --- etcd, планировщик и controller-manager --------------------------
+      # Требуют конфига k0s, открывающего слушатели наружу
+      # (hpc-k0s-provision, playbooks/templates/k0sctl.yaml.j2: storage.etcd
+      # extraArgs listen-metrics-urls + bind-address у scheduler/
+      # controllerManager). Без него цели будут DOWN — это не поломка сбора,
+      # а признак стенда, где конфиг ещё не применён.
+      #
+      # Адреса, как и у job выше, берём из эндпоинтов сервиса kubernetes.
+      - job_name: etcd
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels:
+              [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+          - source_labels: [__address__]
+            action: replace
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:2381'
+            target_label: __address__
+          - target_label: role
+            replacement: control-plane
+
+      # Планировщик и controller-manager отдают /metrics по HTTPS с
+      # аутентификацией — ходим токеном ServiceAccount (RBAC на
+      # nonResourceURLs /metrics уже есть в prometheus-rbac.yaml).
+      # Сертификат у них самоподписанный на 127.0.0.1, поэтому проверку имени
+      # отключаем — соединение внутри приватной сети стенда.
+      - job_name: kube-scheduler
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels:
+              [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+          - source_labels: [__address__]
+            action: replace
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:10259'
+            target_label: __address__
+          - target_label: role
+            replacement: control-plane
+
+      - job_name: kube-controller-manager
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels:
+              [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+          - source_labels: [__address__]
+            action: replace
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:10257'
+            target_label: __address__
+          - target_label: role
+            replacement: control-plane
+
       # --- kubelet: узловые метрики bench БЕЗ node_exporter ---------------
       # role: node уже даёт <InternalIP>:10250. Скрейпим напрямую, а не через
       # /api/v1/nodes/<n>/proxy: узлы в одной приватной сети (192.168.0.0/24),

@@ -57,6 +57,50 @@ sensitivityscore-system` — metrics-agent на всех bench-узлах;
 ServiceAccount'ы, которые существуют НА МОМЕНТ запуска. Развернул новый
 компонент — прогони таргет ещё раз.
 
+## 2а. Метрики control-plane (окно между кампаниями)
+
+Контроллеры k0s работают без kubelet — это не узлы Kubernetes, обычный
+мониторинг до них не достаёт. Поэтому два отдельных шага, оба уже в IaC.
+
+**Экспортёр на ВМ** — приезжает с `make provision` (роль `nodeexporter`,
+`playbooks/prep.yml`, только группа controllers). Отдельно ставится так:
+
+```bash
+cd ~/phd/hpc-k0s-provision
+ansible-playbook -i inventory/hosts.yml playbooks/prep.yml --limit controllers
+```
+
+**Слушатели etcd, планировщика и controller-manager.** По умолчанию k0s держит
+их на localhost. Конфиг уже в шаблоне (`storage.etcd.extraArgs.listen-metrics-urls`,
+`bind-address` у scheduler/controllerManager), применяется вместе с
+**перезапуском контроллеров**, поэтому — только когда серия не идёт:
+
+```bash
+cd ~/phd/hpc-k0s-provision
+make cluster            # рендер k0sctl.yaml из inventory + k0sctl apply
+```
+
+k0sctl перезапускает контроллеры последовательно, кворум etcd сохраняется.
+После этого — перечитать конфиг сбора (рестарт пода не нужен, у Prometheus
+включён `--web.enable-lifecycle`):
+
+```bash
+cd ~/phd/sensitivityscore-hpc-bench
+kubectl apply -k k8s/monitoring/overlays/prod
+sleep 70   # ConfigMap доезжает до пода
+kubectl -n sensitivityscore-monitoring exec deploy/prometheus -- \
+    wget -q -O- --post-data="" http://localhost:9090/-/reload
+```
+
+**Проверка:** в Prometheus цели `control-plane-nodes`, `etcd`, `kube-scheduler`
+и `kube-controller-manager` — все `up` (3 экземпляра каждая); дашборд
+«Control plane — ВМ и API» показывает fsync WAL и лидера etcd вместо пустых
+панелей.
+
+**Коллегам:** `http://10.40.10.0:3000` — Grafana открыта в сети стенда
+(hostPort на ss-system, анонимный вход с правами просмотра). Наружу порт не
+публикуется; админ-вход — по секрету `grafana-admin`.
+
 ## 3. Прогноз A5 — проверить ДО серий
 
 Прогноз зарегистрирован 20.07 (`c19a721`); критерии и действия при
