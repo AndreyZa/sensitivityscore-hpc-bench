@@ -72,8 +72,16 @@ def _s(x) -> str:
 
 
 def _ts(x):
-    """Unix epoch float -> naive UTC datetime (ClickHouse DateTime64 = UTC)."""
-    return None if _is_missing(x) else datetime.fromtimestamp(float(x), tz=timezone.utc).replace(tzinfo=None)
+    """Unix epoch float -> AWARE UTC datetime.
+
+    Именно aware: clickhouse_connect конвертирует naive datetime через
+    .timestamp(), который трактует его как ЛОКАЛЬНОЕ время клиента — на
+    MSK-хосте это тихо сдвигало все submit/start/end_ts на −3 часа
+    (обнаружено 19.08.2026 кросс-сверкой prod-mixed-calib с Prometheus:
+    интервальные давления возвращали нули, задачи «шли» до старта серии).
+    Внутри-CH-аналитике равномерный сдвиг не вредил, кросс-сверку с
+    эпохами/Prometheus ломал полностью."""
+    return None if _is_missing(x) else datetime.fromtimestamp(float(x), tz=timezone.utc)
 
 
 def _int(x, default: int) -> int:
