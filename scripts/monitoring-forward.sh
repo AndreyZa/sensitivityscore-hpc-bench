@@ -22,11 +22,23 @@ SVC=${1:-}
 # видимость с других машин; Grafana требует логин, Prometheus выставлять
 # осознанно). Pushgateway — строго localhost: это неаутентифицированный
 # push-эндпоинт для ЛОКАЛЬНОГО ss-idrac-poller, наружу ему нельзя.
+#
+# ss-notifier — тоже строго localhost, и по более острому доводу: за этим
+# портом стоит бот, пишущий в ГРУППОВОЙ чат. Токен приёма — граница
+# безопасности, но выставлять такой эндпоинт в домашнюю сеть незачем: его
+# единственный клиент здесь — notify() из scripts/run-series.sh на этом же
+# хосте. Проброс появился 19.08.2026, когда служба уехала в кластер: до того
+# она крутилась на .72 контейнером, и SS_NOTIFY_URL=http://127.0.0.1:8790 в
+# harness/.notify.env указывал прямо на неё. Без этого юнита тот же адрес
+# перестал отвечать, а notify() по построению молчит при недоступной службе —
+# то есть уведомления о зависшей серии пропали бы БЕЗ ЕДИНОГО следа. Ровно
+# та беда, ради которой ss-notifier и написан.
 case "$SVC" in
     grafana)     PORT=3000; HEALTH=/api/health; DEF_ADDR=0.0.0.0 ;;   # отвечает без авторизации
     prometheus)  PORT=9090; HEALTH=/-/healthy;  DEF_ADDR=0.0.0.0 ;;
     pushgateway) PORT=9091; HEALTH=/-/healthy;  DEF_ADDR=127.0.0.1 ;;
-    *) echo "использование: $0 <grafana|prometheus|pushgateway>"; exit 2 ;;
+    ss-notifier) PORT=8790; HEALTH=/healthz;    DEF_ADDR=127.0.0.1 ;;
+    *) echo "использование: $0 <grafana|prometheus|pushgateway|ss-notifier>"; exit 2 ;;
 esac
 
 NS=${MONITORING_NAMESPACE:-sensitivityscore-monitoring}

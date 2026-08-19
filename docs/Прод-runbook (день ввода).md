@@ -48,8 +48,10 @@ make trimaran-deps                               # metrics-server — его ч�
 make monitoring-deploy                           # прод-оверлей стоит по умолчанию
 ```
 Секрет `ss-notifier-config` (токен бота + токен приёма) `monitoring-deploy`
-собирает из `config.env` экземпляра ss-notifier на лабе — поэтому этот шаг
-гонится **с лабы**. Другой путь: `make notifier-secret NOTIFIER_ENV=<файл>`.
+собирает из `config.env`, оставшегося на лабе от прежнего экземпляра службы, —
+поэтому этот шаг гонится **с лабы**. Другой путь: `make notifier-secret
+NOTIFIER_ENV=<файл>`. Дальше правда о канале живёт в Secret'е кластера: чат
+меняется `make notifier-chat CHAT_ID=…`, а не правкой файла.
 **Проверка:** `make scheduler-status` — под жив, ConfigMap-ы на месте;
 `make monitoring-targets` — все цели up; `kubectl get ds -n
 sensitivityscore-system` — metrics-agent на всех bench-узлах;
@@ -147,6 +149,18 @@ make alerts-test          # синтетический алерт: в чат п�
 лечить по возрастанию усилий: найти живой адрес фронта → переключить канал на
 ntfy (`SS_NOTIFY_BACKEND=ntfy` + `NTFY_TOPIC` в секрете, отправители об этом не
 узнают) → попросить партнёра открыть `149.154.166.110:443`.
+
+**Куда пишет бот.** В групповой чат (`TELEGRAM_CHAT_ID` отрицательный).
+Посмотреть, какие чаты боту вообще видны — `make notifier-chats`; переключить —
+`make notifier-chat CHAT_ID=…` (правит Secret и перезапускает под: `envFrom`
+читается только при старте контейнера). Ловушка обычных групп: при превращении
+в супергруппу (темы, история, >200 участников) `chat_id` меняется на `-100…`, и
+бот замолкает **молча** — сторож `SSWatchdog` это поймает через 12 часов.
+
+**Уведомления о серии — через проброс на .72.** `notify()` в
+`scripts/run-series.sh` шлёт на `127.0.0.1:8790`, а служба теперь в кластере:
+адрес держит `ss-forward@ss-notifier` (раздел 9). Без него функция по
+построению молчит — то есть про зависшую серию не сообщит никто.
 
 **Почему ss-notifier поднят в кластере, а не взят с лабы.** Маршрута
 кластер→лаба нет: WG-туннель поднимает лаба, обратно в `10.8.10.0/24`
@@ -295,7 +309,14 @@ sudo systemctl enable ss-status               # страницу подниме�
 #   Environment=KUBECONFIG=/home/andrey/.kube/configs/prod
 sudo systemctl daemon-reload && sudo systemctl enable --now ss-forward@grafana
 ```
-ss-notifier не трогать — он включён и от стенда не зависит.
+ss-notifier на .72 **погашен 19.08.2026** — служба переехала в прод-кластер
+(раздел 2б). Но проброс до неё нужен, иначе уведомления о серии пропадут без
+следа: `notify()` в `run-series.sh` шлёт на `127.0.0.1:8790`, и при мёртвом
+адресе он молча ничего не делает.
+```bash
+make monitoring-uptime-unit SERVICES="grafana ss-notifier"
+curl -sf http://127.0.0.1:8790/healthz && echo " проброс жив"
+```
 Прод-kubeconfig на .72 уже лежит в `~/.kube/configs/prod` и является
 дефолтом — его кладёт сам provision (ступень 1), отдельного шага нет.
 

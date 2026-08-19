@@ -1,5 +1,5 @@
 # Постоянный проброс UI мониторинга с хоста, который держат включённым.
-# Шаблон: %i — имя сервиса (grafana | prometheus).
+# Шаблон: %i — имя сервиса (grafana | prometheus | pushgateway | ss-notifier).
 #
 #   sudo cp scripts/ss-forward@.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
