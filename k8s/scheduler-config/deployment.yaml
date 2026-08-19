@@ -43,11 +43,6 @@ spec:
         - key: node-role.kubernetes.io/ss-system
           operator: Exists
           effect: NoSchedule
-        # Легаси-taint первой разметки STAGE (14.07.2026) — убрать после
-        # перевода стенда целиком на роль.
-        - key: ss-system
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: sensitivityscore-scheduler
           image: REPLACE_ME_IMAGE # подставляется через `make scheduler-deploy` (переменная SCHEDULER_IMAGE)

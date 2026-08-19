@@ -192,7 +192,9 @@ image-statusserver: ## Собрать образ статус-страницы
 # воспроизводила ровно ту эмуляцию, ради ухода от которой compose и собирает
 # нативный statusserver:local. Вдобавок она занимала имя ss-status и потому
 # убивала страницу ИДУЩЕЙ серии, а дублированный список --log/--config/...
-# расходился с compose. Оставлен алиас, чтобы старая команда не молчала.
+# расходился с compose. Алиас statusserver-docker, оставленный тогда «чтобы
+# старая команда не молчала», удалён 19.08.2026: месяц спустя молчать уже
+# нечему.
 .PHONY: status-page
 status-page: ## Поднять статус-страницу локально (compose): make status-page SERIES=<имя>
 	@STATUS_PORT=$${STATUS_PORT:-8787} SERIES="$(SERIES)" \
@@ -213,10 +215,6 @@ status-page-unit: ## Поставить systemd-юнит: страница пе�
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now ss-status
 	@systemctl status ss-status --no-pager | head -5
-
-.PHONY: statusserver-docker
-statusserver-docker: status-page ## Устаревшее имя цели status-page
-	@echo "note: цель переименована в 'make status-page'"
 
 .PHONY: statusserver-deploy
 statusserver-deploy: ## Развернуть страницу в кластере (ss-system, PVC харнесса read-only)
@@ -315,7 +313,9 @@ MONITORING_NAMESPACE ?= sensitivityscore-monitoring
 # памяти 2 ГиБ на 512 МиБ. Ошибка в сторону прода теперь безобидна (лишний
 # hostPort и большой retention на STAGE), а в сторону STAGE — нет. Плюс страж
 # monitoring-overlay-guard.sh: на стенде с измерительными узлами он не даст
-# применить оверлей, который рендерит STAND != prod.
+# применить оверлей, который рендерит STAND != prod. Сам overlays/stage удалён
+# 19.08.2026 (STAGE снесён, кластер не отвечает) — грабли убраны с газона, а не
+# обойдены; история инцидента оставлена здесь намеренно.
 MONITORING_OVERLAY   ?= k8s/monitoring/overlays/prod
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
@@ -394,7 +394,9 @@ monitoring-deploy: monitoring-secret notifier-secret-soft ## Развернут�
 	@echo "готово — дальше: make monitoring-open, проверка канала: make alerts-test"
 
 # Поллер iDRAC живёт в кластере с 19.08.2026 (партнёр открыл VM-сети доступ
-# к iDRAC tcp/443; лабные ss-idrac-poller/ss-forward@pushgateway выведены).
+# к iDRAC tcp/443; лабный юнит ss-idrac-poller выведен и удалён 19.08).
+# ss-forward@pushgateway при этом ОСТАЁТСЯ: его клиентом стал маркер серии из
+# run-series.sh — см. шапку scripts/monitoring-forward.sh.
 # Скрипт НЕ дублируется — ConfigMap собирается из scripts/idrac-power-poller.py
 # здесь (kustomize не достаёт файлы вне своего корня); Secret с паролем в
 # репо не хранится и создаётся вручную (подсказка ниже).

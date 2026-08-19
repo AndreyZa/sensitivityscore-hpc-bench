@@ -29,10 +29,6 @@ spec:
         - key: node-role.kubernetes.io/ss-system
           operator: Exists
           effect: NoSchedule
-        # Легаси-taint первой разметки STAGE — убрать после перевода на роль.
-        - key: ss-system
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: redis
           image: redis:7-alpine

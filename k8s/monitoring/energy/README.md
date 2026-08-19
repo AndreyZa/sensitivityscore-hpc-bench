@@ -17,9 +17,10 @@
    `make energy-idrac-deploy` собирает ConfigMap из scripts/ и требует
    Secret `idrac-credentials`) и толкает в pushgateway по ClusterIP.
    Метрики прежние: `idrac_power_watts`, `idrac_psu_input_watts`,
-   `idrac_poll_timestamp_seconds`. Лабные юниты `ss-idrac-poller` и
-   `ss-forward@pushgateway` погашены (disable --now) 19.08 — файл юнита в
-   scripts/ оставлен как исторический. Заготовка `ipmi-exporter.yaml`
+   `idrac_poll_timestamp_seconds`. Лабный юнит `ss-idrac-poller` погашен и
+   удалён 19.08 (карта узел→BMC жила и в юните, и в манифесте — два источника
+   правды об одном; остался манифест). `ss-forward@pushgateway` НЕ выведен:
+   его клиентом стал маркер серии из run-series.sh. Заготовка `ipmi-exporter.yaml`
    остаётся перекрытой poller'ом. Накопительного счётчика энергии у iDRAC
    этой прошивки нет — источник ipmi в energy_windows будет интегрированием
    опроса (Э0.1 — по средней мощности, этого достаточно).

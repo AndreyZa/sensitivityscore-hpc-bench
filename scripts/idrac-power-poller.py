@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """idrac-power-poller.py — мгновенная мощность узлов из iDRAC (Redfish) в Pushgateway.
 
-Живёт на лабе (.72): iDRAC-сеть видна только из её WG-туннеля, а обратного
-маршрута кластер→лаба нет — поэтому push через ss-forward@pushgateway
-(kubectl port-forward на localhost:9091), а не скрейп. Смысл метрик — источник
+Крутится Deployment'ом `idrac-poller` на ss-system (манифест
+k8s/monitoring/base/idrac-poller.yaml, выкатка `make energy-idrac-deploy`) и
+толкает в pushgateway по ClusterIP. До 19.08.2026 жил на лабе (.72) юнитом
+ss-idrac-poller и толкал через ss-forward@pushgateway: iDRAC-сеть была видна
+только из её WG-туннеля. Партнёр открыл VM-сетям доступ к iDRAC (tcp/443) —
+лабный путь снят; сам скрипт от места запуска не зависит, ему нужны доступ к
+BMC и адрес pushgateway. Push, а не скрейп: узлов трое, опрос секундный, и
+короткоживущему опросу pushgateway подходит. Смысл метрик — источник
 ipmi энерговетки (кросс-сверка Э0.1/Э0.4 предрегистрации) и дашборд мощности:
 накопительного счётчика энергии у iDRAC этой прошивки НЕТ (проверено
 18.08.2026), так что энергия окна из этого источника — интегрирование опроса,
@@ -18,7 +23,8 @@ ipmi энерговетки (кросс-сверка Э0.1/Э0.4 предрег�
                                           последний push вечно — различать
                                           «мощность такая» и «poller молчит»)
 
-Запуск (systemd-юнит scripts/ss-idrac-poller.service):
+Запуск (в кластере — `make energy-idrac-deploy`, карта узлов и Secret с
+паролем заданы в манифесте; руками, для отладки):
   IDRAC_MAP="wrk-b6=10.21.200.106,wrk-b7=10.21.200.107,wrk-b8=10.21.200.108" \\
   IDRAC_PASS_FILE=~/.idrac-pass.txt ./idrac-power-poller.py [--once]
 
