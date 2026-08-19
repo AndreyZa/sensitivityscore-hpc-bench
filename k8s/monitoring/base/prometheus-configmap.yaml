@@ -25,6 +25,16 @@ data:
     rule_files:
       - /etc/prometheus/rules/*.yaml
 
+    # Куда уходят сработавшие правила. До 19.08.2026 этого блока не было:
+    # правила вычислялись, но адресата не имели, и единственным следом
+    # срабатывания была панель в Grafana — то есть узнать о беде можно было,
+    # только придя посмотреть. Для серии, которая идёт 4 часа без человека,
+    # это не наблюдаемость.
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager.sensitivityscore-monitoring.svc.cluster.local:9093"]
+
     scrape_configs:
       # --- сам Prometheus -----------------------------------------------
       - job_name: prometheus
@@ -234,6 +244,15 @@ data:
         honor_labels: true
         static_configs:
           - targets: ["pushgateway.sensitivityscore-monitoring.svc.cluster.local:9091"]
+
+      # --- Alertmanager: доставка уведомлений -----------------------------
+      # Нужен не для полноты, а ради одной метрики:
+      # alertmanager_notifications_failed_total. Она закрывает весь путь
+      # целиком — если ss-notifier не смог достучаться до Telegram, он отдаёт
+      # 502, и счётчик растёт. Правило SSAlertDeliveryFailing построено на ней.
+      - job_name: alertmanager
+        static_configs:
+          - targets: ["alertmanager.sensitivityscore-monitoring.svc.cluster.local:9093"]
 
       # --- планировщик стенда --------------------------------------------
       # Тот самый бинарь, ради которого стенд существует. До 19.08.2026 его

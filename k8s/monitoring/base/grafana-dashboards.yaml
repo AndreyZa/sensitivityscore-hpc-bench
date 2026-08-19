@@ -1218,7 +1218,7 @@ data:
               }
             }
           ],
-          "description": "Alertmanager намеренно не развёрнут, поэтому это ЕДИНСТВЕННОЕ место, где сработавшее правило видно без открытия Prometheus. Пустая таблица = ни одно из правил не активно. Смысл правил стенда — не дежурство, а защита от молчаливо неверных серий: почти каждое описывает состояние, при котором цифры продолжают писаться, но нести их в диссертацию уже нельзя."
+          "description": "Что сработало прямо сейчас. С 19.08.2026 алерты ещё и УХОДЯТ в Telegram через Alertmanager и ss-notifier (панели доставки ниже), но эта таблица остаётся единственным местом, где видно правило, о котором канал сообщить НЕ МОЖЕТ — в первую очередь SSAlertDeliveryFailing, то есть поломку самого канала. Пустая таблица = ни одно правило не активно. Смысл правил стенда — не дежурство, а защита от молчаливо неверных серий: почти каждое описывает состояние, при котором цифры продолжают писаться, но нести их в диссертацию уже нельзя."
         },
         {
           "type": "table",
@@ -1423,6 +1423,168 @@ data:
             }
           ],
           "description": "Приближение к scrape_interval (30s, у агента 10s) означает, что цель скоро начнёт таймаутиться и в данных появятся дырки. cAdvisor на 128-поточных узлах — первый кандидат."
+        },
+        {
+          "type": "timeseries",
+          "title": "Уведомлений в час: отправлено и не удалось",
+          "id": 19,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 44
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (integration) (rate(alertmanager_notifications_total[30m])) * 3600",
+              "legendFormat": "отправлено ({{integration}})"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by (integration) (rate(alertmanager_notifications_failed_total[30m])) * 3600",
+              "legendFormat": "НЕ УДАЛОСЬ ({{integration}})"
+            }
+          ],
+          "description": "Весь путь Alertmanager → ss-notifier → Telegram. Неудачей считается и недоступный ss-notifier, и его 502 «канал не принял» — то есть эта панель ловит и блокировку api.telegram.org в партнёрской сети. Ровная линия отправленных без неудач при пустой таблице алертов выше — это сторож SSWatchdog, два сообщения в сутки."
+        },
+        {
+          "type": "stat",
+          "title": "Сторож активен",
+          "id": 20,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 12,
+            "y": 44
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(ALERTS{alertname=\"SSWatchdog\"}) or vector(0)"
+            }
+          ],
+          "description": "SSWatchdog обязан быть firing ВСЕГДА: он единственное правило с expr vector(1), и его смысл — отличить «тихо, потому что всё хорошо» от «тихо, потому что канал сломан». Ноль здесь означает, что признака жизни в чат больше не приходит."
+        },
+        {
+          "type": "stat",
+          "title": "Не доставлено за сутки",
+          "id": 21,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 16,
+            "y": 44
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(increase(alertmanager_notifications_failed_total[24h])) or vector(0)"
+            }
+          ],
+          "description": "Ненулевое значение = алерты стенда сейчас никуда не приходят. Правило SSAlertDeliveryFailing говорит о том же, но доехать в канал оно, по понятной причине, не может — смотреть надо здесь."
+        },
+        {
+          "type": "stat",
+          "title": "Alertmanager на связи",
+          "id": 22,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 20,
+            "y": 44
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "up{job=\"alertmanager\"}"
+            }
+          ],
+          "description": "Появился 19.08.2026. До него правила стенда вычислялись, но адресата не имели: единственным следом срабатывания была панель «Активные алерты» рядом."
         }
       ],
       "annotations": {

@@ -1,0 +1,105 @@
+# ss-notifier в кластере — доставка алертов и уведомлений о прогонах в Telegram.
+#
+# Почему В КЛАСТЕРЕ, а не на лабе, где эта служба уже крутится. Схема лабы
+# («служба живёт там, где есть постоянный адрес, всем остальным довольно уметь
+# POST») требует маршрута кластер→лаба, а его НЕТ: WG-туннель поднимает лаба, и
+# обратно в 10.8.10.0/24 партнёрская сеть не маршрутизирует. Проверено дважды —
+# 18.08.2026 при разборе iDRAC-поллера (см. pushgateway.yaml) и 19.08.2026
+# отдельно для этого порта: и из пода, и с самого узла ss-system адрес
+# 10.8.10.6:8790 недостижим. Обратный SSH-туннель с лабы решил бы это, но
+# поставил бы оповещения прода в зависимость от ноутбука с моргающим Wi-Fi —
+# то есть сделал бы канал ненадёжным именно тогда, когда он нужен. Экземпляр
+# лабы остаётся: он обслуживает локальные прогоны и STAGE.
+#
+# Цена решения — токен бота существует в двух местах (config.env на лабе и
+# Secret здесь). Это сознательный размен: принцип «секрет в одном месте» здесь
+# уступает независимости прода от лабы. Бот и чат те же, сообщения приходят в
+# один и тот же диалог.
+#
+# ВАЖНО про доступ к Telegram из партнёрской сети — см. overlays/prod:
+# api.telegram.org резолвится в адрес, который оттуда не отвечает.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ss-notifier
+  labels:
+    app: ss-notifier
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ss-notifier
+  template:
+    metadata:
+      labels:
+        app: ss-notifier
+    spec:
+      # Как весь стек — на служебном узле, не на измерительных (методика).
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: ss-notifier
+          # Образ собирает CI репозитория ss-notifier (linux/amd64, тег :dev
+          # заведён именно под стенды). Локально не собирать и не пушить.
+          image: andreyza/ss-notifier:dev
+          imagePullPolicy: Always
+          envFrom:
+            # SS_NOTIFY_TOKEN + TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (и, если
+            # надо, SS_NOTIFY_BACKEND=ntfy + NTFY_*). Секрет в git не хранится:
+            # создаётся из config.env лабы таргетом `make notifier-secret`.
+            # Служба БЕЗ SS_NOTIFY_TOKEN не стартует осознанно — она держит
+            # токен бота и пишет от вашего имени.
+            - secretRef:
+                name: ss-notifier-config
+          ports:
+            - name: http
+              containerPort: 8790
+          # Образ работает от uid 10001 и ничего не пишет на диск — фиксируем
+          # это здесь, а не полагаемся на Dockerfile.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "96Mi"
+          readinessProbe:
+            # /healthz ничего не отправляет и токена не требует — это
+            # проверено тестами самой службы.
+            httpGet:
+              path: /healthz
+              port: 8790
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8790
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ss-notifier
+  labels:
+    app: ss-notifier
+spec:
+  # ClusterIP: писать в чат разрешено только тому, кто внутри кластера И знает
+  # SS_NOTIFY_TOKEN. Наружу порт не публикуется.
+  type: ClusterIP
+  selector:
+    app: ss-notifier
+  ports:
+    - name: http
+      port: 8790
+      targetPort: 8790

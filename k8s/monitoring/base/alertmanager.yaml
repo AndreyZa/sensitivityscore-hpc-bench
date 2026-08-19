@@ -1,0 +1,191 @@
+# Alertmanager — маршрутизация сработавших правил в ss-notifier.
+#
+# Почему появился только 19.08.2026. Правила стенда (prometheus-rules.yaml)
+# считались с самого начала, но идти им было НЕКУДА: Alertmanager сознательно
+# не разворачивали (~80 Mi на 2-ГБ ss-system STAGE), и единственным следом
+# срабатывания оставалась панель «Активные алерты» в Grafana — то есть чтобы
+# узнать о беде, надо было пойти и посмотреть. Смысл правил стенда при этом не
+# «дежурство», а защита от МОЛЧАЛИВО НЕВЕРНЫХ СЕРИЙ: почти каждое описывает
+# состояние, в котором стенд продолжает писать цифры, но нести их в
+# диссертацию уже нельзя. Серия идёт 4 часа, свип веса — сутки, и всё это время
+# за стендом никто не сидит: pull-наблюдаемость здесь и не могла работать.
+# На проде ВМ 4 vCPU / 8 ГБ — прежний довод про 80 Mi больше не действует.
+#
+# Куда доставляет: ss-notifier (см. ss-notifier.yaml) — у него есть готовый
+# эндпоинт /alert, который сам разбирает firing/resolved, метки и аннотации.
+#
+# Состояние (журнал уведомлений, сайленсы) — в emptyDir: его потеря при
+# пересоздании пода означает максимум одно повторное сообщение. Ради этого
+# держать PVC не стоит.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  labels:
+    app: alertmanager
+data:
+  alertmanager.yml: |
+    global:
+      # Сколько ждать, прежде чем считать алерт снятым, если Prometheus
+      # перестал его присылать (например, сам упал). Держим равным
+      # четырёхкратному evaluation_interval Prometheus (30s) с запасом.
+      resolve_timeout: 5m
+
+    route:
+      receiver: ss-notifier
+      # Группируем по имени правила: «SSAgentStale на трёх узлах» — это одно
+      # сообщение с тремя строками, а не три сообщения. По instance НЕ
+      # группируем осознанно: на кампании узлов немного, а дробить одну
+      # причину на несколько сообщений — верный способ, чтобы их перестали
+      # читать.
+      group_by: [alertname]
+      group_wait: 30s
+      group_interval: 5m
+      # Напоминание раз в 4 часа: длина одной серии. Реже — можно не заметить,
+      # что беда всё ещё длится; чаще — на суточном свипе это спам.
+      repeat_interval: 4h
+      routes:
+        # ПЕРВЫМ, потому что маршруты проверяются по порядку и первый
+        # совпавший забирает алерт.
+        #
+        # Сторожевой алерт — единственный, который срабатывает ВСЕГДА. Он
+        # закрывает дыру, из-за которой ss-notifier вообще появился: молчание
+        # канала выглядит ровно как «всё хорошо». Два сообщения в сутки
+        # означают «правила вычисляются, доставка живёт»; их пропажа — это
+        # сигнал сама по себе.
+        - receiver: ss-notifier-heartbeat
+          matchers: ['alertname = "SSWatchdog"']
+          group_wait: 0s
+          group_interval: 12h
+          repeat_interval: 12h
+        # Критичные напоминают о себе чаще: это состояния, при которых
+        # идущая серия уже испорчена (нечестный PMU, вставший агент,
+        # некалиброванная ось), и каждый лишний час — потерянные точки плана.
+        - receiver: ss-notifier
+          matchers: ['severity = "critical"']
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 1h
+
+    receivers:
+      - name: ss-notifier
+        webhook_configs:
+          - url: http://ss-notifier.sensitivityscore-monitoring.svc.cluster.local:8790/alert
+            # Снятый алерт приходит как «done» — по нему видно, что беда
+            # кончилась, и не надо идти проверять руками.
+            send_resolved: true
+            http_config:
+              # Токен приёма ss-notifier. Он же лежит в Secret
+              # ss-notifier-config; сюда монтируется одним ключом, чтобы
+              # Alertmanager не видел токена бота.
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/notifier/token
+
+      - name: ss-notifier-heartbeat
+        webhook_configs:
+          - url: http://ss-notifier.sensitivityscore-monitoring.svc.cluster.local:8790/alert
+            # У сторожевого алерта «снятия» не бывает по построению, а если
+            # оно случится — это значит, что сломался сам Prometheus, и
+            # сообщение «SSWatchdog снят» было бы дезинформацией.
+            send_resolved: false
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/notifier/token
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      # Как весь стек — на служебном узле, не на измерительных (методика).
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            # Перечитать конфиг без перезапуска пода — тем же способом, что у
+            # Prometheus (POST /-/reload).
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager/alertmanager.yml
+              subPath: alertmanager.yml
+              readOnly: true
+            - name: notifier-token
+              mountPath: /etc/alertmanager/notifier
+              readOnly: true
+            - name: data
+              mountPath: /alertmanager
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: notifier-token
+          secret:
+            secretName: ss-notifier-config
+            items:
+              # Только токен приёма. Токен бота из того же секрета
+              # Alertmanager'у не нужен и здесь не появляется.
+              - key: SS_NOTIFY_TOKEN
+                path: token
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  labels:
+    app: alertmanager
+spec:
+  # ClusterIP, НЕ NodePort: у Alertmanager нет аутентификации, а «затушить»
+  # алерт (silence) — это операция записи. В партнёрской сети 10.40/16 с
+  # неизвестными соседями открытый порт означал бы, что заглушить оповещения
+  # стенда может кто угодно, кто до него дотянулся. Наружу — port-forward.
+  type: ClusterIP
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093

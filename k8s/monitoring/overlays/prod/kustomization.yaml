@@ -35,3 +35,10 @@ patches:
     target:
       kind: Deployment
       name: grafana
+  # Alertmanager и ss-notifier прибиты к ss-system уже в base (как
+  # pushgateway) — размещение для них часть смысла, а не свойство стенда.
+  # Прод добавляет им только обход блокировки Telegram.
+  - path: ss-notifier-prod-patch.yaml
+    target:
+      kind: Deployment
+      name: ss-notifier

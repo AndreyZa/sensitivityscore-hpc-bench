@@ -319,6 +319,11 @@ MONITORING_NAMESPACE ?= sensitivityscore-monitoring
 MONITORING_OVERLAY   ?= k8s/monitoring/overlays/prod
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
+# Откуда брать токены для Secret ss-notifier-config. Экземпляр ss-notifier на
+# лабе уже настроен (бот, чат, токен приёма), и правда о канале живёт там —
+# поэтому секрет кластера СОБИРАЕТСЯ из того же файла, а не заводится заново:
+# два разных бота в одном чате отличать было бы нечем.
+NOTIFIER_ENV         ?= $(HOME)/phd/ss-notifier/config.env
 
 .PHONY: monitoring-secret
 monitoring-secret: ## Создать секрет grafana-admin со случайным паролем (идемпотентно, в git не попадает)
@@ -335,14 +340,37 @@ monitoring-secret: ## Создать секрет grafana-admin со случа�
 		echo ""; \
 	fi
 
+.PHONY: notifier-secret
+notifier-secret: ## Secret ss-notifier-config из config.env (NOTIFIER_ENV=...); значения не печатаются
+	@$(KUBECTL) create namespace $(MONITORING_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
+	@test -r "$(NOTIFIER_ENV)" || { \
+		echo "нет файла $(NOTIFIER_ENV) — запускать с хоста, где настроен ss-notifier (лаба),"; \
+		echo "или указать путь: make notifier-secret NOTIFIER_ENV=/путь/config.env"; exit 1; }
+	@# Берём ТОЛЬКО ключи канала и приёма. Остальное из config.env (порт, bind,
+	@# TELEGRAM_API) в кластере задаётся манифестом, а не файлом лабы, иначе
+	@# настройки docker-compose тихо переехали бы в поды.
+	@keys="SS_NOTIFY_TOKEN SS_NOTIFY_BACKEND TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID NTFY_URL NTFY_TOPIC NTFY_TOKEN"; \
+	args=""; found=""; \
+	for k in $$keys; do \
+		v=$$(sed -n "s/^$$k=//p" "$(NOTIFIER_ENV)" | tail -1 | sed "s/^[\"']//; s/[\"']$$//"); \
+		if [ -n "$$v" ]; then args="$$args --from-literal=$$k=$$v"; found="$$found $$k"; fi; \
+	done; \
+	case "$$found" in *SS_NOTIFY_TOKEN*) ;; *) \
+		echo "в $(NOTIFIER_ENV) нет SS_NOTIFY_TOKEN — без него служба не стартует осознанно"; exit 1;; esac; \
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) create secret generic ss-notifier-config \
+		$$args --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null; \
+	echo "secret/ss-notifier-config: перенесены ключи —$$found"
+
 .PHONY: monitoring-deploy
-monitoring-deploy: monitoring-secret ## Развернуть стек мониторинга на ss-system
+monitoring-deploy: monitoring-secret notifier-secret ## Развернуть стек мониторинга на ss-system
 	KUBECTL="$(KUBECTL)" ./scripts/monitoring-overlay-guard.sh $(MONITORING_OVERLAY)
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/prometheus --timeout=180s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/grafana --timeout=180s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/kube-state-metrics --timeout=180s
-	@echo "готово — дальше: make monitoring-open"
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/alertmanager --timeout=180s
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/ss-notifier --timeout=180s
+	@echo "готово — дальше: make monitoring-open, проверка канала: make alerts-test"
 
 # Поллер iDRAC живёт в кластере с 19.08.2026 (партнёр открыл VM-сети доступ
 # к iDRAC tcp/443; лабные ss-idrac-poller/ss-forward@pushgateway выведены).
@@ -410,6 +438,20 @@ monitoring-targets: ## Показать состояние scrape-целей (up
 	@$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -- \
 		wget -q -O- 'http://localhost:9090/api/v1/query?query=up' \
 		| python3 -c 'import json,sys;rs=json.load(sys.stdin)["data"]["result"];rs.sort(key=lambda r:r["metric"].get("job",""));[print("UP  " if r["value"][1]=="1" else "DOWN", r["metric"].get("job","?").ljust(28), r["metric"].get("instance","?")) for r in rs]'
+
+.PHONY: alerts-status
+alerts-status: ## Что сейчас с алертами и доставкой (правила, активные, счётчики отправок, сторож)
+	@KUBECTL="$(KUBECTL)" MONITORING_NAMESPACE=$(MONITORING_NAMESPACE) ./scripts/alerts-status.sh
+
+.PHONY: alerts-test
+alerts-test: ## Живая проверка канала: синтетический алерт через Alertmanager -> ss-notifier -> Telegram
+	@echo "отправляю тестовый алерт (в чат придёт одно сообщение и через ~1 мин его снятие)"
+	@$(KUBECTL) -n $(MONITORING_NAMESPACE) exec -i deploy/alertmanager -- \
+		wget -q -O- --header='Content-Type: application/json' \
+		--post-data='[{"labels":{"alertname":"SSChannelTest","severity":"info","instance":"make alerts-test"},"annotations":{"summary":"проверка канала доставки алертов стенда"},"endsAt":"'"$$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%S.000Z)"'"}]' \
+		http://localhost:9093/api/v2/alerts && echo "принято Alertmanager'ом"
+	@echo "если сообщение не пришло: make alerts-status (счётчик «не удалось») и"
+	@echo "  kubectl -n $(MONITORING_NAMESPACE) logs deploy/ss-notifier --tail=20"
 
 .PHONY: monitoring-clean
 monitoring-clean: ## Снести стек мониторинга (TSDB в hostPath на узле НЕ удаляется)
