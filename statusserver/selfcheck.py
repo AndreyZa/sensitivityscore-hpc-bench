@@ -131,71 +131,87 @@ def check_costly_counter() -> bool:
 
 
 def check_recent_pace() -> bool:
-    """Темп не должен верить всплеску пачечной подачи.
+    """Темп обязан НЕ зависеть от фазы цикла плеча.
 
-    Регрессия, ради которой это здесь: в смешанном сценарии 6 жертв уходят в
-    кластер за минуту, дальше плечо десять минут работает. Окно из последних
-    12 сабмитов — это ровно две пачки, и если мерить его по РАЗНИЦЕ МЕТОК,
-    рабочее время плеча в замер почти не попадает: темп выходит в полтора
-    раза бодрее настоящего, а страница обещает финиш на два часа раньше
-    (19.08, серия mixed-calib-v2 — «завершится ~02:26» при реальных ~05:00).
+    Регрессия, ради которой это здесь (19–20.08, серия mixed-calib-v2): 6
+    жертв плеча уходят в кластер за минуту, дальше плечо девять минут
+    работает. Пока темп мерили по сабмитам, окно из 12 штук было ровно двумя
+    пачками, и ответ зависел от момента взгляда: 52 строки/ч сразу после
+    пачки, 36 в середине плеча при истинных 40 — обещанный финиш прыгал на
+    час с лишним туда-сюда каждые несколько минут.
 
-    Синтетика повторяет ту же форму: плечо 660 с, внутри пачка из 6 сабмитов
-    с реальными смещениями подачи."""
+    Синтетика повторяет форму: плечо 660 с, внутри пачка из 6 сабмитов с
+    реальными смещениями подачи. Главная проверка — два взгляда в разных
+    фазах цикла дают ОДНО число."""
     import time as _t
 
     from statusserver.progress import recent_pace
 
     ARM, OFFSETS = 660.0, (0.0, 10.0, 20.0, 30.0, 90.0, 94.0)
     true_rate = len(OFFSETS) / ARM
+    problems = []
 
-    def lines(stamps):
+    def lines(stamps_ids):
         return [
             _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(s))
-            + f" INFO submit: job_id=J{i} config=A profile=p overcommit=2.0 rep=0"
-            for i, s in enumerate(stamps)
+            + f" INFO submit: job_id={jid} config=A profile=p overcommit=2.0 rep=0"
+            for s, jid in stamps_ids
         ]
 
-    # «Сейчас» — середина текущего плеча: последняя пачка ушла 300 с назад.
+    def series(last_arm_start, arms=5, shift=0.0):
+        """arms плеч подряд; последнее стартовало в last_arm_start."""
+        out = []
+        for k in range(arms - 1, -1, -1):
+            t0 = last_arm_start - k * ARM
+            for i, off in enumerate(OFFSETS):
+                out.append((t0 + off + shift, f"A-mixed-rep{arms - k:02d}-v{i}"))
+        return out
+
     now = _t.time()
-    last_arm = now - 300.0 - OFFSETS[-1]
-    stamps = [
-        last_arm - k * ARM + off
-        for k in range(3, -1, -1)
-        for off in OFFSETS
-    ]
-    got = recent_pace(lines(stamps))
-
-    problems = []
-    if got is None:
-        problems.append("темп не посчитан на 24 сабмитах")
+    # Два взгляда: сразу после пачки текущего плеча и в его середине.
+    just_after = recent_pace(lines(series(now - OFFSETS[-1] - 5)))
+    mid_cycle = recent_pace(lines(series(now - 300.0)))
+    if just_after is None or mid_cycle is None:
+        problems.append("темп не посчитан на пяти плечах")
     else:
-        tail = stamps[-12:]
-        by_marks = (len(tail) - 1) / (tail[-1] - tail[0])   # прежняя формула
-        if got >= by_marks:
+        if abs(just_after - mid_cycle) > 1e-9:
             problems.append(
-                f"всплеск не погашен: {got:.5f}/с >= замера по меткам {by_marks:.5f}/с"
+                f"темп зависит от фазы цикла: сразу после пачки {just_after * 3600:.1f} "
+                f"строк/ч, в середине плеча {mid_cycle * 3600:.1f} строк/ч"
             )
-        if not 0.7 * true_rate <= got <= 1.4 * true_rate:
+        if abs(mid_cycle - true_rate) > 0.03 * true_rate:
             problems.append(
-                f"темп {got:.5f}/с далёк от истинного {true_rate:.5f}/с "
-                f"(допуск 0.7–1.4×)"
+                f"темп {mid_cycle * 3600:.1f} строк/ч вместо истинных "
+                f"{true_rate * 3600:.1f} (допуск 3%)"
             )
 
-    # Часы лога впереди часов процесса (страница в контейнере с чужим TZ):
-    # абсолютное сравнение с «сейчас» дало бы отрицательный интервал, а с ним
-    # ETA в прошлом. Ожидаем откат к разнице меток — она от зоны не зависит.
-    skewed = [s + 3 * 3600 for s in stamps]
-    got_skew = recent_pace(lines(skewed))
-    tail_s = skewed[-12:]
-    want_skew = (len(tail_s) - 1) / (tail_s[-1] - tail_s[0])
-    if got_skew is None or abs(got_skew - want_skew) > 1e-9:
+    # Сдвиг часов лога относительно процесса (страница в контейнере с чужим
+    # TZ — ловушка из _marker_ts): расчёт идёт по разностям меток и обязан
+    # остаться прежним.
+    skewed = recent_pace(lines(series(now - 300.0, shift=3 * 3600)))
+    if skewed is None or mid_cycle is None or abs(skewed - mid_cycle) > 1e-9:
+        problems.append(f"сдвиг TZ поменял темп: {skewed} вместо {mid_cycle}")
+
+    # Встало: текущее плечо тянется три цикла вместо одного — оценка обязана
+    # просесть, а не показывать бодрый темп мёртвого прогона.
+    stalled = recent_pace(lines(series(now - 3 * ARM)))
+    if stalled is None or stalled > 0.6 * true_rate:
         problems.append(
-            f"сдвиг TZ: ожидался откат к меткам {want_skew:.5f}/с, получено {got_skew}"
+            f"вставшая серия: темп {stalled} не просел (истинный {true_rate:.5f}/с)"
         )
 
-    if recent_pace(lines(stamps[:3])) is not None:
-        problems.append("на трёх сабмитах темп обязан быть None (нечего мерить)")
+    # Эталонная фаза: у каждого прогона свой job_id, плечо = один сабмит.
+    step = 240.0
+    base = [(now - k * step, f"A-default-high-s-base-wrk-b6-rep{k:02d}")
+            for k in range(13, -1, -1)]
+    got_base = recent_pace(lines(base))
+    if got_base is None or abs(got_base - 1 / step) > 0.03 / step:
+        problems.append(
+            f"эталонная фаза: темп {got_base} вместо {1 / step:.5f}/с"
+        )
+
+    if recent_pace(lines(series(now, arms=1))) is not None:
+        problems.append("на одном плече темп обязан быть None (мерить нечего)")
 
     for p in problems:
         print(f"FAIL recent pace: {p}")
