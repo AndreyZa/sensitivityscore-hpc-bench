@@ -1,3 +1,8 @@
+# ВЫВЕДЕН 19.08.2026: партнёр открыл VM-сетям доступ к iDRAC — поллер
+# переехал в кластер (Deployment idrac-poller, `make energy-idrac-deploy`),
+# юнит на лабе погашен (disable --now). Файл оставлен как исторический
+# fallback на случай отзыва сетевого доступа.
+#
 # Poller iDRAC-мощности (энерговетка): Redfish трёх BMC -> Pushgateway
 # кластера через ss-forward@pushgateway. Живёт ТОЛЬКО на лабе (.72) — см.
 # докстринг scripts/idrac-power-poller.py.
