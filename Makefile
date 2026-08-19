@@ -331,6 +331,24 @@ monitoring-deploy: monitoring-secret ## Развернуть стек монит
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/kube-state-metrics --timeout=180s
 	@echo "готово — дальше: make monitoring-open"
 
+# Поллер iDRAC живёт в кластере с 19.08.2026 (партнёр открыл VM-сети доступ
+# к iDRAC tcp/443; лабные ss-idrac-poller/ss-forward@pushgateway выведены).
+# Скрипт НЕ дублируется — ConfigMap собирается из scripts/idrac-power-poller.py
+# здесь (kustomize не достаёт файлы вне своего корня); Secret с паролем в
+# репо не хранится и создаётся вручную (подсказка ниже).
+.PHONY: energy-idrac-deploy
+energy-idrac-deploy: ## Поллер iDRAC в кластере: ConfigMap из scripts/ + деплой (нужен Secret idrac-credentials)
+	@$(KUBECTL) -n $(MONITORING_NAMESPACE) get secret idrac-credentials >/dev/null 2>&1 || { \
+		echo "нет Secret idrac-credentials — создать с хоста, где лежит пароль (лаба):"; \
+		echo "  kubectl -n $(MONITORING_NAMESPACE) create secret generic idrac-credentials \\"; \
+		echo "      --from-file=password=\$$HOME/phd/.idrac-pass.txt"; exit 1; }
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) create configmap idrac-poller-script \
+		--from-file=idrac-power-poller.py=scripts/idrac-power-poller.py \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f k8s/monitoring/base/idrac-poller.yaml
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout restart deployment/idrac-poller
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deployment/idrac-poller --timeout=120s
+
 .PHONY: monitoring-reload
 monitoring-reload: ## Перечитать scrape-конфиг и правила без перезапуска пода
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)

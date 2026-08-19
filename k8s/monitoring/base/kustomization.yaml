@@ -12,6 +12,7 @@ resources:
   - kube-state-metrics.yaml
   - node-exporter-daemonset.yaml
   - pushgateway.yaml
+  - idrac-poller.yaml
   - grafana.yaml
   - grafana-dashboards.yaml
 

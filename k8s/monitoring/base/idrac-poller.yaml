@@ -1,0 +1,57 @@
+# In-cluster poller iDRAC-мощности (энерговетка) — сменил лабный юнит
+# ss-idrac-poller 19.08.2026, когда партнёр открыл VM-сети доступ к
+# iDRAC-сети (tcp/443): лаба исключена из энергосхемы, поллер живёт рядом
+# с pushgateway и толкает в него по ClusterIP (не через port-forward).
+#
+# Код НЕ дублируется: контейнер исполняет scripts/idrac-power-poller.py из
+# ConfigMap idrac-poller-script, который создаёт `make energy-idrac-deploy`
+# (kustomize не умеет файлы вне своего корня). Пароль — Secret
+# idrac-credentials (создаётся вручную с лабы из ~/phd/.idrac-pass.txt,
+# в репо его нет; см. тот же make-таргет).
+#
+# Образ — стоковый python:3.12-slim (скрипт stdlib-only, собственный образ
+# не нужен — политика «образы только через CI» не задета).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idrac-poller
+  namespace: sensitivityscore-monitoring
+  labels: { app: idrac-poller }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: idrac-poller }
+  template:
+    metadata:
+      labels: { app: idrac-poller }
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: poller
+          image: python:3.12-slim
+          command: ["python", "/opt/poller/idrac-power-poller.py"]
+          env:
+            - name: IDRAC_MAP
+              value: "wrk-b6=10.21.200.106,wrk-b7=10.21.200.107,wrk-b8=10.21.200.108"
+            - name: IDRAC_PASS_FILE
+              value: /secrets/idrac/password
+            - name: PUSHGATEWAY
+              value: http://pushgateway:9091
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+          volumeMounts:
+            - { name: script, mountPath: /opt/poller, readOnly: true }
+            - { name: idrac-pass, mountPath: /secrets/idrac, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: script
+          configMap: { name: idrac-poller-script }
+        - name: idrac-pass
+          secret: { secretName: idrac-credentials }
