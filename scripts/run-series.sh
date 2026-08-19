@@ -449,7 +449,9 @@ preflight() {
 
     # weights.json (ConfigMap) == score_weights (конфиг серии), после
     # нормализации обоих форматов через split_weights (зеркало parseWeights).
-    (cd harness && ../$PY - "../$CONFIG" <<'EOF'
+    # Изнутри harness/ venv зовётся без ../: путь с «..» до .venv даёт
+    # RuntimeWarning про sys.prefix на python 3.12.
+    (cd harness && .venv/bin/python - "../$CONFIG" <<'EOF'
 import json, subprocess, sys
 from config_loader import load_config
 from submit.node_pressure import split_weights
@@ -490,7 +492,7 @@ print(len(list(r.scan_iter(match='node:metrics:*'))))" 2>/dev/null)
     # отрабатывает часы и выдаёт «различий нет».
     "$PY" scripts/check-redis-contract.py >/dev/null 2>&1 \
         || fail "контракт Redis-полей нарушен — python3 scripts/check-redis-contract.py"
-    (cd harness && ../"$PY" - "../contract/redis-fields.yaml" <<EOF
+    (cd harness && .venv/bin/python - "../contract/redis-fields.yaml" <<EOF
 import sys, yaml, redis
 spec = yaml.safe_load(open(sys.argv[1]))
 want = set(spec["node_metrics"]["sources"]["scheduler_reader"]["fields"])
