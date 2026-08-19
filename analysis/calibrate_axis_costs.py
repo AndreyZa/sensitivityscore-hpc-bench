@@ -53,7 +53,13 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import nnls
 
-AXES = ("llc", "io", "net")  # numa выключена честно: один домен на узел
+# numa в фите нет: на STAGE ось честно нулевая (один домен на узел); на проде
+# домена два, но numa-шторма в калибровочной серии нет (нечем варьировать
+# давление), а жертвенная сторона датчика вырождена при кэш-резидентных
+# жертвах (~7К DRAM-чтений/с — знаменатель-мусор, замер 19.08, §C5 аудита).
+# Вклад numa в interference прод-заглушки вычитается при восстановлении
+# давлений (см. node_pressures_mixed, --numa-pressures).
+AXES = ("llc", "io", "net")
 
 # Зеркало harness/profiles.py (high=1, medium=0.5, low=0) по осям AXES.
 SENSITIVITY = {
@@ -85,16 +91,35 @@ def node_pressures_llc(df: pd.DataFrame) -> pd.DataFrame:
     return p
 
 
-def node_pressures_mixed(df: pd.DataFrame) -> pd.DataFrame:
-    """Смешанная серия: weights {llc,net,io}=1, знаменатель 3 => 3i по
-    профилю с единственной (для net) или известной (для io: llc+io)
-    комбинацией осей. Медианы по всем плечам: default/trimaran ставят
-    задачи на все узлы, так что каждая ячейка населена."""
-    i3 = (3 * df["interference_chosen"]).clip(0, 3)
-    by = pd.DataFrame({"node": df["node"], "profile": df["profile"], "i3": i3})
-    med = by.groupby(["profile", "node"])["i3"].median().unstack(0)
+def node_pressures_mixed(
+    df: pd.DataFrame,
+    divisor: int = 3,
+    numa_by_node: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Смешанная серия: обращение скор-функции interference() harness'а.
+
+    STAGE (divisor=3): weights {llc,net,io}=1, numa-оси нет => 3i по профилю
+    с единственной (net) или известной (io: llc+io) комбинацией осей.
+
+    ПРОД (divisor=4, numa_by_node): в заглушке весов 4 оси, numa живая и
+    декларируется профилями (high-s и high-s-io — numa=high), поэтому
+        4i(high-s)     = p_llc + p_numa
+        4i(high-s-io)  = p_llc + p_numa + p_io   (numa сокращается в разности)
+        4i(high-s-net) = p_net
+    p_numa на узел подаётся снаружи (--numa-pressures) — медианы
+    ss_node_numa_remote_ratio из Prometheus за окно PRESSURE: внутри
+    interference numa не отделима от llc для high-s. Сама numa в фит НЕ
+    входит (шторма этой оси в серии нет, а её жертвенная сторона вырождена —
+    см. C5 аудита), вычет лишь очищает p_llc от чужого слагаемого.
+
+    Медианы по всем плечам: default/trimaran ставят задачи на все узлы,
+    так что каждая ячейка населена."""
+    ik = (divisor * df["interference_chosen"]).clip(0, divisor)
+    by = pd.DataFrame({"node": df["node"], "profile": df["profile"], "ik": ik})
+    med = by.groupby(["profile", "node"])["ik"].median().unstack(0)
     p = pd.DataFrame(index=med.index)
-    p["llc"] = med["high-s"]
+    numa = pd.Series(numa_by_node or {}, dtype=float).reindex(med.index).fillna(0.0)
+    p["llc"] = (med["high-s"] - numa).clip(lower=0.0)
     p["net"] = med["high-s-net"]
     p["io"] = (med["high-s-io"] - med["high-s"]).clip(lower=0.0)
     return p.clip(0.0, 1.0)
@@ -233,7 +258,16 @@ def main() -> None:
     ap.add_argument("--ch-port", type=int, default=8123)
     ap.add_argument("--stand", default="stage")
     ap.add_argument("--mixed-label", default="stage-mixed")
-    ap.add_argument("--llc-label", default="stage-llc")
+    ap.add_argument("--llc-label", default="stage-llc",
+                    help="пустая строка — фит по одной смешанной серии "
+                         "(первая прод-калибровка: LLC-серии ещё нет)")
+    ap.add_argument("--interference-denominator", type=int, default=3,
+                    help="Σ(base+sensitivity) весов-заглушки стенда: 3 на "
+                         "STAGE (llc/net/io), 4 на проде (плюс numa)")
+    ap.add_argument("--numa-pressures", default="",
+                    help="node=val[,node=val] — медианы numa-оси узлов за окно "
+                         "PRESSURE (Prometheus), вычитаются из уравнения "
+                         "high-s при знаменателе 4; см. node_pressures_mixed")
     ap.add_argument("--baselines-label", default="stage-mixed",
                     help="метка серии, чьи эталоны дают знаменатель slowdown")
     ap.add_argument("--bootstrap", type=int, default=2000,
@@ -251,22 +285,28 @@ def main() -> None:
             stand=args.stand, run_labels=[lbl])
         base = baseline_medians(ld("baselines", args.baselines_label))
         mixed = ld("results", args.mixed_label)
-        llc = ld("results", args.llc_label)
+        llc = ld("results", args.llc_label) if args.llc_label else None
     else:
         base = baseline_medians(pd.read_parquet(args.baselines))
         mixed = pd.read_parquet(args.results_mixed)
-        llc = pd.read_parquet(args.results_llc)
+        llc = pd.read_parquet(args.results_llc) if args.llc_label else None
 
-    p_mixed = node_pressures_mixed(mixed)
-    p_llc = node_pressures_llc(llc)
+    numa_by_node = {}
+    for tok in filter(None, args.numa_pressures.split(",")):
+        node, _, val = tok.partition("=")
+        numa_by_node[node.strip()] = float(val)
+
+    p_mixed = node_pressures_mixed(
+        mixed, args.interference_denominator, numa_by_node)
     print("=== Восстановленные давления узлов (медианы на момент решения) ===")
     print("смешанная серия:\n", p_mixed.round(3).rename(index=NODE_SHORT))
-    print("LLC-серия:\n", p_llc.round(3).rename(index=NODE_SHORT))
+    frames = [build_rows(mixed, p_mixed, base, "mixed3")]
+    if llc is not None:
+        p_llc = node_pressures_llc(llc)
+        print("LLC-серия:\n", p_llc.round(3).rename(index=NODE_SHORT))
+        frames.append(build_rows(llc, p_llc, base, "llc"))
 
-    data = pd.concat([
-        build_rows(mixed, p_mixed, base, "mixed3"),
-        build_rows(llc, p_llc, base, "llc"),
-    ], ignore_index=True)
+    data = pd.concat(frames, ignore_index=True)
     print(f"\nстрок в фите: {len(data)} "
           f"(mixed3 {sum(data.series == 'mixed3')}, llc {sum(data.series == 'llc')})")
 
