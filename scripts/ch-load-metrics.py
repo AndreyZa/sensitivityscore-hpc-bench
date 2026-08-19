@@ -71,7 +71,26 @@ METRICS = [
     "ss_loadwatcher_up",
     "ss_loadwatcher_nodes",
     # Границы серий: по ним ряды выше режутся на прогоны.
+    #
+    # Heartbeat нужен НЕ для красоты. Маркер живёт в pushgateway, а тот помнит
+    # последнее значение вечно: если серия оборвалась вместе с хостом и снять
+    # маркер было некому, ss_series_running продолжит скрейпиться единицей
+    # бесконечно — и в ClickHouse серия «шла бы» до скончания века. Признак
+    # свежести позволяет отрезать это в SQL:
+    #
+    #   SELECT labels['series'] AS серия, min(ts), max(ts)
+    #   FROM sensitivityscore.metrics_samples
+    #   WHERE metric = 'ss_series_running' AND value = 1
+    #     AND (stand, labels['series'], ts) IN (
+    #           SELECT stand, labels['series'], ts FROM sensitivityscore.metrics_samples
+    #           WHERE metric = 'ss_series_heartbeat_seconds'
+    #             AND toUnixTimestamp(ts) - value < 900)
+    #   GROUP BY серия;
+    #
+    # Правило SSSeriesMarkerStale ловит тот же случай в момент, а не задним
+    # числом.
     "ss_series_running",
+    "ss_series_heartbeat_seconds",
 ]
 
 NS = "sensitivityscore-monitoring"

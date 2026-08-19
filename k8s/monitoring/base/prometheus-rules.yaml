@@ -439,6 +439,24 @@ data:
               summary: "Alertmanager не смог доставить уведомление ({{ $labels.integration }})"
               description: "Алерты стенда сейчас никуда не приходят. Проверить под ss-notifier и достижимость api.telegram.org из кластера; запасной канал — ntfy (SS_NOTIFY_BACKEND в Secret ss-notifier-config)."
 
+          - alert: SSSeriesMarkerStale
+            # Маркер серии жив, а признак жизни протух: значит, серия
+            # закончилась НЕ УБРАВШИСЬ — процесс убит жёстко, либо лаба, с
+            # которой идёт прогон, отвалилась (Wi-Fi там моргает). Последствие
+            # тихое и накопительное: pushgateway помнит значение вечно, поэтому
+            # ss_series_running продолжит скрейпиться единицей бесконечно, и
+            # выгрузка в ClickHouse будет записывать серию как идущую до
+            # скончания века, а на дашбордах останется вечная «идущая» серия.
+            #
+            # Лечится удалением группы:
+            #   curl -X DELETE http://127.0.0.1:9091/metrics/job/ss_series/series/<серия>/stand/<стенд>
+            expr: ss_series_running == 1 and (time() - ss_series_heartbeat_seconds) > 900
+            for: 5m
+            labels: {severity: warning, class: stand}
+            annotations:
+              summary: "маркер серии {{ $labels.series }} протух — прогон кончился, не убравшись"
+              description: "Снять группу в pushgateway, иначе серия останется «идущей» и на графиках, и в ClickHouse."
+
           - alert: SSPrometheusStorageFilling
             # TSDB лежит в hostPath на диске ss-system; retention на проде —
             # 365 дней при потолке 60 ГБ. Правило предупреждает раньше, чем
