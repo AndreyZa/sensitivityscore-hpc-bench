@@ -5,6 +5,7 @@ namespace: sensitivityscore-monitoring
 
 resources:
   - namespace.yaml
+  - networkpolicy.yaml
   - prometheus-rbac.yaml
   - prometheus-configmap.yaml
   - prometheus-rules.yaml

@@ -492,6 +492,11 @@ alerts-test: ## Живая проверка канала: синтетическ
 	@echo "если сообщение не пришло: make alerts-status (счётчик «не удалось») и"
 	@echo "  kubectl -n $(MONITORING_NAMESPACE) logs deploy/ss-notifier --tail=20"
 
+.PHONY: monitoring-backup
+monitoring-backup: ## Снимок TSDB Prometheus в архив (BACKUP_DIR=..., по умолчанию ~/ss-backups)
+	@KUBECTL="$(KUBECTL)" MONITORING_NAMESPACE=$(MONITORING_NAMESPACE) \
+		./scripts/tsdb-backup.sh $(BACKUP_DIR)
+
 .PHONY: monitoring-clean
 monitoring-clean: ## Снести стек мониторинга (TSDB в hostPath на узле НЕ удаляется)
 	$(KUBECTL) delete -k $(MONITORING_OVERLAY) --ignore-not-found

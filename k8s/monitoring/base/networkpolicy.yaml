@@ -1,0 +1,53 @@
+# Кто может стучаться в компоненты мониторинга.
+#
+# Правило то же, что у ClickHouse (k8s/clickhouse/base/networkpolicy.yaml), и
+# по той же причине: измеряемые задачи живут в одной сети подов с
+# инфраструктурой стенда, а агрессоры серии запускают ПРОИЗВОЛЬНЫЕ команды
+# stress-ng. «От обратного» — пускаем все неймспейсы, КРОМЕ неймспейса серии:
+# так политика не ломается при появлении новых служебных компонентов, а задачи
+# и агрессоры остаются отрезанными.
+#
+# Что именно защищается и от чего:
+#   prometheus    с 19.08.2026 у него включён admin API (нужен для снимков
+#                 TSDB, см. monitoring-backup) — а он умеет НЕ ТОЛЬКО читать:
+#                 delete_series стирает ряды. Год истории серий не должен
+#                 зависеть от того, что делает под агрессора;
+#   alertmanager  silence — операция записи: заглушить оповещения стенда
+#                 не должен уметь тот, кто просто дотянулся до порта;
+#   ss-notifier   пишет в общий чат от имени бота. Токен приёма — граница,
+#                 но незачем давать до неё дотягиваться из серии;
+#   pushgateway   неаутентифицированный push: подмена idrac_power_watts
+#                 испортила бы источник ipmi в energy_windows.
+#
+# Grafana НЕ закрывается: она и так требует вход, а анонимный доступ у неё
+# ровно на просмотр — и именно её порт отдан коллегам партнёра.
+#
+# Проверено на живом k0s + kube-router (18.08.2026, отдельный стенд из двух
+# неймспейсов): `kubectl port-forward` политикой НЕ ломается — трафик идёт от
+# kubelet узла, а не из пода, и под podSelector не попадает. Поэтому
+# monitoring-open, monitoring-backup и ss-forward@* продолжают работать.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-allow
+  labels:
+    app.kubernetes.io/part-of: sensitivityscore
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [prometheus, alertmanager, ss-notifier, pushgateway]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              # Имя неймспейса серии = HARNESS_NAMESPACE в Makefile. Если оно
+              # изменится — поправить и здесь, иначе политика тихо перестанет
+              # что-либо ограничивать.
+              - key: kubernetes.io/metadata.name
+                operator: NotIn
+                values:
+                  - sensitivityscore-bench

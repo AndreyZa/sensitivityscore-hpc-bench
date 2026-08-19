@@ -53,6 +53,17 @@ spec:
             # меняет одну env-переменную вместо копии всего scrape-конфига.
             - --enable-feature=expand-external-labels
             - --web.enable-lifecycle # POST /-/reload вместо перезапуска пода
+            # Снимки TSDB (make monitoring-backup): год истории серий живёт в
+            # hostPath на одной ВМ и до 19.08.2026 не бэкапился никак. Точка
+            # правды чисел — ClickHouse (у него есть db/clickhouse/backup.sh),
+            # и это защищало ровно до тех пор, пока в текст не пойдёт график,
+            # существующий только здесь.
+            #
+            # Флаг открывает и УДАЛЕНИЕ рядов (delete_series), поэтому он
+            # появился одновременно с NetworkPolicy (networkpolicy.yaml):
+            # неймспейс серии, где агрессоры выполняют произвольные команды,
+            # до этого порта больше не дотягивается.
+            - --web.enable-admin-api
             - --web.console.libraries=/usr/share/prometheus/console_libraries
             - --web.console.templates=/usr/share/prometheus/consoles
           env:
