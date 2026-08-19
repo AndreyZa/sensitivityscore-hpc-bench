@@ -46,6 +46,36 @@ data:
             action: keep
             regex: default;kubernetes;https
 
+      # --- ВМ control-plane: node_exporter systemd-сервисом ---------------
+      # Контроллеры k0s работают БЕЗ kubelet: они не узлы Kubernetes, `role:
+      # node` их не находит, DaemonSet мониторинга до них не достаёт, и до
+      # 18.08.2026 по ним не было ни одной метрики железа — при том, что
+      # именно на них живёт etcd, а его узкое место (fsync диска) стенд
+      # объявляет критичным. Экспортёр ставится ролью nodeexporter
+      # провизионера (hpc-k0s-provision, playbooks/prep.yml).
+      #
+      # Адреса НЕ прописаны: берём эндпоинты сервиса kubernetes (это ровно
+      # адреса контроллеров, тот же источник, что у job выше) и подменяем
+      # порт на 9100. Конфиг остаётся переносимым между стендами, а список
+      # контроллеров не разъезжается с реальностью при их замене.
+      - job_name: control-plane-nodes
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels:
+              [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+          - source_labels: [__address__]
+            action: replace
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:9100'
+            target_label: __address__
+          # instance = адрес ВМ; role — чтобы дашборд отличал контроллеры от
+          # узлов кластера, у которых экспортёр приходит подом.
+          - target_label: role
+            replacement: control-plane
+
       # --- kubelet: узловые метрики bench БЕЗ node_exporter ---------------
       # role: node уже даёт <InternalIP>:10250. Скрейпим напрямую, а не через
       # /api/v1/nodes/<n>/proxy: узлы в одной приватной сети (192.168.0.0/24),
