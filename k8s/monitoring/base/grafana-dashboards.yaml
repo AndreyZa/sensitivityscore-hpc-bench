@@ -756,10 +756,63 @@ data:
             }
           ],
           "description": "Ось NUMA считается как remote/(local+remote) — это её знаменатель. При малом потоке событий DRAM отношение шумит на пустом месте, и «высокая доля удалённых обращений» может оказаться делением единиц на единицы. Смотреть вместе с панелью NUMA remote ratio выше."
+        },
+        {
+          "type": "timeseries",
+          "title": "Что шло в этот момент",
+          "id": 22,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 24,
+            "x": 0,
+            "y": 37
+          },
+          "description": "Маркер серии, который run-series.sh кладёт на старте и снимает на любом исходе. Нужен затем, что результаты уезжают в ClickHouse, а трассы осей живут только здесь — и через месяцы отличить «всплеск непонятно от чего» от «вот эта серия» иначе нечем. Метрикой, а не аннотацией через API Grafana: метрика ложится в ТУ ЖЕ TSDB, что и данные, и переживает вместе с ними и ретеншен, и бэкап. Проверка свежести — потому что pushgateway помнит последнее значение вечно.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "max": 1,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 30,
+                "showPoints": "never",
+                "drawStyle": "line",
+                "lineInterpolation": "stepAfter"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ss_series_running == 1 and (time() - ss_series_heartbeat_seconds) < 900",
+              "legendFormat": "{{series}} ({{stand}})"
+            }
+          ]
         }
       ],
       "annotations": {
-        "list": []
+        "list": [
+          {
+            "name": "Серии",
+            "enable": true,
+            "hide": false,
+            "iconColor": "rgba(255, 152, 48, 1)",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "sensitivityscore-prom"
+            },
+            "expr": "ss_series_running == 1 and (time() - ss_series_heartbeat_seconds) < 900",
+            "titleFormat": "серия {{series}}",
+            "textFormat": "стенд {{stand}}",
+            "step": "5m"
+          }
+        ]
       },
       "editable": true,
       "graphTooltip": 0,
@@ -1815,7 +1868,24 @@ data:
           "description": "Относительное расхождение двух независимых групп сенсоров ОДНОГО BMC. Это НЕ КПД блоков: PowerConsumedWatts у Dell — величина уже со стороны входа, поэтому по построению обе цифры должны совпадать. На простое 19.08.2026 наблюдалось −3% (771 Вт против 795 Вт) — это в пределах точности сенсоров BMC, а не нарушение физики. Смотреть здесь надо не знак, а СИСТЕМАТИЧЕСКИЙ уход: если под нагрузкой расхождение растёт до десятков процентов, значит одна из групп сенсоров врёт, и цепочку Э0.4 нельзя замыкать на iDRAC."
         }
       ],
-      "annotations": {"list": []},
+      "annotations": {
+        "list": [
+          {
+            "name": "Серии",
+            "enable": true,
+            "hide": false,
+            "iconColor": "rgba(255, 152, 48, 1)",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "sensitivityscore-prom"
+            },
+            "expr": "ss_series_running == 1 and (time() - ss_series_heartbeat_seconds) < 900",
+            "titleFormat": "серия {{series}}",
+            "textFormat": "стенд {{stand}}",
+            "step": "5m"
+          }
+        ]
+      },
       "editable": true,
       "graphTooltip": 1,
       "links": [],
@@ -5026,7 +5096,22 @@ data:
         }
       ],
       "annotations": {
-        "list": []
+        "list": [
+          {
+            "name": "Серии",
+            "enable": true,
+            "hide": false,
+            "iconColor": "rgba(255, 152, 48, 1)",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "sensitivityscore-prom"
+            },
+            "expr": "ss_series_running == 1 and (time() - ss_series_heartbeat_seconds) < 900",
+            "titleFormat": "серия {{series}}",
+            "textFormat": "стенд {{stand}}",
+            "step": "5m"
+          }
+        ]
       },
       "editable": true,
       "graphTooltip": 1,

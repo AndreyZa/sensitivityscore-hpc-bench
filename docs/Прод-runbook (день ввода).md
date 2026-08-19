@@ -102,6 +102,12 @@ kubectl -n sensitivityscore-monitoring exec deploy/prometheus -- \
 «Control plane — ВМ и API» показывает fsync WAL и лидера etcd вместо пустых
 панелей.
 
+**Дашборды правятся ТОЛЬКО через git.** Grafana провижнит их из ConfigMap
+(`k8s/monitoring/base/grafana-dashboards.yaml`), поэтому правка в UI живёт до
+ближайшего `make monitoring-reload` и исчезает без предупреждения. Порядок:
+поправить JSON в репозитории → `make monitoring-reload`. Панель, добавленная
+через UI «на минутку», не переживёт следующий деплой.
+
 **Коллегам:** `http://10.40.10.0:3000` — Grafana открыта в сети стенда
 (hostPort на ss-system, анонимный вход с правами просмотра). Наружу порт не
 публикуется; админ-вход — по секрету `grafana-admin`.
@@ -314,9 +320,14 @@ ss-notifier на .72 **погашен 19.08.2026** — служба переех
 следа: `notify()` в `run-series.sh` шлёт на `127.0.0.1:8790`, и при мёртвом
 адресе он молча ничего не делает.
 ```bash
-make monitoring-uptime-unit SERVICES="grafana ss-notifier"
-curl -sf http://127.0.0.1:8790/healthz && echo " проброс жив"
+make monitoring-uptime-unit SERVICES="grafana ss-notifier pushgateway"
+curl -sf http://127.0.0.1:8790/healthz && echo " проброс уведомлений жив"
+curl -sf http://127.0.0.1:9091/-/healthy && echo " проброс pushgateway жив"
 ```
+Проброс pushgateway нужен под маркеры серий: `run-series.sh` кладёт туда
+`ss_series_running`, из которого Grafana рисует границы прогонов на дашбордах
+осей, энергии и кампании. Без него маркеров просто не будет — как и с
+уведомлениями, функция молчит при мёртвом адресе.
 Прод-kubeconfig на .72 уже лежит в `~/.kube/configs/prod` и является
 дефолтом — его кладёт сам provision (ступень 1), отдельного шага нет.
 

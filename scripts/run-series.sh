@@ -94,6 +94,35 @@ pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 #
 # Адрес службы не задан — функция молча ничего не делает, и прогон одинаков с
 # уведомлениями и без них.
+# Маркер «в этот момент шла такая-то серия» для Grafana. Через месяцы, сравнивая
+# ряды, отличить «всплеск непонятно от чего» от «вот эта серия» иначе нечем:
+# результаты уезжают в ClickHouse, а трассы осей живут только в Prometheus, и
+# границы прогонов в них ничем не отмечены.
+#
+# Почему метрикой, а не аннотацией через API Grafana: аннотация требует записи,
+# то есть учётки и токена на машине, откуда гоняют серию, — а метрика ложится в
+# ТУ ЖЕ TSDB, что и данные, и переживает вместе с ними ретеншен и бэкап.
+#
+# Адрес не задан — функции молча ничего не делают, как и notify(): маркер
+# полезен, но четырёхчасовой прогон ронять не имеет права.
+PUSHGATEWAY_URL=${PUSHGATEWAY_URL:-http://127.0.0.1:9091}
+
+series_marker() {   # series_marker set|clear
+    local base="${PUSHGATEWAY_URL%/}/metrics/job/ss_series/series/${SERIES}/stand/${STAND}"
+    case "$1" in
+        set)
+            # Heartbeat обязателен: pushgateway помнит последнее значение
+            # ВЕЧНО, и без признака свежести оборванная серия оставила бы
+            # маркер «идёт» навсегда. Вотчдог обновляет его каждый цикл.
+            printf 'ss_series_running 1\nss_series_heartbeat_seconds %s\n' "$(date +%s)" \
+                | curl -sf --max-time 10 --data-binary @- "$base" >/dev/null 2>&1 || true
+            ;;
+        clear)
+            curl -sf --max-time 10 -X DELETE "$base" >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
 NOTIFY_ENV=harness/.notify.env
 # Файл хоста (в git его нет): вотчдог стартует отдельным процессом через
 # setsid/nohup, и полагаться на то, что переменные доехали из интерактивной
@@ -604,6 +633,9 @@ watchdog() {
         sleep 300
         size=$(log_size)
         now=$(date +%s)
+        # Признак жизни маркера серии: по нему Grafana отличает идущую серию
+        # от оборванной, чей маркер остался лежать в pushgateway.
+        series_marker set
         # Форвард к Redis: без него regret=NaN на всех последующих задачах,
         # и это не видно ни в логе, ни на странице (см. redis_alive).
         if ! redis_alive; then
@@ -669,6 +701,9 @@ make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines"
 $(tail -5 "$LOG")"
     fi
     rm -f "$PIDFILE" "$WDPIDFILE" "$STALLFLAG"
+    # Маркер снимается на ЛЮБОМ исходе — и на успешном, и на обрыве: иначе на
+    # графиках навсегда осталась бы «идущая» серия.
+    series_marker clear
 }
 
 start() {
@@ -705,6 +740,10 @@ start() {
     local pid=$!
     echo "$pid" > "$PIDFILE"
     ok "серия запущена: pid $pid, лог $LOG"
+
+    # Маркер «здесь началась серия» — до status_page_up и уведомления, чтобы
+    # граница на графиках совпала с реальным стартом, а не с концом обвязки.
+    series_marker set
 
     status_page_up
 
@@ -827,6 +866,9 @@ stop() {
     fi
     pid_alive "$WDPIDFILE" && kill "$(cat "$WDPIDFILE")" 2>/dev/null
     rm -f "$PIDFILE" "$WDPIDFILE" "$STALLFLAG"
+    # Остановка руками убивает вотчдог раньше, чем тот дойдёт до уборки, —
+    # маркер снимаем здесь же.
+    series_marker clear
     echo "уборка кластера: агрессоры + job'ы bench + sink"
     kubectl -n $BENCH_NS delete pods -l app=ss-aggressor --ignore-not-found --timeout=120s
     kubectl -n $BENCH_NS delete jobs -l app=geant4-bench --ignore-not-found --timeout=120s
