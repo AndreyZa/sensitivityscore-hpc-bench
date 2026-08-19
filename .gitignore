@@ -46,6 +46,11 @@ harness/.notify.env
 
 # генерируется make series PILOT=1
 harness/.pilot-*.sh
+# Рабочие файлы статус-страницы серии: рендер манифеста и лог его применения.
+# Их отсутствие в .gitignore помечало КАЖДУЮ серию как снятую «грязным»
+# деревом (см. provenance.harness_commit).
+harness/.statuspage-*.yaml
+harness/.statuspage-*.log
 
 # конфиги фаз свипа веса: их печатает scripts/sweep-series-config.py на каждом
 # запуске (плоский конфиг с раскрытым extends). Лежат в репозитории, а не в
