@@ -361,15 +361,34 @@ notifier-secret: ## Secret ss-notifier-config из config.env (NOTIFIER_ENV=...)
 		$$args --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null; \
 	echo "secret/ss-notifier-config: перенесены ключи —$$found"
 
+.PHONY: notifier-secret-soft
+notifier-secret-soft: ## (внутренний) собрать Secret ss-notifier-config, если можем; иначе предупредить
+	@if $(KUBECTL) -n $(MONITORING_NAMESPACE) get secret ss-notifier-config >/dev/null 2>&1; then \
+		echo "secret/ss-notifier-config уже есть — не трогаем"; \
+	elif [ -r "$(NOTIFIER_ENV)" ]; then \
+		$(MAKE) --no-print-directory notifier-secret; \
+	else \
+		echo ""; \
+		echo "  ВНИМАНИЕ: нет ни secret/ss-notifier-config, ни файла $(NOTIFIER_ENV)."; \
+		echo "  Alertmanager и ss-notifier НЕ поднимутся (оба монтируют этот секрет),"; \
+		echo "  то есть алерты стенда снова будут вычисляться в пустоту. Остальной"; \
+		echo "  стек развернётся. Как поправить: make notifier-secret NOTIFIER_ENV=<config.env>"; \
+		echo ""; \
+	fi
+
 .PHONY: monitoring-deploy
-monitoring-deploy: monitoring-secret notifier-secret ## Развернуть стек мониторинга на ss-system
+monitoring-deploy: monitoring-secret notifier-secret-soft ## Развернуть стек мониторинга на ss-system
 	KUBECTL="$(KUBECTL)" ./scripts/monitoring-overlay-guard.sh $(MONITORING_OVERLAY)
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/prometheus --timeout=180s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/grafana --timeout=180s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/kube-state-metrics --timeout=180s
-	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/alertmanager --timeout=180s
-	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/ss-notifier --timeout=180s
+	@if $(KUBECTL) -n $(MONITORING_NAMESPACE) get secret ss-notifier-config >/dev/null 2>&1; then \
+		$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/alertmanager --timeout=180s; \
+		$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/ss-notifier --timeout=180s; \
+	else \
+		echo "alertmanager/ss-notifier пропущены: нет secret/ss-notifier-config (см. предупреждение выше)"; \
+	fi
 	@echo "готово — дальше: make monitoring-open, проверка канала: make alerts-test"
 
 # Поллер iDRAC живёт в кластере с 19.08.2026 (партнёр открыл VM-сети доступ
