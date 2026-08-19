@@ -27,7 +27,7 @@ data:
             # молча, без ошибок в логе плагина.
             expr: time() - max by (node) (ss_agent_last_sample_timestamp_seconds) > 60
             for: 1m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "metrics-agent на {{ $labels.node }} не сэмплирует >60s"
               description: "Redis-ключ node:metrics:{{ $labels.node }} (TTL 30s) протухает — планировщик скорит на пустых данных."
@@ -38,7 +38,7 @@ data:
             # kubernetes-pods+app молча не срабатывало бы никогда.
             expr: max by (node) (up{job="sensitivityscore-metrics-agent"}) == 0
             for: 2m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "metrics-agent недоступен на {{ $labels.node }}"
 
@@ -48,7 +48,7 @@ data:
             # непригодны (docs §1а, perfcheck).
             expr: max by (node) (ss_agent_pmu_hardware_available) == 0
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "PMU на {{ $labels.node }} нечестный — LLC синтетический"
               description: "Агент свалился в synthetic-devbox. Проверить perf_event_paranoid и CAP_PERFMON (docs §5), прогнать make perfcheck-run NODE={{ $labels.node }}."
@@ -61,7 +61,7 @@ data:
             # максимально загружен.
             expr: max by (node) (ss_agent_llc_calibrated) == 0
             for: 15m
-            labels: {severity: warning}
+            labels: {severity: warning, class: validity}
             annotations:
               summary: "LLC-ось на {{ $labels.node }} не откалибрована"
               description: "llc_miss_rate — сырой ratio, инвертируется под нагрузкой. Снять llc_misses_per_sec под 2x stress-ng --stream и выставить LLC_REFERENCE_MISSES_PER_SEC."
@@ -78,7 +78,7 @@ data:
           - alert: SSLLCAxisSaturated
             expr: min by (node) (min_over_time(ss_node_llc_miss_rate[30m])) >= 0.999
             for: 10m
-            labels: {severity: critical}
+            labels: {severity: critical, class: validity}
             annotations:
               summary: "LLC-ось на {{ $labels.node }} прибита к насыщению (1.0)"
               description: "llc_miss_rate полчаса не опускался ниже 0.999 — LLC_REFERENCE_MISSES_PER_SEC занижен для этого железа (референс с другого стенда?). Ось не различает узлы. Пересчитать: снять llc_misses_per_sec под 2x stress-ng --stream и make calibration-apply."
@@ -96,7 +96,7 @@ data:
           - alert: SSPMUMultiplexed
             expr: min by (node) (ss_agent_pmu_multiplex_ratio) < 0.9
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: validity}
             annotations:
               summary: "PMU на {{ $labels.node }} мультиплексируется ({{ $value | printf \"%.2f\" }})"
               description: "Счётчики простояли на PMU меньше 90% окна. Поправка enabled/running применяется, но НЕ спасает: замер на живом железе показал, что при доле окна 0.58 та же нагрузка оценивается в диапазоне от -3% до +1831% от неискажённого значения — экстраполяция несмещена лишь в среднем, а дисперсия на коротких срезах огромна. Считать это гейтом валидности кэш-оси: пока алерт горит, выводы по llc_* на этом узле недействительны. Лечится только уменьшением числа одновременно открытых событий (меньше подов на узел), а не поправкой."
@@ -111,7 +111,7 @@ data:
               stddev_over_time(ss_node_llc_miss_rate[1h]) == 0
               and on(node) max by (node) (ss_agent_llc_calibrated) == 1
             for: 15m
-            labels: {severity: warning}
+            labels: {severity: warning, class: validity}
             annotations:
               summary: "LLC-ось на {{ $labels.node }} — константа (нулевая дисперсия за час)"
               description: "Значение не меняется вообще: признак упора в clamp01 сверху (референс занижен) или снизу (завышен). Ось не вносит вклада в Score(), но выглядит рабочей."
@@ -119,7 +119,7 @@ data:
           - alert: SSNetUncalibrated
             expr: max by (node) (ss_agent_net_calibrated) == 0
             for: 15m
-            labels: {severity: warning}
+            labels: {severity: warning, class: validity}
             annotations:
               summary: "Net-ось на {{ $labels.node }} выключена (нет NET_REFERENCE_MBPS)"
               description: "net_pressure=0 честно, но ось не участвует в Score(). make netcheck-run && make netcheck-apply."
@@ -127,7 +127,7 @@ data:
           - alert: SSPSIUnavailable
             expr: max by (node) (ss_agent_psi_available) == 0
             for: 15m
-            labels: {severity: warning}
+            labels: {severity: warning, class: validity}
             annotations:
               summary: "PSI недоступен на {{ $labels.node }} — IO-ось выключена"
               description: "Нет cgroup io.pressure: ядру нужен psi=1 (docs §5). io_pressure будет нулём, и это не «нет нагрузки»."
@@ -140,7 +140,7 @@ data:
             # измеряет не то, что заявлено.
             expr: ss_loadwatcher_up == 0
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "load-watcher недоступен — load-aware плечи раскладывают вслепую"
               description: "Проверить под load-watcher в sensitivityscore-system и metrics-server (он его источник)."
@@ -150,7 +150,7 @@ data:
             # на старом окне. Для плеча это неотличимо от свежих данных.
             expr: time() - ss_loadwatcher_timestamp_seconds > 300
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "окно load-watcher не обновляется {{ $value | humanizeDuration }}"
 
@@ -158,7 +158,7 @@ data:
             # Узел, которого нет в выдаче, для load-aware плеча не существует.
             expr: ss_loadwatcher_nodes < count(kube_node_info)
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "load-watcher видит {{ $value }} узлов — меньше, чем есть в кластере"
 
@@ -170,7 +170,7 @@ data:
             # Отличие от CFS: причина вне кластера, и увидеть её можно только
             # счётчиками ядра, которые снимает metrics-agent (pkg/cputhrottle).
             expr: increase(ss_node_cpu_throttle_events_total[10m]) > 0
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "тепловой троттлинг на {{ $labels.node }} ({{ $labels.scope }})"
               description: "Узел работал не на полную. Точки плана, снятые в этом окне, несут артефакт: замедление частично не от интерференции. Смотреть частоту ядер (ss_node_cpu_freq_hertz, stat=min) и охлаждение/энергопрофиль узла."
@@ -190,7 +190,7 @@ data:
               sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="sensitivityscore-bench", pod=~"(geant4|bench-).*"}[5m]))
               / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace="sensitivityscore-bench", pod=~"(geant4|bench-).*"}[5m])) > 0.01
             for: 2m
-            labels: {severity: critical}
+            labels: {severity: critical, class: validity}
             annotations:
               summary: "жертва {{ $labels.pod }} зажата квотой cgroup ({{ $value | humanizePercentage }} периодов)"
               description: "Замедление этой точки плана вызвано квотой, а не интерференцией. Проверить, что у жертвы CPU_REQ==CPU_LIM и MEM_REQ==MEM_LIM (Guaranteed), иначе static-пиннинг тоже не работает."
@@ -198,7 +198,7 @@ data:
           - alert: SSRedisWriteErrors
             expr: sum by (node) (rate(ss_agent_redis_write_errors_total[5m])) > 0
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "Агент на {{ $labels.node }} не пишет в Redis"
               description: "Горячий путь планировщика и экспорт харнесса теряют данные, даже если /metrics выглядит здоровым."
@@ -217,7 +217,7 @@ data:
             # ss-system скрейпится общей job kubernetes-pods (по аннотации).
             expr: min(node_memory_MemAvailable_bytes{job="kubernetes-pods"} / node_memory_MemTotal_bytes{job="kubernetes-pods"}) < 0.15
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "На ss-system осталось <15% памяти"
               description: "Риск вытеснения Redis/планировщика/Prometheus. Проверить, не приехал ли на узел ClickHouse."
@@ -226,22 +226,31 @@ data:
             # Фильтр по job — по той же причине, что у правила выше.
             expr: node_filesystem_avail_bytes{job="kubernetes-pods", mountpoint="/"} / node_filesystem_size_bytes{job="kubernetes-pods", mountpoint="/"} < 0.15
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "На ss-system осталось <15% диска"
               description: "TSDB Prometheus лежит в hostPath на этом же диске (40 ГБ на STAGE)."
 
           - alert: SSPodCrashLooping
-            expr: rate(kube_pod_container_status_restarts_total{namespace=~"sensitivityscore-.*"}[15m]) > 0
+            # Неймспейс серии ИСКЛЮЧЁН намеренно. Там перезапуски и падения —
+            # это исход эксперимента, а не инцидент: жертвы идут с
+            # backoffLimit=0, агрессоры перетряхиваются, и харнесс всё это
+            # пишет в результаты сам. Ночной прогон иначе слал бы в чат
+            # собственную работу. Здесь остаются только системные компоненты,
+            # чей перезапуск действительно означает поломку стенда.
+            expr: rate(kube_pod_container_status_restarts_total{namespace=~"sensitivityscore-(system|monitoring)"}[15m]) > 0
             for: 5m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "{{ $labels.namespace }}/{{ $labels.pod }} перезапускается"
 
           - alert: SSPodOOMKilled
-            expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"sensitivityscore-.*"} == 1
+            # Неймспейс серии исключён по той же причине, что и выше, и
+            # здесь она даже жёстче: OOMKill жертвы при переуплотнении — это
+            # ОЖИДАЕМЫЙ исход плеча, ради которого overcommit и ставят.
+            expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace=~"sensitivityscore-(system|monitoring)"} == 1
             for: 1m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "{{ $labels.namespace }}/{{ $labels.pod }} убит по OOM"
               description: "На 2-ГБ ss-system это ожидаемый способ отказа при переуплотнении узла."
@@ -249,7 +258,7 @@ data:
           - alert: SSSchedulerDown
             expr: kube_deployment_status_replicas_available{namespace="sensitivityscore-system", deployment="sensitivityscore-scheduler"} < 1
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "sensitivityscore-scheduler недоступен — поды серии не разложатся"
 
@@ -267,7 +276,7 @@ data:
             # экспортёра других свидетельств их состояния у стенда не осталось.
             expr: up{job="control-plane-nodes"} == 0
             for: 5m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "node_exporter на контроллере {{ $labels.instance }} недоступен"
               description: "Либо ВМ недоступна, либо служба node_exporter не поднялась (роль nodeexporter провизионера)."
@@ -275,7 +284,7 @@ data:
           - alert: SSK0sControllerInactive
             expr: node_systemd_unit_state{job="control-plane-nodes", name="k0scontroller.service", state="active"} == 0
             for: 3m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "k0scontroller на {{ $labels.instance }} не в состоянии active"
 
@@ -285,13 +294,13 @@ data:
             # пишет, то есть поды серии не создаются и не завершаются.
             expr: etcd_server_has_leader == 0
             for: 1m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "У члена etcd {{ $labels.instance }} нет лидера"
 
           - alert: SSEtcdLeaderChurn
             expr: increase(etcd_server_leader_changes_seen_total[1h]) > 3
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "etcd сменил лидера >3 раз за час"
               description: "Обычно это медленный диск или сетевые таймауты между ВМ. Смотреть fsync WAL на дашборде control plane."
@@ -302,7 +311,7 @@ data:
             # реальную деградацию диска ВМ, а не «порог впритык».
             expr: histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m]))) > 0.01
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "etcd на {{ $labels.instance }}: fsync WAL p99 > 10 мс"
               description: "Диск ВМ не успевает за журналом. Кампанию это тормозит на создании/завершении подов, а не на счёте."
@@ -310,7 +319,7 @@ data:
           - alert: SSEtcdQuotaNear
             expr: etcd_mvcc_db_total_size_in_bytes / etcd_server_quota_backend_bytes > 0.8
             for: 15m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "БД etcd заняла >80% квоты на {{ $labels.instance }}"
               description: "При достижении квоты кластер уходит в режим только-чтение. Лечится compaction+defrag."
@@ -318,7 +327,7 @@ data:
           - alert: SSApiserverErrors
             expr: sum(rate(apiserver_request_total{code=~"5.."}[5m])) / sum(rate(apiserver_request_total[5m])) > 0.02
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "apiserver отдаёт >2% ответов 5xx"
 
@@ -330,7 +339,7 @@ data:
           - alert: SSClickHouseDown
             expr: up{job="clickhouse"} == 0
             for: 5m
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "ClickHouse недоступен — результаты кампании некуда складывать"
 
@@ -338,7 +347,7 @@ data:
             # Отказ вставки = потерянная точка серии. Харнесс пишет результат
             # один раз и дальше идёт к следующей точке.
             expr: increase(ClickHouseProfileEvents_FailedInsertQuery[15m]) > 0
-            labels: {severity: critical}
+            labels: {severity: critical, class: stand}
             annotations:
               summary: "ClickHouse отбивает вставки"
               description: "Строки результатов не доезжают. Смотреть system.errors и место на диске ss-system."
@@ -349,7 +358,7 @@ data:
             # отбивать INSERT'ы. Порог с запасом — чинить надо заранее.
             expr: ClickHouseAsyncMetrics_MaxPartCountForPartition > 200
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "ClickHouse: {{ $value }} кусков в партиции"
 
@@ -363,7 +372,7 @@ data:
             # ловит момент, когда журналы CH начинают отъедать общий диск.
             expr: ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTablesSystem > 5e9
             for: 30m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "Системные таблицы ClickHouse заняли >5 ГБ"
               description: "Это журналы самого CH, а не результаты. Лечится TTL на system.*_log либо TRUNCATE."
@@ -374,7 +383,7 @@ data:
             # а окна энергии считаются по данным, которых уже нет.
             expr: time() - max(idrac_poll_timestamp_seconds) > 300
             for: 2m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "Поллер iDRAC молчит >5 минут"
               description: "Метрики мощности в pushgateway протухли, но продолжают отдаваться. Смотреть Deployment idrac-poller."
@@ -393,7 +402,7 @@ data:
             # добавленные позже и забытые.
             expr: up == 0
             for: 10m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "Цель {{ $labels.job }} / {{ $labels.instance }} недоступна >10 минут"
 
@@ -408,7 +417,7 @@ data:
             # здоровья. severity намеренно не critical и не warning, иначе
             # оно попало бы в маршрут критичных и приходило бы каждый час.
             expr: vector(1)
-            labels: {severity: heartbeat}
+            labels: {severity: heartbeat, class: stand}
             annotations:
               summary: "стенд на связи: правила вычисляются, доставка работает"
               description: "Это регулярный признак жизни, а не беда. Если он перестал приходить — сломался Prometheus, Alertmanager или канал ss-notifier."
@@ -425,7 +434,7 @@ data:
             # алерты» дашборда «Стенд — инфраструктура».
             expr: increase(alertmanager_notifications_failed_total[30m]) > 0
             for: 5m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "Alertmanager не смог доставить уведомление ({{ $labels.integration }})"
               description: "Алерты стенда сейчас никуда не приходят. Проверить под ss-notifier и достижимость api.telegram.org из кластера; запасной канал — ntfy (SS_NOTIFY_BACKEND в Secret ss-notifier-config)."
@@ -437,7 +446,7 @@ data:
             # ранние серии кампании.
             expr: prometheus_tsdb_storage_blocks_bytes / 1024 / 1024 / 1024 > 45
             for: 30m
-            labels: {severity: warning}
+            labels: {severity: warning, class: stand}
             annotations:
               summary: "TSDB Prometheus занял >45 ГБ"
               description: "На 60 ГБ включится retention.size и начнёт удалять самые старые блоки — это история первых серий."
