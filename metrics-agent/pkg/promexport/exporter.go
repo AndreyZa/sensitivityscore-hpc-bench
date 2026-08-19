@@ -68,6 +68,7 @@ type Exporter struct {
 	throttleEvents *prometheus.CounterVec
 	cpuFreq        *prometheus.GaugeVec
 	throttleAvail  prometheus.Gauge
+	freqAvail      prometheus.Gauge
 }
 
 // New собирает экспортёр с собственным реестром (не DefaultRegisterer): в него
@@ -204,6 +205,12 @@ func New(nodeName string) *Exporter {
 				"stat=min matters more than stat=avg: throttling usually drags down part of the cores, "+
 				"and an average over 64 of them hides it.",
 			[]string{"stat"}),
+		freqAvail: gauge("ss_agent_cpu_freq_available",
+			"1 when the node exposes per-core scaling_cur_freq. 0 means the cpufreq directory is absent "+
+				"entirely - on the prod bench nodes (Dell R760, 19.08.2026) that is the case: P-states are "+
+				"managed by the BIOS, not the OS, so there is no frequency to read. For the measurements "+
+				"that is a good property (no OS-driven frequency variance between runs), but it also means "+
+				"the thermal cost can only be seen as EVENTS, not as a frequency drop."),
 		throttleAvail: gauge("ss_agent_cpu_throttle_available",
 			"1 when the node exposes thermal_throttle counters in sysfs. 0 on VMs (ss-system, STAGE) - "+
 				"the thermal signal is then absent rather than zero, and a run on such a node cannot be "+
@@ -242,7 +249,21 @@ func (e *Exporter) SetNUMADRAMEventsPerSec(rate float64) { e.numaDRAMRate.Set(ra
 // SetCPUThrottleAvailable — есть ли на узле счётчики теплового троттлинга.
 // Выставляется один раз на старте: в ВМ их нет, и сигнал тогда ОТСУТСТВУЕТ, а
 // не равен нулю — разницу обязан видеть тот, кто читает дашборд.
-func (e *Exporter) SetCPUThrottleAvailable(ok bool) { e.throttleAvail.Set(b2f(ok)) }
+func (e *Exporter) SetCPUThrottleAvailable(ok bool) {
+	e.throttleAvail.Set(b2f(ok))
+	if ok {
+		// Ряды заводятся сразу нулём. Иначе счётчик появлялся бы только с
+		// ПЕРВЫМ событием троттлинга, и до него панель показывала бы «нет
+		// данных» — то есть «не меряем», хотя меряем и результат нулевой.
+		// Различать эти два состояния — весь смысл наблюдаемости стенда.
+		e.throttleEvents.WithLabelValues("core").Add(0)
+		e.throttleEvents.WithLabelValues("package").Add(0)
+	}
+}
+
+// SetCPUFreqAvailable — отдаёт ли узел частоту ядер. На прод-стенде 0: у
+// R760 нет каталога cpufreq вовсе, P-states держит BIOS.
+func (e *Exporter) SetCPUFreqAvailable(ok bool) { e.freqAvail.Set(b2f(ok)) }
 
 // AddThrottleEvents накапливает прирост счётчиков троттлинга. Counter с
 // приростом, а не Gauge с сырым значением: sysfs отдаёт накопительное с

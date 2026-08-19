@@ -150,8 +150,10 @@ func main() {
 		log.Printf("WARNING: cputhrottle discover: %v — thermal metrics off", throttleErr)
 		throttleSampler = nil
 		exporter.SetCPUThrottleAvailable(false)
+		exporter.SetCPUFreqAvailable(false)
 	} else {
 		exporter.SetCPUThrottleAvailable(throttleSampler.ThrottleAvailable())
+		exporter.SetCPUFreqAvailable(throttleSampler.FreqAvailable())
 		if !throttleSampler.ThrottleAvailable() {
 			log.Printf("cputhrottle: no thermal_throttle counters (normal on VMs) — thermal metrics off")
 		} else {
