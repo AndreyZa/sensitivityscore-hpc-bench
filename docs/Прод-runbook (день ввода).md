@@ -45,7 +45,7 @@ make bootstrap SS_NODES="<имя ss-system-узла>"   # роли+taint, namesp
 make registry-secret DOCKERHUB_USER=<логин> DOCKERHUB_TOKEN=<токен>
 make setup-cluster                               # планировщик (релиз CI) + агент + load-watcher
 make trimaran-deps                               # metrics-server — его читает load-watcher
-make monitoring-deploy
+make monitoring-deploy                           # прод-оверлей стоит по умолчанию
 ```
 **Проверка:** `make scheduler-status` — под жив, ConfigMap-ы на месте;
 `make monitoring-targets` — все цели up; `kubectl get ds -n
@@ -100,6 +100,17 @@ kubectl -n sensitivityscore-monitoring exec deploy/prometheus -- \
 **Коллегам:** `http://10.40.10.0:3000` — Grafana открыта в сети стенда
 (hostPort на ss-system, анонимный вход с правами просмотра). Наружу порт не
 публикуется; админ-вход — по секрету `grafana-admin`.
+
+**Ловушка, стоившая живого эндпоинта (19.08.2026).** hostPort и анонимный вход
+живут ТОЛЬКО в прод-оверлее, а `MONITORING_OVERLAY` по умолчанию указывал на
+stage: `make monitoring-reload` без переменной пересобрал Grafana без hostPort —
+адрес выше перестал отвечать, — а Prometheus заодно уехал с retention 365d/60GB
+на 30d/6GB и с лимита памяти 2 ГиБ на 512 МиБ. Ничего не сломалось громко:
+поды Running, цели up, дашборды на месте. Исправлено двумя способами сразу —
+дефолт переведён на прод-оверлей (ошибка в эту сторону безобидна), и добавлен
+страж `scripts/monitoring-overlay-guard.sh`, который на стенде с
+измерительными узлами отказывается применять оверлей с `STAND != prod`.
+Обход — `MONITORING_ALLOW_OVERLAY=1`.
 
 ## 3. Прогноз A5 — проверить ДО серий
 

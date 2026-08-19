@@ -307,7 +307,16 @@ net-sink-clean: ## Убрать sink-приёмник
 MONITORING_NAMESPACE ?= sensitivityscore-monitoring
 # Прод: k8s/monitoring/overlays/prod. Комментарий отдельной строкой — в make
 # всё до `#` попадает в значение вместе с пробелами перед ним.
-MONITORING_OVERLAY   ?= k8s/monitoring/overlays/stage
+# ПО УМОЛЧАНИЮ — ПРОД, и это осознанно (то же решение, что у CH_KUSTOMIZE).
+# Раньше здесь стоял stage, и 19.08.2026 это выстрелило на живом проде: `make
+# monitoring-reload` без переменной снял с Grafana hostPort 3000 и анонимный
+# просмотр (эндпоинт, по которому дашборды смотрят коллеги партнёра, перестал
+# отвечать), а Prometheus уехал с retention 365d/60GB на 30d/6GB и с лимита
+# памяти 2 ГиБ на 512 МиБ. Ошибка в сторону прода теперь безобидна (лишний
+# hostPort и большой retention на STAGE), а в сторону STAGE — нет. Плюс страж
+# monitoring-overlay-guard.sh: на стенде с измерительными узлами он не даст
+# применить оверлей, который рендерит STAND != prod.
+MONITORING_OVERLAY   ?= k8s/monitoring/overlays/prod
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
 
@@ -328,6 +337,7 @@ monitoring-secret: ## Создать секрет grafana-admin со случа�
 
 .PHONY: monitoring-deploy
 monitoring-deploy: monitoring-secret ## Развернуть стек мониторинга на ss-system
+	KUBECTL="$(KUBECTL)" ./scripts/monitoring-overlay-guard.sh $(MONITORING_OVERLAY)
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/prometheus --timeout=180s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deploy/grafana --timeout=180s
@@ -354,6 +364,7 @@ energy-idrac-deploy: ## Поллер iDRAC в кластере: ConfigMap из s
 
 .PHONY: monitoring-reload
 monitoring-reload: ## Перечитать scrape-конфиг и правила без перезапуска пода
+	KUBECTL="$(KUBECTL)" ./scripts/monitoring-overlay-guard.sh $(MONITORING_OVERLAY)
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
 	@echo "ждём распространения ConfigMap на том (до ~60s)..."
 	@sleep 60
