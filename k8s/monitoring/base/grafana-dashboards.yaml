@@ -4627,6 +4627,40 @@ data:
             "mode": "markdown",
             "content": "**Прогоны.** Панели серии строятся на объектах Job, а харнесс их **удаляет** после снятия результата (`cleanup` в `harness/submit/k8s_submit.py`). Поэтому это картина «что идёт сейчас», а не журнал кампании. Журнал — таблицы ClickHouse, и там же точка правды всех чисел (`analysis/canonical_numbers.py --recompute`).\n\n**Разрез по плечам** появляется из `kube_job_labels`: метки объектов kube-state-metrics экспортирует только по явному allowlist, и он ограничен двумя метками харнесса (`sensitivityscore.phd/config`, `sensitivityscore.phd/profile`) — метки Job'ов иначе разносят кардинальность TSDB на каждую точку плана.\n\n**Том ClickHouse — не 5 ГБ.** PVC запрошен на 5Gi, но выдаёт его `local-path`, то есть hostPath, и квоты там нет: CH видит весь диск ss-system, на котором рядом лежит TSDB Prometheus. Занятость тома через kubelet посмотреть нельзя вовсе — `kubelet_volume_stats_*` для hostPath не публикуются, поэтому все дисковые панели здесь идут из самого CH."
           }
+        },
+        {
+          "type": "timeseries",
+          "title": "Троттлинг квотой cgroup: доля зажатых периодов",
+          "id": 31,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 45
+          },
+          "description": "Ненулевая линия у ЖЕРТВЫ (geant4-*, bench-*) означает, что задача досчитывала дольше из-за квоты cgroup, а не из-за интерференции — и харнесс запишет это удлинение как замедление. Причина в логах не видна и в цифрах неотличима от измеряемого эффекта, поэтому точки плана, снятые при троттлинге, негодны (правило SSVictimThrottled, порог 1%). У агрессоров троттлинг НОРМАЛЕН: их зажимают лимитами по замыслу, это и есть интерференция. Метрики добавлены в keep-список cAdvisor 19.08.2026 — до этого они отбрасывались на скрейпе.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"sensitivityscore-bench\"}[5m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace=\"sensitivityscore-bench\"}[5m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ]
         }
       ],
       "annotations": {

@@ -214,9 +214,18 @@ data:
           # cAdvisor отдаёт очень широкий набор; на 2-ядерной ss-system-ноде
           # TSDB дешевле держать узким. Оставляем то, на чём строятся
           # дашборды: CPU/RSS/сеть/файловая система пода.
+          #
+          # cpu_cfs_* добавлены 19.08.2026 и добавлены не для полноты. CFS
+          # троттлинг УДЛИНЯЕТ время задачи, ничего не сообщая: жертва честно
+          # досчитывает, харнесс пишет её runtime, и замедление приписывается
+          # интерференции, хотя причина — квота cgroup. Это ровно тот класс
+          # молчаливо неверных чисел, от которого стенд защищается остальными
+          # проверками (ср. ловушку 18.08: жертва не Guaranteed → static-
+          # пиннинг молча не работает). Метрики cAdvisor на bench-узлах отдаёт
+          # и так — новых процессов на измерительный узел не приходит.
           - source_labels: [__name__]
             action: keep
-            regex: container_(cpu_usage_seconds_total|memory_working_set_bytes|memory_rss|network_(receive|transmit)_bytes_total|fs_(reads|writes)_bytes_total|spec_(cpu_quota|memory_limit_bytes))
+            regex: container_(cpu_usage_seconds_total|cpu_cfs_(periods_total|throttled_(periods_total|seconds_total))|memory_working_set_bytes|memory_rss|network_(receive|transmit)_bytes_total|fs_(reads|writes)_bytes_total|spec_(cpu_quota|memory_limit_bytes))
           # Пустой container= — это pod-level cgroup, дубль к сумме контейнеров.
           - source_labels: [container]
             action: drop

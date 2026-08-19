@@ -132,6 +132,26 @@ data:
               summary: "PSI недоступен на {{ $labels.node }} — IO-ось выключена"
               description: "Нет cgroup io.pressure: ядру нужен psi=1 (docs §5). io_pressure будет нулём, и это не «нет нагрузки»."
 
+          - alert: SSVictimThrottled
+            # Жертва, зажатая квотой cgroup, досчитывает ДОЛЬШЕ — и харнесс
+            # запишет это удлинение как замедление от интерференции. Причина
+            # в логах не видна и в цифрах неотличима от эффекта, который
+            # серия измеряет, поэтому severity critical: точки плана,
+            # снятые при троттлинге, негодны.
+            #
+            # Порог 1% периодов, а не «больше нуля»: у Guaranteed-пода с
+            # limit==request короткий троттлинг на границах периодов бывает и
+            # без перегрузки. Агрессоры (ss-aggressor) исключены намеренно —
+            # их зажимают лимитами по замыслу, это и есть интерференция.
+            expr: |
+              sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="sensitivityscore-bench", pod=~"(geant4|bench-).*"}[5m]))
+              / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace="sensitivityscore-bench", pod=~"(geant4|bench-).*"}[5m])) > 0.01
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: "жертва {{ $labels.pod }} зажата квотой cgroup ({{ $value | humanizePercentage }} периодов)"
+              description: "Замедление этой точки плана вызвано квотой, а не интерференцией. Проверить, что у жертвы CPU_REQ==CPU_LIM и MEM_REQ==MEM_LIM (Guaranteed), иначе static-пиннинг тоже не работает."
+
           - alert: SSRedisWriteErrors
             expr: sum by (node) (rate(ss_agent_redis_write_errors_total[5m])) > 0
             for: 5m
