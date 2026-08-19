@@ -290,6 +290,10 @@ status_page_backend() {
 # (страница никогда не валит серию).
 status_page_up_k8s() {
     local port=${STATUS_PORT:-8787}
+    # Адрес для человека и для healthz: страница живёт на ЛАБЕ и с 19.08
+    # открыта в домашнюю сеть (hostPort на всех интерфейсах) — по IP лабы
+    # она доступна и с самой лабы, и с рабочего ПК, localhost — только с лабы.
+    local host=${PAGE_HOST:-192.168.1.72}
     local cseries=$SERIES
     case "$SERIES" in pressure|baseline|stage) cseries="" ;; esac
     local logpat="$STAND-${cseries:-pressure}\.log"
@@ -314,9 +318,9 @@ status_page_up_k8s() {
     curargs=$(kubectl --kubeconfig "$kc" -n sensitivityscore-system get deploy ss-status \
         -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || true)
     if grep -q -- "$logpat" <<<"$curargs" \
-       && curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+       && curl -sf -o /dev/null "http://$host:$port/healthz" 2>/dev/null; then
         status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
-        ok "статус-страница уже поднята (k0s лабы): http://localhost:$port"
+        ok "статус-страница уже поднята (k0s лабы): http://$host:$port"
         return 0
     fi
 
@@ -347,16 +351,16 @@ status_page_up_k8s() {
     kubectl --kubeconfig "$kc" -n sensitivityscore-system rollout status deploy/ss-status \
         --timeout=300s >/dev/null 2>&1 || true
     for _ in $(seq 60); do
-        curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null && break
+        curl -sf -o /dev/null "http://$host:$port/healthz" 2>/dev/null && break
         sleep 1
     done
-    if ! curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null; then
+    if ! curl -sf -o /dev/null "http://$host:$port/healthz" 2>/dev/null; then
         echo "WARN: страница в k0s не отвечает (серию это не трогает); смотреть:"
         echo "      kubectl --kubeconfig $kc -n sensitivityscore-system describe deploy ss-status"
         return 0
     fi
     status_page_env_save "$cseries" "$stand_up" "$port" "$results" "$baselines" "$kcfg" "$STAND"
-    ok "статус-страница (k0s лабы): http://localhost:$port"
+    ok "статус-страница (k0s лабы): http://$host:$port"
 }
 
 status_page_up() {
@@ -818,7 +822,11 @@ start() {
 статус: make series-status SERIES=$SERIES"
 
     echo
-    echo "дальше:  make series-status SERIES=$SERIES   |   http://localhost:8787"
+    # Адрес страницы — по бэкенду: k8s-страница живёт на лабе и открыта в
+    # домашнюю сеть, compose — на машине запуска.
+    local page_host=localhost
+    [ "$(status_page_backend)" = k8s ] && page_host=${PAGE_HOST:-192.168.1.72}
+    echo "дальше:  make series-status SERIES=$SERIES   |   http://$page_host:${STATUS_PORT:-8787}"
 }
 
 status() {
@@ -886,9 +894,10 @@ EOF
             else
                 echo "серия:     !!! страница показывает ДРУГУЮ серию, цифрам на ней не верить"
             fi
-            curl -sf -o /dev/null "http://localhost:$port/healthz" 2>/dev/null \
-                && echo "адрес:     http://localhost:$port" \
-                || echo "адрес:     не отвечает на http://localhost:$port"
+            local phost=${PAGE_HOST:-192.168.1.72}
+            curl -sf -o /dev/null "http://$phost:$port/healthz" 2>/dev/null \
+                && echo "адрес:     http://$phost:$port" \
+                || echo "адрес:     не отвечает на http://$phost:$port"
         fi
     elif ! command -v docker >/dev/null 2>&1; then
         echo "docker не найден — страница не поднималась"
