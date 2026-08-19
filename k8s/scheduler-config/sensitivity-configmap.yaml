@@ -12,5 +12,10 @@ metadata:
   name: sensitivity-config
   namespace: sensitivityscore-system
 data:
+  # КАЛИБРОВАНО 19.08.2026 (prod-mixed-calib, применение санкционировано
+  # пользователем): base=α (цена всем), sensitivity=β (надбавка чувствительной);
+  # вывод и ДИ — в комментарии score_weights конфига config-prod-base.yaml,
+  # менять ТОЛЬКО синхронно с ним (префлайт серии сверяет).
   weights.json: |
-    {"llc": 1.0, "numa": 1.0, "net": 1.0, "io": 1.0}
+    {"base": {"llc": 0.014, "numa": 0.0, "net": 0.009, "io": 0.0},
+     "sensitivity": {"llc": 0.0, "numa": 0.0, "net": 0.0, "io": 1.31}}
