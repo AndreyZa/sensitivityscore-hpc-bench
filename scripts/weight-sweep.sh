@@ -54,6 +54,27 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 1
+
+# СТОП: скрипт зашит под STAGE, а STAGE снесён в августе 2026. Зашит не только
+# kubeconfig'ом (его бы хватило переопределить), но и тем, что пишет в точку
+# правды: `--stand stage` на строке ниже по тексту, сценарий
+# config-stage-net-diff-v2.yaml, приёмник sink-stage-v2.yaml. Запуск на проде с
+# `KUBECONFIG=<прод> bash scripts/weight-sweep.sh` прошёл бы молча и залил в
+# ClickHouse ПРОД-прогон рядами stand=stage — то есть подмешал бы новые данные
+# к тем, из которых посчитаны опубликованные числа свипа C2 (плато k=3).
+# Восстановить постфактум это нечем: провенанс различает стенды только этим
+# полем. Поэтому отказ, а не «оно само разберётся».
+#
+# Файл оставлен как рецепт: по нему видно, чем именно снят свип C2. Для свипа
+# на проде его надо параметризовать стендом (stand/сценарий/приёмник), а не
+# запускать как есть.
+if [ "${WEIGHT_SWEEP_STAGE_OK:-0}" != 1 ]; then
+    echo "weight-sweep.sh: скрипт зашит под снесённый STAGE (--stand stage,"
+    echo "  config-stage-net-diff-v2.yaml, sink-stage-v2.yaml). На проде он"
+    echo "  записал бы прогон рядами stand=stage и испортил точку правды."
+    echo "  Свип на проде = параметризовать скрипт стендом; см. шапку файла."
+    exit 2
+fi
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/configs/timeweb-stage}
 
 NS=sensitivityscore-system

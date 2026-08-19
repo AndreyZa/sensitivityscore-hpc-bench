@@ -12,11 +12,11 @@ Batch-load: харнесс пишет parquet как прежде, этот ск
 Примеры:
   # проверить парсинг без ClickHouse:
   python load_parquet.py --results ../../harness/results/results.parquet \\
-      --stand stage --run-label 2026-07-14-io --dry-run
+      --stand prod --run-label mixed-calib-v2 --dry-run
 
   # залить results + baselines:
-  python load_parquet.py --host 192.168.1.50 --stand stage \\
-      --run-label 2026-07-14-io \\
+  python load_parquet.py --host 192.168.1.50 --stand prod \\
+      --run-label mixed-calib-v2 \\
       --results ../../harness/results/results.parquet \\
       --baselines ../../harness/results/baselines.parquet
 """

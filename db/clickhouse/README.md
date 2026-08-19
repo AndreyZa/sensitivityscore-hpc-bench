@@ -53,7 +53,7 @@ default-юзеру); localhost-заливка на самом ПК ничего 
 Через Makefile (из корня репозитория), поверх SSH-туннеля:
 ```bash
 make ch-tunnel                       # localhost:8123 -> ПК:8123 (CH_SSH=user@host)
-make ch-load STAND=stage RUN_LABEL=2026-07-14-io
+make ch-load STAND=prod RUN_LABEL=mixed-calib-v2
 make ch-tunnel-close                 # когда закончил
 # ch-load по умолчанию берёт harness/results/results.parquet + baselines.parquet
 # (CH_HOST=localhost по умолчанию); переопределить: RESULTS_FILE=... BASELINES_FILE=...
@@ -61,7 +61,7 @@ make ch-tunnel-close                 # когда закончил
 
 Напрямую (или локально на ПК, скопировав parquet):
 ```bash
-python load_parquet.py --host localhost --stand stage --run-label 2026-07-14-io \
+python load_parquet.py --host localhost --stand prod --run-label mixed-calib-v2 \
     --results ../../harness/results/results.parquet \
     --baselines ../../harness/results/baselines.parquet
 ```
@@ -78,7 +78,7 @@ make ch-tunnel
 make ch-analyze STAND=stage RUN_LABEL=stage-llc     # -> analysis/report/
 make ch-tunnel-close
 ```
-Или напрямую: `python analysis/analyze.py --clickhouse --stand stage --run-label <l>`.
+Или напрямую: `python analysis/analyze.py --clickhouse --stand prod --run-label <l>`.
 **Обязательно фильтруй `--run-label`** (можно несколько раз) — без фильтра
 смешаются разные серии. results и baselines берутся по одной метке, поэтому
 серия должна иметь одинаковый `run_label` в обеих таблицах.
@@ -106,7 +106,7 @@ make ch-tunnel && make ch-backup     # -> ~/phd/sensitivityscore-ch-backup-<да
 ```sql
 SELECT config, avg(makespan_s)
 FROM sensitivityscore.results FINAL
-WHERE stand = 'stage' AND run_label = '2026-07-14-io' AND scenario = 'pressure:llc'
+WHERE stand = 'stage' AND run_label = 'mixed-calib-v2' AND scenario = 'pressure:llc'
 GROUP BY config;
 ```
 
