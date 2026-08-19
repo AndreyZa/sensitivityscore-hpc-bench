@@ -1612,7 +1612,7 @@ data:
         },
         {
           "type": "stat",
-          "title": "Потери БП (вход − система)",
+          "title": "Согласие сенсоров: вход БП ↔ система",
           "id": 12,
           "datasource": {
             "type": "prometheus",
@@ -1626,13 +1626,18 @@ data:
           },
           "fieldConfig": {
             "defaults": {
-              "unit": "watt",
+              "unit": "percentunit",
+              "decimals": 1,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "blue",
+                    "color": "green",
                     "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.1
                   }
                 ]
               }
@@ -1642,10 +1647,10 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(idrac_psu_input_watts) - sum(idrac_power_watts)"
+              "expr": "(sum(idrac_psu_input_watts) - sum(idrac_power_watts)) / sum(idrac_power_watts)"
             }
           ],
-          "description": "Разность входа БП и потребления системы: КПД блоков плюс дежурное питание второго БП. Отрицательное значение означало бы рассогласование сенсоров, то есть недоверие инструменту (критерий Э0.4)."
+          "description": "Относительное расхождение двух независимых групп сенсоров ОДНОГО BMC. Это НЕ КПД блоков: PowerConsumedWatts у Dell — величина уже со стороны входа, поэтому по построению обе цифры должны совпадать. На простое 19.08.2026 наблюдалось −3% (771 Вт против 795 Вт) — это в пределах точности сенсоров BMC, а не нарушение физики. Смотреть здесь надо не знак, а СИСТЕМАТИЧЕСКИЙ уход: если под нагрузкой расхождение растёт до десятков процентов, значит одна из групп сенсоров врёт, и цепочку Э0.4 нельзя замыкать на iDRAC."
         }
       ],
       "annotations": {"list": []},
@@ -3728,7 +3733,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(kube_job_status_active{namespace=\"sensitivityscore-bench\"})"
+              "expr": "sum(kube_job_status_active{namespace=\"sensitivityscore-bench\"}) or vector(0)"
             }
           ],
           "description": "Job'ы в неймспейсе серии. Харнесс удаляет Job после снятия результата, поэтому это «прямо сейчас в полёте», а не «всего за кампанию»."
@@ -3765,7 +3770,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(kube_job_status_succeeded{namespace=\"sensitivityscore-bench\"})"
+              "expr": "sum(kube_job_status_succeeded{namespace=\"sensitivityscore-bench\"}) or vector(0)"
             }
           ],
           "description": "Считается по живым объектам Job. Харнесс их подчищает (cleanup в k8s_submit.py), так что число падает по ходу кампании — точка правды по прогонам всё равно ClickHouse, а не эта панель."
@@ -3806,7 +3811,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(kube_job_status_failed{namespace=\"sensitivityscore-bench\"})"
+              "expr": "sum(kube_job_status_failed{namespace=\"sensitivityscore-bench\"}) or vector(0)"
             }
           ],
           "description": "backoffLimit=0, поэтому любое падение — потерянная точка плана, а не ретрай."
@@ -3843,7 +3848,7 @@ data:
           "targets": [
             {
               "refId": "A",
-              "expr": "count(kube_pod_info{namespace=\"sensitivityscore-bench\"})"
+              "expr": "count(kube_pod_info{namespace=\"sensitivityscore-bench\"}) or vector(0)"
             }
           ]
         },
