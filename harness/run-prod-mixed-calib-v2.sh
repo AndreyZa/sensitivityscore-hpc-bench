@@ -36,10 +36,19 @@ export HARNESS_OVERRIDE_ML_INFERENCE_CPU=28 \
        HARNESS_OVERRIDE_HIGH_S_NET_NET_TOTAL_MB=8000 \
        HARNESS_OVERRIDE_LOW_S_PRIMARIES=1000000
 
-echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
-.venv/bin/python run_experiment.py --config config-prod-mixed-calib-v2.yaml --baseline
-rc=$?
-echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+# SKIP_BASELINE=1 — рестарт серии после сбоя хоста: эталоны уже лежат в
+# baselines.parquet (харнесс сбрасывает его после КАЖДОЙ строки, так что
+# смерть хоста их не трогает), а повторный --baseline начал бы файл с нуля
+# и переписал бы ~3 часа прогонов. Введено 19.08.2026, когда лаба упала
+# посреди основной фазы: перезапуск только PRESSURE, эталоны с вечера.
+if [ "${SKIP_BASELINE:-0}" != "1" ]; then
+    echo "=== BASELINE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
+    .venv/bin/python run_experiment.py --config config-prod-mixed-calib-v2.yaml --baseline
+    rc=$?
+    echo "=== BASELINE DONE $(date +%H:%M:%S) epoch=$(date +%s) rc=$rc ==="
+else
+    echo "эталоны пропущены (SKIP_BASELINE=1) — берём готовый baselines.parquet"
+fi
 echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) ==="
 .venv/bin/python run_experiment.py --config config-prod-mixed-calib-v2.yaml --pressure --scenarios mixed3v2
 rc=$?
