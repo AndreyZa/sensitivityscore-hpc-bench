@@ -8,7 +8,7 @@
 #   make series-preflight SERIES=<имя>  проверить стенд, ничего не запуская
 #   make series-stop SERIES=<имя>     остановить серию и удалить её поды
 #
-# Конвенция имён (STAND=stage по умолчанию, SERIES=placebo -> «stage-placebo»):
+# Конвенция имён (STAND=prod по умолчанию, SERIES=smoke -> «prod-smoke»):
 #   конфиг     harness/config-<стенд>-<имя>.yaml
 #   скрипт     harness/run-<стенд>-<имя>.sh    (эталоны + серия одной сессией)
 #   лог        harness/<стенд>-<имя>.log       (старый ротируется с меткой времени)
@@ -30,13 +30,22 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 1
 
 # Стенд: определяет префикс всех имён (конфиг, скрипт, лог, каталог отчёта) и
-# kubeconfig по умолчанию. Значение по умолчанию — stage, поэтому все команды
-# STAGE работают как раньше, без указания STAND.
-STAND=${STAND:-stage}
+# kubeconfig по умолчанию. По умолчанию — ПРОД (с 19.08.2026): раньше стоял
+# stage, и это осталось от времён, когда STAGE был единственным стендом. После
+# сноса STAGE такой умолчательный стенд стал ловушкой того же рода, что
+# MONITORING_OVERLAY=stage: команда без STAND целилась в несуществующий
+# кластер, а имена файлов (config-stage-*, отчёт report-stage-*) при этом
+# выглядели правдоподобно.
+STAND=${STAND:-prod}
 case "$STAND" in
-    stage) DEFAULT_KUBECONFIG=$HOME/.kube/configs/timeweb-stage ;;
     prod)  DEFAULT_KUBECONFIG=$HOME/.kube/configs/prod ;;
-    *)     echo "неизвестный STAND='$STAND' (ожидается stage|prod)"; exit 2 ;;
+    # STAGE снесён в августе 2026 (кластер Timeweb удалён, kubeconfig убран).
+    # Ветка оставлена ради внятного отказа: гонять серию негде, а её данные
+    # живут в ClickHouse и читаются анализом по --stand stage.
+    stage) echo "STAND=stage: стенд STAGE снесён 08.2026 — гонять серию негде."
+           echo "  данные STAGE живы в ClickHouse: make ch-report STAND=stage RUN_LABEL=<метка>"
+           exit 2 ;;
+    *)     echo "неизвестный STAND='$STAND' (ожидается prod)"; exit 2 ;;
 esac
 export KUBECONFIG=${KUBECONFIG:-$DEFAULT_KUBECONFIG}
 

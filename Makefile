@@ -797,10 +797,9 @@ run-all: venv-harness ## Полная матрица по всем конфиг�
 # ---------------------------------------------------------------------------
 # Запуск серии одной командой — preflight + запуск фоном + статус-страница +
 # вотчдог (scripts/run-series.sh). Конвенция имён (стенд из STAND, по
-# умолчанию stage): SERIES=placebo -> harness/config-stage-placebo.yaml +
-# run-stage-placebo.sh; STAND=prod make series SERIES=smoke ->
-# harness/config-prod-smoke.yaml. STAND экспортируется, поэтому работает и
-# как переменная окружения, и как аргумент make.
+# умолчанию prod с 19.08.2026 — STAGE снесён): SERIES=smoke ->
+# harness/config-prod-smoke.yaml + run-prod-smoke.sh. STAND экспортируется,
+# поэтому работает и как переменная окружения, и как аргумент make.
 # FORCE=1 превращает проваленные проверки preflight в предупреждения.
 # ---------------------------------------------------------------------------
 
@@ -821,8 +820,8 @@ check-contract: ## Сверить имена полей Redis во всех тр
 export STAND
 
 .PHONY: series
-series: venv-harness ## Прогнать серию под ключ: make series SERIES=<имя> [STAND=stage|prod] [PILOT=1]
-	@test -n "$(SERIES)" || { echo "укажи серию: make series SERIES=<имя> (config-$(or $(STAND),stage)-<имя>.yaml)"; exit 1; }
+series: venv-harness ## Прогнать серию под ключ: make series SERIES=<имя> [STAND=prod] [PILOT=1]
+	@test -n "$(SERIES)" || { echo "укажи серию: make series SERIES=<имя> (config-$(or $(STAND),prod)-<имя>.yaml)"; exit 1; }
 	PILOT=$(or $(PILOT),0) ./scripts/run-series.sh start $(SERIES)
 
 .PHONY: series-preflight

@@ -113,8 +113,8 @@ scripts/                 — bootstrap-кластера и run-series.sh (зап
   теги сборки/публикации и scheduler-deploy) и правка полей `image:` в
   манифестах `k8s/` и `*/deploy/`, где имя `andreyza/*` задано явно.
 - **kubeconfig для серий:** `make series` по умолчанию использует
-  `~/.kube/configs/timeweb-stage`; иной путь задаётся как
-  `KUBECONFIG=<путь> make series …`.
+  `~/.kube/configs/prod` (STAND=prod — умолчание с 19.08.2026, после сноса
+  STAGE); иной путь задаётся как `KUBECONFIG=<путь> make series …`.
 - **Форк планировщика** `../scheduler-plugins` рядом с этим репозиторием.
 
 ### 0. Проверка PMU (до развёртывания DaemonSet)
