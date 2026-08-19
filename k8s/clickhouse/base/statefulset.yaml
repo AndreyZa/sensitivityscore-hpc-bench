@@ -30,6 +30,10 @@ spec:
               containerPort: 8123
             - name: native
               containerPort: 9000
+            # Собственный prometheus-эндпоинт CH (config.yaml). Порт не
+            # публикуется сервисом: Prometheus ходит на под напрямую.
+            - name: metrics
+              containerPort: 9363
           resources:
             requests:
               cpu: "250m"
@@ -55,10 +59,16 @@ spec:
             - name: users
               mountPath: /etc/clickhouse-server/users.d/access.xml
               subPath: access.xml # добавляем файл, не затирая штатные users.d
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/prometheus.xml
+              subPath: prometheus.xml
       volumes:
         - name: users
           configMap:
             name: clickhouse-users
+        - name: config
+          configMap:
+            name: clickhouse-config
   volumeClaimTemplates:
     - metadata:
         name: data

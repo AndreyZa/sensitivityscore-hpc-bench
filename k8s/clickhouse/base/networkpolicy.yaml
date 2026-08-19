@@ -50,3 +50,9 @@ spec:
           port: 8123
         - protocol: TCP
           port: 9000
+        # Собственный prometheus-эндпоинт CH (base/config.yaml). Открыт тем же
+        # правилом «все, кроме неймспейса серии»: Prometheus живёт в
+        # sensitivityscore-monitoring и попадает в разрешённые, а жертвы и
+        # агрессоры остаются отрезанными и от метрик тоже.
+        - protocol: TCP
+          port: 9363

@@ -1,0 +1,34 @@
+# Собственный prometheus-эндпоинт ClickHouse. Причина отдельным файлом, а не
+# строкой в users.yaml: это конфиг СЕРВЕРА (config.d), а не доступа (users.d).
+#
+# Зачем вообще: CH — точка правды всех чисел работы, но до 19.08.2026 он был
+# вне мониторинга совсем. Занятость его PVC через kubelet НЕ ВИДНА — тома
+# local-path отдаются как hostPath, а этот плагин метрик тома не сообщает
+# (проверено на проде: семейства kubelet_volume_stats_* отсутствуют целиком).
+# Значит, единственный честный источник «сколько занято и растёт ли» — сам CH.
+# Он же попутно отдаёт вставки, слияния, число кусков и ошибки — то, по чему
+# видно, что загрузка результатов кампании встала, ДО того как это обнаружится
+# при разборе цифр.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  labels:
+    app: clickhouse
+data:
+  prometheus.xml: |
+    <clickhouse>
+      <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <!-- metrics — мгновенные (соединения, слияния в полёте);
+             events — накопительные счётчики (вставленные строки, запросы);
+             asynchronous_metrics — фоновые замеры раз в минуту, среди них
+             размеры таблиц и свободное место на диске;
+             errors — счётчики по кодам ошибок. -->
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+        <errors>true</errors>
+      </prometheus>
+    </clickhouse>

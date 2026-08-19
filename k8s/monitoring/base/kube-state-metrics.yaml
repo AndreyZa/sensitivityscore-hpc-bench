@@ -73,6 +73,13 @@ spec:
             # Только те ресурсы, на которых стоят правила и дашборды —
             # полный набор KSM на 4-узловом стенде это лишние серии в TSDB.
             - --resources=pods,nodes,deployments,daemonsets,statefulsets,jobs,replicasets,namespaces
+            # Метки прогонов наружу. По умолчанию KSM меток объектов НЕ
+            # экспортирует вовсе, поэтому kube_job_labels существовал, но был
+            # пуст, и разложить кампанию по плечам (profile) и конфигурациям
+            # (config) было нечем. Список закрытый: пускаем ровно две метки
+            # харнесса, а не все подряд — метки Job'ов иначе разносят
+            # кардинальность TSDB на каждую точку плана.
+            - --metric-labels-allowlist=jobs=[sensitivityscore.phd/config,sensitivityscore.phd/profile]
           ports:
             - name: http-metrics
               containerPort: 8080

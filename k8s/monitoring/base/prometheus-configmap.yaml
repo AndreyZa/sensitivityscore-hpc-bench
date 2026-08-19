@@ -235,6 +235,74 @@ data:
         static_configs:
           - targets: ["pushgateway.sensitivityscore-monitoring.svc.cluster.local:9091"]
 
+      # --- планировщик стенда --------------------------------------------
+      # Тот самый бинарь, ради которого стенд существует. До 19.08.2026 его
+      # метрик не было: job kube-scheduler выше снимает ВСТРОЕННЫЙ планировщик
+      # k0s на контроллерах, и в проде `scheduler_schedule_attempts_total`
+      # существовал ровно с одним значением profile="default-scheduler" — ни
+      # одного ряда по нашим четырём плечам (sensitivityscore/trimaran/peaks/
+      # packing). Без этого стоимость плеча (задержка планирования, время в
+      # Score) была ненаблюдаема, хотя это половина утверждения работы.
+      #
+      # Схема https и токен: планировщик слушает 10259 только по TLS и
+      # проверяет запрос делегированием (TokenReview + SubjectAccessReview на
+      # nonResourceURL /metrics). Права у SA prometheus уже есть
+      # (prometheus-rbac.yaml), поэтому bearer-токен пода — единственное, что
+      # нужно. Сертификат self-signed (генерируется при старте) → skip-verify.
+      #
+      # Отдельная job, а не аннотация prometheus.io/scrape: та отправила бы
+      # цель в общую job kubernetes-pods, которая ходит по HTTP.
+      - job_name: sensitivityscore-scheduler
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [sensitivityscore-system]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_component]
+            action: keep
+            regex: scheduler
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+)(?::\d+)?
+            replacement: $1:10259
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # --- ClickHouse: точка правды чисел ---------------------------------
+      # Эндпоинт включается конфигом самого CH (k8s/clickhouse/base/config.yaml)
+      # и слушает 9363 на поде. Сервисом порт не публикуется — ходим на под.
+      #
+      # Почему не через kubelet: занятость тома у CH через kubelet НЕ видна —
+      # local-path отдаёт hostPath, а этот плагин метрик тома не сообщает
+      # (kubelet_volume_stats_* на проде отсутствуют целиком). Свободное место
+      # и размеры таблиц даёт только сам CH (asynchronous_metrics).
+      - job_name: clickhouse
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [sensitivityscore-system]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: clickhouse
+          - source_labels: [__address__]
+            action: replace
+            regex: ([^:]+)(?::\d+)?
+            replacement: $1:9363
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
       # --- metrics-agent: оси чувствительности ----------------------------
       # Отдельная job с ЧАСТЫМ интервалом. Причина — разрешение по времени, а
       # не нагрузка: планировщик читает node:metrics:<node> с TTL 30s, и

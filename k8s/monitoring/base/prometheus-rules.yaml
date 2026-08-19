@@ -138,7 +138,13 @@ data:
             # ss-system на STAGE — 2 ГБ. Здесь живут Redis, планировщик,
             # metrics-server, весь мониторинг и (в планах) ClickHouse.
             # Вытеснение отсюда роняет горячий путь планировщика.
-            expr: min(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
+            #
+            # job здесь ОБЯЗАТЕЛЕН. С 19.08.2026 node_exporter стоит ещё и на
+            # трёх ВМ control-plane (job control-plane-nodes), и без фильтра
+            # min() брал бы минимум по всем шести машинам: алерт с текстом
+            # «на ss-system» срабатывал бы на контроллере. node-exporter
+            # ss-system скрейпится общей job kubernetes-pods (по аннотации).
+            expr: min(node_memory_MemAvailable_bytes{job="kubernetes-pods"} / node_memory_MemTotal_bytes{job="kubernetes-pods"}) < 0.15
             for: 5m
             labels: {severity: critical}
             annotations:
@@ -146,7 +152,8 @@ data:
               description: "Риск вытеснения Redis/планировщика/Prometheus. Проверить, не приехал ли на узел ClickHouse."
 
           - alert: SSSystemNodeDiskLow
-            expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+            # Фильтр по job — по той же причине, что у правила выше.
+            expr: node_filesystem_avail_bytes{job="kubernetes-pods", mountpoint="/"} / node_filesystem_size_bytes{job="kubernetes-pods", mountpoint="/"} < 0.15
             for: 10m
             labels: {severity: warning}
             annotations:
@@ -174,3 +181,125 @@ data:
             labels: {severity: critical}
             annotations:
               summary: "sensitivityscore-scheduler недоступен — поды серии не разложатся"
+
+      # Control plane появился в мониторинге 19.08.2026 (node_exporter на ВМ +
+      # открытые слушатели etcd/планировщика/controller-manager). Правил по
+      # нему не было ни одного — то есть отказ etcd стенд заметил бы по
+      # симптомам («поды не создаются»), а не по причине. Пороги взяты из
+      # эксплуатационных ориентиров etcd, а не выдуманы: p99 fsync WAL <10 мс,
+      # смены лидера — событие штучное.
+      - name: sensitivityscore-control-plane
+        rules:
+          - alert: SSControllerExporterDown
+            # Не «упала ВМ», а «мы перестали о ней знать»: контроллеры k0s
+            # работают без kubelet, в kubectl get nodes их нет, и кроме этого
+            # экспортёра других свидетельств их состояния у стенда не осталось.
+            expr: up{job="control-plane-nodes"} == 0
+            for: 5m
+            labels: {severity: warning}
+            annotations:
+              summary: "node_exporter на контроллере {{ $labels.instance }} недоступен"
+              description: "Либо ВМ недоступна, либо служба node_exporter не поднялась (роль nodeexporter провизионера)."
+
+          - alert: SSK0sControllerInactive
+            expr: node_systemd_unit_state{job="control-plane-nodes", name="k0scontroller.service", state="active"} == 0
+            for: 3m
+            labels: {severity: critical}
+            annotations:
+              summary: "k0scontroller на {{ $labels.instance }} не в состоянии active"
+
+          - alert: SSEtcdNoLeader
+            # Кворум из трёх: потеря лидера хотя бы одним членом — это уже
+            # либо сеть между ВМ, либо диск. Пока лидера нет, apiserver не
+            # пишет, то есть поды серии не создаются и не завершаются.
+            expr: etcd_server_has_leader == 0
+            for: 1m
+            labels: {severity: critical}
+            annotations:
+              summary: "У члена etcd {{ $labels.instance }} нет лидера"
+
+          - alert: SSEtcdLeaderChurn
+            expr: increase(etcd_server_leader_changes_seen_total[1h]) > 3
+            labels: {severity: warning}
+            annotations:
+              summary: "etcd сменил лидера >3 раз за час"
+              description: "Обычно это медленный диск или сетевые таймауты между ВМ. Смотреть fsync WAL на дашборде control plane."
+
+          - alert: SSEtcdSlowFsync
+            # 10 мс — ориентир самого etcd. На проде 19.08.2026 наблюдалось
+            # 1.96 мс, то есть запас пятикратный: срабатывание означает
+            # реальную деградацию диска ВМ, а не «порог впритык».
+            expr: histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m]))) > 0.01
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "etcd на {{ $labels.instance }}: fsync WAL p99 > 10 мс"
+              description: "Диск ВМ не успевает за журналом. Кампанию это тормозит на создании/завершении подов, а не на счёте."
+
+          - alert: SSEtcdQuotaNear
+            expr: etcd_mvcc_db_total_size_in_bytes / etcd_server_quota_backend_bytes > 0.8
+            for: 15m
+            labels: {severity: warning}
+            annotations:
+              summary: "БД etcd заняла >80% квоты на {{ $labels.instance }}"
+              description: "При достижении квоты кластер уходит в режим только-чтение. Лечится compaction+defrag."
+
+          - alert: SSApiserverErrors
+            expr: sum(rate(apiserver_request_total{code=~"5.."}[5m])) / sum(rate(apiserver_request_total[5m])) > 0.02
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "apiserver отдаёт >2% ответов 5xx"
+
+      # Хранилище и энергия — две подсистемы, отказ которых НЕ виден по
+      # состоянию подов: CH может быть Running и при этом не принимать
+      # вставки, а pushgateway помнит последнее значение мощности вечно.
+      - name: sensitivityscore-storage-energy
+        rules:
+          - alert: SSClickHouseDown
+            expr: up{job="clickhouse"} == 0
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "ClickHouse недоступен — результаты кампании некуда складывать"
+
+          - alert: SSEnergyPollStale
+            # Именно этот случай и маскирует pushgateway: он продолжает
+            # отдавать последнее значение, панель «мощность» выглядит живой,
+            # а окна энергии считаются по данным, которых уже нет.
+            expr: time() - max(idrac_poll_timestamp_seconds) > 300
+            for: 2m
+            labels: {severity: warning}
+            annotations:
+              summary: "Поллер iDRAC молчит >5 минут"
+              description: "Метрики мощности в pushgateway протухли, но продолжают отдаваться. Смотреть Deployment idrac-poller."
+
+      # Самоконтроль сбора. Не про стенд, а про мониторинг: метрик etcd не
+      # было месяцами, и ни одно правило об этом не сообщало, потому что
+      # «нет метрики» — это не «метрика плохая». Ловушка общая: любое
+      # молчание цели делает соответствующие панели пустыми, а алерты по ним
+      # — вечно неактивными, что неотличимо от «всё хорошо».
+      - name: sensitivityscore-monitoring-self
+        rules:
+          - alert: SSTargetDown
+            # Универсальное правило поверх всех job: адресные (SSAgentDown,
+            # SSControllerExporterDown, SSClickHouseDown) остаются — у них
+            # свои пороги и текст; это ловит всё остальное, включая цели,
+            # добавленные позже и забытые.
+            expr: up == 0
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "Цель {{ $labels.job }} / {{ $labels.instance }} недоступна >10 минут"
+
+          - alert: SSPrometheusStorageFilling
+            # TSDB лежит в hostPath на диске ss-system; retention на проде —
+            # 365 дней при потолке 60 ГБ. Правило предупреждает раньше, чем
+            # retention.size начнёт молча удалять СТАРЫЕ блоки — то есть
+            # ранние серии кампании.
+            expr: prometheus_tsdb_storage_blocks_bytes / 1024 / 1024 / 1024 > 45
+            for: 30m
+            labels: {severity: warning}
+            annotations:
+              summary: "TSDB Prometheus занял >45 ГБ"
+              description: "На 60 ГБ включится retention.size и начнёт удалять самые старые блоки — это история первых серий."

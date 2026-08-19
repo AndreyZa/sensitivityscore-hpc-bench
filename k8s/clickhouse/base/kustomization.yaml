@@ -8,6 +8,7 @@ resources:
   - service.yaml
   - networkpolicy.yaml
   - users.yaml
+  - config.yaml
   - statefulset.yaml
   - schema-job.yaml
 
