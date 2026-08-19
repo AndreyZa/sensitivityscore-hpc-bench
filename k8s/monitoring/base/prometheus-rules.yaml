@@ -132,6 +132,36 @@ data:
               summary: "PSI недоступен на {{ $labels.node }} — IO-ось выключена"
               description: "Нет cgroup io.pressure: ядру нужен psi=1 (docs §5). io_pressure будет нулём, и это не «нет нагрузки»."
 
+          - alert: SSLoadWatcherDown
+            # Три плеча энерговетки (trimaran, peaks, packing) берут утилизацию
+            # узлов ТОЛЬКО отсюда. Отказ они не замечают: score выравнивается,
+            # плечо вырождается в «без различения», а сравнение плеч
+            # продолжает считаться и выглядит правдоподобно. Серия при этом
+            # измеряет не то, что заявлено.
+            expr: ss_loadwatcher_up == 0
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "load-watcher недоступен — load-aware плечи раскладывают вслепую"
+              description: "Проверить под load-watcher в sensitivityscore-system и metrics-server (он его источник)."
+
+          - alert: SSLoadWatcherStale
+            # Отдельно от Down: load-watcher умеет отвечать мгновенно, застыв
+            # на старом окне. Для плеча это неотличимо от свежих данных.
+            expr: time() - ss_loadwatcher_timestamp_seconds > 300
+            for: 5m
+            labels: {severity: critical}
+            annotations:
+              summary: "окно load-watcher не обновляется {{ $value | humanizeDuration }}"
+
+          - alert: SSLoadWatcherMissingNodes
+            # Узел, которого нет в выдаче, для load-aware плеча не существует.
+            expr: ss_loadwatcher_nodes < count(kube_node_info)
+            for: 10m
+            labels: {severity: warning}
+            annotations:
+              summary: "load-watcher видит {{ $value }} узлов — меньше, чем есть в кластере"
+
           - alert: SSVictimThrottled
             # Жертва, зажатая квотой cgroup, досчитывает ДОЛЬШЕ — и харнесс
             # запишет это удлинение как замедление от интерференции. Причина

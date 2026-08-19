@@ -1,0 +1,65 @@
+# Переводчик состояния load-watcher в метрики Prometheus.
+#
+# Зачем — подробно в самом скрипте (scripts/loadwatcher-exporter.py). Коротко:
+# load-watcher кормит утилизацией три плеча энерговетки (trimaran, peaks,
+# packing), и его деградация НЕ ВИДНА — плечи не падают, а молча ставят всем
+# узлам одинаковый score, то есть вырождаются в «без различения», продолжая
+# давать правдоподобные числа для сравнения плеч.
+#
+# Код НЕ дублируется: контейнер исполняет скрипт из ConfigMap, который создаёт
+# `make loadwatcher-exporter-deploy` (kustomize не умеет файлы вне своего
+# корня — тот же приём, что у idrac-poller). Образ стоковый python:3.12-slim,
+# скрипт stdlib-only: политика «образы только через CI» не задета.
+#
+# Скрейпится общей job kubernetes-pods по аннотациям — своя job не нужна,
+# метрики уже в формате экспозиции и меток цели не теряют.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadwatcher-exporter
+  namespace: sensitivityscore-monitoring
+  labels: { app: loadwatcher-exporter }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: loadwatcher-exporter }
+  template:
+    metadata:
+      labels: { app: loadwatcher-exporter }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9095"
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: exporter
+          image: python:3.12-slim
+          command: ["python", "/opt/exporter/loadwatcher-exporter.py"]
+          env:
+            - name: LOADWATCHER_URL
+              value: http://load-watcher.sensitivityscore-system.svc.cluster.local:2020/watcher
+          ports:
+            - name: metrics
+              containerPort: 9095
+          volumeMounts:
+            - { name: script, mountPath: /opt/exporter, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          readinessProbe:
+            # Намеренно /healthz, а не /metrics: живость ЭКСПОРТЁРА не должна
+            # зависеть от того, здоров ли load-watcher — иначе kubelet
+            # выкинул бы из эндпоинтов единственного свидетеля чужой поломки.
+            httpGet: { path: /healthz, port: 9095 }
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 9095 }
+            initialDelaySeconds: 10
+      volumes:
+        - name: script
+          configMap: { name: loadwatcher-exporter-script }

@@ -3817,6 +3817,253 @@ data:
             "mode": "markdown",
             "content": "**Что здесь показано.** Это НАШ планировщик — под `sensitivityscore-scheduler` в `sensitivityscore-system`, один процесс с четырьмя профилями. Встроенный планировщик k0s на контроллерах живёт на дашборде «Control plane — ВМ и API» и с этими цифрами не смешивается: у него job `kube-scheduler` и единственный профиль `default-scheduler`.\n\n**Профиль = плечо эксперимента.** Метка `profile` — это `schedulerName` из манифеста Job'а, поэтому «сравнить стоимость плеч» здесь буквально: одна панель, четыре линии.\n\n**Что можно нести в текст, а что нет.** Точка расширения `Score` меряется в каждом цикле (панели «Время в точке Score» и «Средняя стоимость Score на под») — это надёжные числа. Гистограмма по отдельным плагинам сэмплируется на 10% и не знает профиля: годится посмотреть порядок величины, но не для таблицы в статье.\n\n**На простое панели пусты.** Счётчики нарастают только когда через планировщик идут поды; между кампаниями пустота — норма, а не поломка."
           }
+        },
+        {
+          "type": "row",
+          "title": "Источник утилизации для плеч trimaran / peaks / packing",
+          "id": 50,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 54
+          }
+        },
+        {
+          "type": "stat",
+          "title": "load-watcher отвечает",
+          "id": 51,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 0,
+            "y": 55
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ss_loadwatcher_up"
+            }
+          ],
+          "description": "Три плеча энерговетки берут утилизацию узлов только отсюда. Его отказ они НЕ замечают: score становится одинаковым у всех узлов, плечо вырождается в «без различения», а сравнение плеч продолжает считаться и выглядит правдоподобно."
+        },
+        {
+          "type": "stat",
+          "title": "Узлов в выдаче",
+          "id": 52,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 4,
+            "y": 55
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 4
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ss_loadwatcher_nodes"
+            }
+          ],
+          "description": "Ожидается столько же, сколько узлов в кластере. Меньше — часть узлов для load-aware плеч невидима, и они не могут получить осмысленный score."
+        },
+        {
+          "type": "stat",
+          "title": "Возраст окна",
+          "id": 53,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 4,
+            "x": 8,
+            "y": 55
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 120
+                  },
+                  {
+                    "color": "red",
+                    "value": 300
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "time() - ss_loadwatcher_timestamp_seconds"
+            }
+          ],
+          "description": "По метке времени САМОГО load-watcher, а не по времени скрейпа: он может отвечать мгновенно, застыв на старом окне."
+        },
+        {
+          "type": "timeseries",
+          "title": "Разброс утилизации между bench-узлами",
+          "id": 54,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 55
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(ss_loadwatcher_node_value{type=\"CPU\", node=~\"wrk-.*\"}) - min(ss_loadwatcher_node_value{type=\"CPU\", node=~\"wrk-.*\"})",
+              "legendFormat": "разброс CPU"
+            }
+          ],
+          "description": "Главная панель этого ряда. Плечо, различающее узлы по нагрузке, может различать их только если разброс НЕ НОЛЬ. Ноль во время кампании означает, что trimaran/peaks/packing раскладывают вслепую — и разница между ними и sensitivityscore в такой серии ничего не измеряет. На простое ноль — норма."
+        },
+        {
+          "type": "timeseries",
+          "title": "Утилизация узлов глазами load-watcher",
+          "id": 55,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 16,
+            "x": 0,
+            "y": 61
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "ss_loadwatcher_node_value{type=\"CPU\"}",
+              "legendFormat": "{{node}} CPU"
+            },
+            {
+              "refId": "B",
+              "expr": "ss_loadwatcher_node_value{type=\"Memory\"}",
+              "legendFormat": "{{node}} память"
+            }
+          ],
+          "description": "То же самое, что видят плечи trimaran/peaks/packing в момент решения. Сверять с осями чувствительности: расхождение картины утилизации и картины интерференции — это и есть предмет работы."
+        },
+        {
+          "type": "timeseries",
+          "title": "Узлов без метрик в выдаче",
+          "id": 56,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "sensitivityscore-prom"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 61
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(ss_loadwatcher_node_metrics == 0) or vector(0)",
+              "legendFormat": "узлов без данных"
+            }
+          ],
+          "description": "Узел может присутствовать в выдаче и не нести ни одной метрики. Для плеча это не ноль нагрузки, а отсутствие данных — но отличить одно от другого оно не умеет."
         }
       ],
       "annotations": {

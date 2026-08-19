@@ -15,6 +15,7 @@ resources:
   - alertmanager.yaml
   - ss-notifier.yaml
   - idrac-poller.yaml
+  - loadwatcher-exporter.yaml
   - grafana.yaml
   - grafana-dashboards.yaml
 

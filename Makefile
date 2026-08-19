@@ -411,6 +411,15 @@ energy-idrac-deploy: ## Поллер iDRAC в кластере: ConfigMap из s
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout restart deployment/idrac-poller
 	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deployment/idrac-poller --timeout=120s
 
+.PHONY: loadwatcher-exporter-deploy
+loadwatcher-exporter-deploy: ## ConfigMap из scripts/ + перезапуск экспортёра load-watcher
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) create configmap loadwatcher-exporter-script \
+		--from-file=loadwatcher-exporter.py=scripts/loadwatcher-exporter.py \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f k8s/monitoring/base/loadwatcher-exporter.yaml
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout restart deployment/loadwatcher-exporter
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) rollout status deployment/loadwatcher-exporter --timeout=120s
+
 .PHONY: monitoring-reload
 monitoring-reload: ## Перечитать scrape-конфиг и правила без перезапуска пода
 	KUBECTL="$(KUBECTL)" ./scripts/monitoring-overlay-guard.sh $(MONITORING_OVERLAY)
