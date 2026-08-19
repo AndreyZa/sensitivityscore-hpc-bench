@@ -402,9 +402,13 @@ EOF
     ok "контракт Redis-полей цел (исходники + живые данные)"
 
     local leftovers
-    leftovers=$(kubectl -n $BENCH_NS get pods --no-headers 2>/dev/null | wc -l)
+    # ss-sink — приёмник стрима high-s-net (k8s/net-sink), живёт в bench-ns
+    # ПО КОНСТРУКЦИИ (NET_SINK_HOST=ss-sink резолвится в namespace джоба) и
+    # чужим подом не считается; на измерительном узле его ловит СЛЕДУЮЩАЯ
+    # проверка (на проде sink пиннится к ss-system — sink-prod.yaml).
+    leftovers=$(kubectl -n $BENCH_NS get pods --no-headers 2>/dev/null | awk '$1 != "ss-sink"' | wc -l)
     [ "$leftovers" -eq 0 ] || fail "$leftovers чужих подов в $BENCH_NS (эталонам нужен пустой кластер) — make harness-clean-jobs"
-    ok "bench-namespace пуст"
+    ok "bench-namespace пуст (ss-sink — инфраструктура стрима, не в счёт)"
 
     # Ни один служебный под не должен стоять на измерительном узле. Проверка
     # не дублирует предыдущую: та требует ПУСТОЙ bench-namespace, а эта ловит
