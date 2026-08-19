@@ -143,7 +143,14 @@ spec:
         - name: alertmanager
           image: prom/alertmanager:v0.27.0
           args:
-            - --config.file=/etc/alertmanager/alertmanager.yml
+            # Каталог, а не файл через subPath. Это не косметика: том с
+            # subPath НЕ ОБНОВЛЯЕТСЯ при смене ConfigMap — kubelet
+            # подкладывает файл один раз при старте пода. Поймано 19.08.2026:
+            # маршрут validity лёг в ConfigMap, `make monitoring-reload`
+            # отработал, а под три часа жил со старым конфигом и молчал об
+            # этом. Каталог kubelet обновляет символической ссылкой, и
+            # POST /-/reload видит новое.
+            - --config.file=/etc/alertmanager/config/alertmanager.yml
             - --storage.path=/alertmanager
             # Флага --web.enable-lifecycle у Alertmanager НЕТ (проверено:
             # v0.27.0 падает с «unknown long flag»). Перечитать конфиг он и
@@ -154,8 +161,7 @@ spec:
               containerPort: 9093
           volumeMounts:
             - name: config
-              mountPath: /etc/alertmanager/alertmanager.yml
-              subPath: alertmanager.yml
+              mountPath: /etc/alertmanager/config
               readOnly: true
             - name: notifier-token
               mountPath: /etc/alertmanager/notifier

@@ -426,8 +426,15 @@ monitoring-reload: ## Перечитать scrape-конфиг и правила
 	$(KUBECTL) apply -k $(MONITORING_OVERLAY)
 	@echo "ждём распространения ConfigMap на том (до ~60s)..."
 	@sleep 60
-	$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -- \
-		wget -q -O- --post-data='' http://localhost:9090/-/reload && echo "reload OK"
+	$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -c prometheus -- \
+		wget -q -O- --post-data='' http://localhost:9090/-/reload && echo "prometheus reload OK"
+	@# Alertmanager перечитывается ОТДЕЛЬНО: у него свой ConfigMap (маршруты,
+	@# приёмники), и забыть про него легко — правила поедут, а маршрутизация
+	@# останется старой, причём молча.
+	@if $(KUBECTL) -n $(MONITORING_NAMESPACE) get deploy alertmanager >/dev/null 2>&1; then \
+		$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/alertmanager -- \
+			wget -q -O- --post-data='' http://localhost:9093/-/reload && echo "alertmanager reload OK"; \
+	fi
 
 .PHONY: monitoring-open
 monitoring-open: ## Проброс портов: Grafana :3000, Prometheus :9090 (Ctrl-C — закрыть)
