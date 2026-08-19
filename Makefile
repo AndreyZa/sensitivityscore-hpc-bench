@@ -953,6 +953,19 @@ ch-tunnel-close: ## Закрыть SSH-туннель к ПК-агрегатор
 
 # Дамп верифицируется восстановлением во временную БД на том же сервере и
 # пакуется в BACKUP_DIR (~/phd). Копию архива держать вне этой машины.
+.PHONY: ch-load-metrics
+ch-load-metrics: ## Догрузить ряды Prometheus прода в ClickHouse (гонять С ЛАБЫ): [SINCE=48h] [CH_HOST=..]
+	@# ЗАЧЕМ. Трассы осей, мощность и RAPL живут только в Prometheus — в
+	@# hostPath на одной ВМ, с ретеншеном 365 дней и без SQL. Здесь они
+	@# становятся таблицей: джойнятся с samples по времени и узлу, попадают в
+	@# общий ch-backup и переживают Prometheus. Архив monitoring-backup для
+	@# этого не годится — это блоки во внутреннем формате, средство поднять
+	@# Prometheus обратно, а не источник данных.
+	$(PYTHON) ./scripts/ch-load-metrics.py \
+		--ch-url http://$(CH_HOST):$(CH_PORT) --database $(CH_DATABASE) \
+		--stand $(or $(STAND),prod) $(if $(SINCE),--since $(SINCE),) \
+		--kubectl "$(KUBECTL)"
+
 .PHONY: ch-backup
 ch-backup: ## Бэкап БД sensitivityscore (DDL+Native+Parquet+restore.sh): make ch-backup [CH_HOST=..] [BACKUP_DIR=~/phd]
 	CH=http://$(CH_HOST):$(CH_PORT) DB=$(CH_DATABASE) \
