@@ -1,0 +1,58 @@
+# sink-prod.yaml — приёмник стрима high-s-net на ПРОДЕ (рекалибровка v2,
+# 19.08.2026): зеркало нейтральной топологии sink-stage-v2 — sink пиннится
+# на системный узел ss-system, все три bench-узла равноудалены, стрим
+# отовсюду cross-node (через физический NIC), бонуса локальности нет.
+# nodeName обходит планировщик, NoSchedule-taint системного узла не мешает.
+#
+# Отличие от STAGE: ss-system — ВМ, её vNIC может отдавать меньше бонда
+# 2×25G bench-узлов. Для КАЛИБРОВКИ это не порок: знаменатель slowdown
+# (соло-эталон) включает ту же самую дорогу к sink, шторм меняет только
+# конкуренцию на аплинке жертвы. Реальную полосу bench→ss-system снять
+# обкаткой ДО серии (iperf3) и вписать сюда: NET_TOTAL_MB жертвы
+# подбирается так, чтобы чистый стрим был секунды (см. конфиг серии).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  nodeName: ss-system
+  restartPolicy: Always
+  containers:
+    - name: sink
+      image: python:3.12-slim
+      command: ["python3", "-u", "-c"]
+      args:
+        - |
+          import socket, threading
+          s = socket.socket()
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(("0.0.0.0", 9000)); s.listen(128)
+          print("sink up :9000", flush=True)
+          def drain(c):
+              import contextlib
+              with contextlib.suppress(Exception):
+                  while c.recv(1 << 20):
+                      pass
+              c.close()
+          while True:
+              c, _ = s.accept()
+              threading.Thread(target=drain, args=(c,), daemon=True).start()
+      ports:
+        - containerPort: 9000
+      resources:
+        requests: { cpu: "200m", memory: "64Mi" }
+        limits: { cpu: "2", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ss-sink
+  namespace: sensitivityscore-bench
+  labels: { app: ss-sink }
+spec:
+  selector: { app: ss-sink }
+  ports:
+    - port: 9000
+      targetPort: 9000

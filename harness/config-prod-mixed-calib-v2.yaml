@@ -1,0 +1,95 @@
+# config-prod-mixed-calib-v2.yaml — ВТОРАЯ калибровочная серия прода:
+# дозы, исправленные по урокам v1 (19.08.2026, runbook ступень 8).
+#
+# Что чинит относительно prod-mixed-calib (v1):
+#   * llc/membw-жертва — ML-ИНФЕРЕНС (профиль ml-inference, образ mlprobe):
+#     Geant4/TestEm5 кэш-резидентен (~190 МБ на 120 МБ LLC, β_llc=0 честен,
+#     PHYSLIST — бутафория) и осью llc не чувствителен по построению;
+#     mlprobe стримит 49М DRAM-чтений/с — настоящий membw-класс.
+#   * membw-шторм b6 обязан целить сокеты жертв (двухсокетная ловушка:
+#     плавающий шторм уходит на чужой сокет и не мешает): --taskset по всем
+#     свободным CPU обоих доменов (0-7 при двух прибитых жертвах) +
+#     --mbind 0,1 (интерлив памяти на ОБА контроллера). Два энтри с разными
+#     taskset на один узел нельзя — имена подов ss-aggressor-<node>-<slot>
+#     коллидируют (harness/submit/aggressors.py:348).
+#   * сетевой шторм — net-egress (клиенты b8 -> сервер на wrk-b6): same-node
+#     пары v1 мостились через veth, физический аплинк не занимали и стрим
+#     жертвы не резали; ЗАОДНО двоили байты в датчике (ось 1.0 при номинале
+#     0.48 — сноска 3 Методики). Сервер на b6 сознательно: его RX засветит
+#     net-ось b6 — с интервальными давлениями из Prometheus это ИЗМЕРЯЕТСЯ,
+#     а не искажает фит (у v2 давления в фит идут только оттуда).
+#   * high-s-net теперь РЕАЛЬНО стримит (OUTPUT_MODE=stream, сброс
+#     NET_TOTAL_MB на sink после счёта — критический путь): цена cˢ_net
+#     впервые измерима. Sink — на ss-system (k8s/net-sink/sink-prod.yaml,
+#     нейтральная топология по уроку net-diff-v2), применить ДО серии:
+#       kubectl apply -f k8s/net-sink/sink-prod.yaml
+#
+# ОБКАТКА ДО НОЧНОГО ЗАПУСКА (руками, по 2-3 мин):
+#   1) полоса bench->ss-system (iperf3 или стрим-жертва соло): чистый сброс
+#      8000 МБ должен быть СЕКУНДЫ, не минуты — иначе уменьшить NET_TOTAL_MB;
+#   2) глазами агрессоров v2 (b6 mbind-стрим, b8 egress): Running, без OOM,
+#      оси на Prometheus (llc(b6)>0.3, net(b8)~1, net(b6) — RX сервера);
+#   3) ml-inference через harness (одиночный job): Guaranteed, cpuset
+#      одного домена, makespan ~3-4 мин.
+#
+# После прогона — конвейер ступеней 7-8 runbook с ПОПРАВКАМИ v2:
+#   make ch-load-all STAND=prod RUN_LABEL=prod-mixed-calib-v2 \
+#       RESULTS_FILE=harness/results/results-prod-mixed-calib-v2.parquet \
+#       BASELINES_FILE=harness/results/baselines-prod-mixed-calib-v2.parquet
+#   ./scripts/energy-windows-from-log.sh harness/prod-mixed-calib-v2.log prod prod-mixed-calib-v2
+#   калибратор: --mixed-label prod-mixed-calib-v2 --llc-label "" \
+#       --prometheus-url http://localhost:19090   (давления за интервал задачи;
+#       SENSITIVITY-зеркало калибратора дополнить ml-inference!)
+#   -> сверить цены с действующими весами (вписаны 19.08), решение о
+#      перевписывании — отдельное.
+#
+# Оценка длительности: эталоны 4 профиля x 3 узла x (1+3) ~ 1.2 ч;
+# серия 3 плеча x 10 реп x 6 жертв ~ 4 ч. Запуск:
+#   STAND=prod make series SERIES=mixed-calib-v2      # БЕЗ PILOT
+
+extends: config-prod-base.yaml
+
+profiles:
+  - low-s          # контраст fingerprint; в pressure-потоке не участвует
+  - ml-inference
+  - high-s-io
+  - high-s-net
+
+pressure_scenarios:
+  - name: mixed3v2
+    victims:
+      - { profile: ml-inference, count: 2 }   # membw-шторм (wrk-b6) токсичен
+      - { profile: high-s-io, count: 2 }      # дисковый шторм (wrk-b7) токсичен
+      - { profile: high-s-net, count: 2 }     # egress-шторм (wrk-b8) токсичен
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25
+    aggressors_per_node: [2]
+    storms:
+      - node: wrk-b6
+        mode: stress
+        # Интерлив на оба контроллера + потоки на свободных CPU обоих
+        # доменов: давит membw/LLC того сокета, где окажется жертва
+        # (см. шапку). 0-7 = свободные при двух прибитых 28-ядерных жертвах.
+        args: ["--stream", "2", "--taskset", "0-7", "--mbind", "0,1"]
+        per_node: 2
+        toxic_for: [ml-inference]
+      - node: wrk-b7
+        mode: stress
+        # dsync и 1g — против 384 ГБ page cache / emptyDir 8Gi (урок v1).
+        args: ["--hdd", "4", "--hdd-bytes", "1g", "--hdd-opts", "dsync"]
+        per_node: 2
+        toxic_for: [high-s-io]
+      - node: wrk-b8
+        mode: net-egress
+        egress_server_node: wrk-b6
+        per_node: 2
+        parallel: 8
+        toxic_for: [high-s-net]
+    stabilize_seconds: 60
+    repetitions: 10
+
+output:
+  results_dir: "results"
+  results_file: "results-prod-mixed-calib-v2.parquet"
+  baselines_file: "baselines-prod-mixed-calib-v2.parquet"
