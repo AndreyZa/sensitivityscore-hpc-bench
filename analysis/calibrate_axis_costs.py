@@ -125,6 +125,48 @@ def node_pressures_mixed(
     return p.clip(0.0, 1.0)
 
 
+def pressures_from_prometheus(df: pd.DataFrame, url: str,
+                              quantile: float = 0.5) -> pd.DataFrame:
+    """Пер-строчные давления осей: медиана (quantile_over_time) узловой оси
+    за ИНТЕРВАЛ задачи [start_ts, end_ts] из Prometheus-зеркала агента.
+
+    Мотивация (prod-mixed-calib, 19.08.2026): PSI io пульсирует — в моменты
+    решения планировщика датчик почти нулевой, и восстановление давлений
+    обращением interference_chosen дало p_io=0 при реальной токсичности
+    io×io +6.8%. Медиана за интервал задачи — то давление, которое задача
+    ФАКТИЧЕСКИ пережила; заодно исчезает нужда в обращении скор-функции
+    (и в вычете numa — оси берутся напрямую, а не из свёртки).
+
+    Требует живой ретенции Prometheus за окно серии (прод: 365 дней)."""
+    import json
+    import urllib.parse
+    import urllib.request
+
+    metric = {"llc": "ss_node_llc_miss_rate", "io": "ss_node_io_pressure",
+              "net": "ss_node_net_pressure"}
+    out = pd.DataFrame(index=df.index, columns=list(AXES), dtype=float)
+    cache: dict[tuple[str, str, int, int], float] = {}
+    for idx, r in df.iterrows():
+        t0, t1 = float(r["start_ts"]), float(r["end_ts"])
+        if not (np.isfinite(t0) and np.isfinite(t1) and t1 > t0):
+            continue
+        for a in AXES:
+            key = (a, r["node"], int(t0), int(t1))
+            if key not in cache:
+                q = (f"quantile_over_time({quantile}, "
+                     f"{metric[a]}{{node=\"{r['node']}\"}}[{int(t1 - t0)}s])")
+                full = (f"{url}/api/v1/query?"
+                        + urllib.parse.urlencode({"query": q, "time": int(t1)}))
+                with urllib.request.urlopen(full, timeout=30) as resp:
+                    res = json.load(resp)["data"]["result"]
+                cache[key] = float(res[0]["value"][1]) if res else float("nan")
+            out.loc[idx, a] = cache[key]
+    n_ok = int(out.notna().all(axis=1).sum())
+    print(f"давления из Prometheus: {n_ok}/{len(df)} строк с полным вектором "
+          f"(quantile={quantile} за интервал задачи)")
+    return out
+
+
 def neighbours(df: pd.DataFrame) -> pd.Series:
     """Среднее число других жертв, работавших одновременно на том же узле:
     Σ длительностей перекрытий / собственная длительность, в рамках одного
@@ -143,12 +185,19 @@ def neighbours(df: pd.DataFrame) -> pd.Series:
 
 
 def build_rows(df: pd.DataFrame, pressures: pd.DataFrame,
-               base: dict, series: str) -> pd.DataFrame:
+               base: dict, series: str,
+               row_pressures: pd.DataFrame | None = None) -> pd.DataFrame:
+    """row_pressures (опция) — пер-строчные давления за интервал задачи
+    (pressures_from_prometheus); тогда узловые медианы `pressures` служат
+    только фолбэком для строк без полного вектора."""
     rows = []
     nb = neighbours(df)
     for idx, r in df.iterrows():
         b = base.get((r["profile"], r["node"]))
         p = pressures.loc[r["node"]] if r["node"] in pressures.index else None
+        if row_pressures is not None and idx in row_pressures.index \
+                and row_pressures.loc[idx].notna().all():
+            p = row_pressures.loc[idx]
         if not b or p is None or not np.isfinite(r["makespan_s"]):
             continue
         s = SENSITIVITY.get(r["profile"])
@@ -268,6 +317,13 @@ def main() -> None:
                     help="node=val[,node=val] — медианы numa-оси узлов за окно "
                          "PRESSURE (Prometheus), вычитаются из уравнения "
                          "high-s при знаменателе 4; см. node_pressures_mixed")
+    ap.add_argument("--prometheus-url", default="",
+                    help="например http://localhost:19090 — брать давления "
+                         "осей ПО ИНТЕРВАЛУ каждой задачи из зеркала агента "
+                         "(pressures_from_prometheus) вместо обращения "
+                         "interference_chosen; лечит пульсирующий PSI io")
+    ap.add_argument("--pressure-quantile", type=float, default=0.5,
+                    help="квантиль quantile_over_time для --prometheus-url")
     ap.add_argument("--baselines-label", default="stage-mixed",
                     help="метка серии, чьи эталоны дают знаменатель slowdown")
     ap.add_argument("--bootstrap", type=int, default=2000,
@@ -296,11 +352,21 @@ def main() -> None:
         node, _, val = tok.partition("=")
         numa_by_node[node.strip()] = float(val)
 
-    p_mixed = node_pressures_mixed(
-        mixed, args.interference_denominator, numa_by_node)
-    print("=== Восстановленные давления узлов (медианы на момент решения) ===")
-    print("смешанная серия:\n", p_mixed.round(3).rename(index=NODE_SHORT))
-    frames = [build_rows(mixed, p_mixed, base, "mixed3")]
+    row_p = None
+    if args.prometheus_url:
+        row_p = pressures_from_prometheus(
+            mixed, args.prometheus_url.rstrip("/"), args.pressure_quantile)
+        # Для матрицы токсичности/скоров — узловые медианы пер-строчных
+        # давлений (сам фит идёт по строкам).
+        p_mixed = row_p.assign(node=mixed["node"]).groupby("node").median()
+        print("=== Давления узлов (медианы интервалов задач, Prometheus) ===")
+        print(p_mixed.round(3).rename(index=NODE_SHORT))
+    else:
+        p_mixed = node_pressures_mixed(
+            mixed, args.interference_denominator, numa_by_node)
+        print("=== Восстановленные давления узлов (медианы на момент решения) ===")
+        print("смешанная серия:\n", p_mixed.round(3).rename(index=NODE_SHORT))
+    frames = [build_rows(mixed, p_mixed, base, "mixed3", row_pressures=row_p)]
     if llc is not None:
         p_llc = node_pressures_llc(llc)
         print("LLC-серия:\n", p_llc.round(3).rename(index=NODE_SHORT))
