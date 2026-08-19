@@ -319,10 +319,12 @@ MONITORING_NAMESPACE ?= sensitivityscore-monitoring
 MONITORING_OVERLAY   ?= k8s/monitoring/overlays/prod
 GRAFANA_PORT         ?= 3000
 PROMETHEUS_PORT      ?= 9090
-# Откуда брать токены для Secret ss-notifier-config. Экземпляр ss-notifier на
-# лабе уже настроен (бот, чат, токен приёма), и правда о канале живёт там —
-# поэтому секрет кластера СОБИРАЕТСЯ из того же файла, а не заводится заново:
-# два разных бота в одном чате отличать было бы нечем.
+# Откуда брать токены для Secret ss-notifier-config при ПЕРВОМ создании (или
+# на новом стенде). Файл — наследство экземпляра ss-notifier на лабе, который
+# 19.08.2026 погашен: служба переехала в кластер, и правда о канале теперь в
+# Secret'е кластера. Из файла берётся только то, чего в кластере ещё нет —
+# заводить второго бота смысла не было бы, отличать их в одном чате нечем.
+# Менять чат — НЕ здесь, а `make notifier-chat CHAT_ID=...` (правит Secret).
 NOTIFIER_ENV         ?= $(HOME)/phd/ss-notifier/config.env
 
 .PHONY: monitoring-secret
@@ -457,6 +459,15 @@ monitoring-targets: ## Показать состояние scrape-целей (up
 	@$(KUBECTL) -n $(MONITORING_NAMESPACE) exec deploy/prometheus -- \
 		wget -q -O- 'http://localhost:9090/api/v1/query?query=up' \
 		| python3 -c 'import json,sys;rs=json.load(sys.stdin)["data"]["result"];rs.sort(key=lambda r:r["metric"].get("job",""));[print("UP  " if r["value"][1]=="1" else "DOWN", r["metric"].get("job","?").ljust(28), r["metric"].get("instance","?")) for r in rs]'
+
+.PHONY: notifier-chats
+notifier-chats: ## Показать chat_id, о которых знает бот (для переключения на групповой чат)
+	@KUBECTL="$(KUBECTL)" MONITORING_NAMESPACE=$(MONITORING_NAMESPACE) ./scripts/notifier-chat.sh list
+
+.PHONY: notifier-chat
+notifier-chat: ## Переключить канал бота: make notifier-chat CHAT_ID=-1001234567890
+	@test -n "$(CHAT_ID)" || { echo "нужен CHAT_ID (см. make notifier-chats)"; exit 1; }
+	@KUBECTL="$(KUBECTL)" MONITORING_NAMESPACE=$(MONITORING_NAMESPACE) ./scripts/notifier-chat.sh set "$(CHAT_ID)"
 
 .PHONY: alerts-status
 alerts-status: ## Что сейчас с алертами и доставкой (правила, активные, счётчики отправок, сторож)
