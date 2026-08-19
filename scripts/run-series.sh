@@ -726,6 +726,17 @@ $validity}"
             notify "done" "отчёт по $STAND-$SERIES готов" \
                 "analysis/report-$STAND-$SERIES — панель «Анализ» статус-страницы" \
                 "analysis/report-$STAND-$SERIES/summary.md"
+            # Трассы прогона — в ClickHouse, пока их не срезал ретеншен и пока
+            # понятно, к какой серии они относятся. Оси, мощность и RAPL живут
+            # только в Prometheus, и без этого шага «что творилось на узле в
+            # минуту этой точки плана» через год ответить будет нечем.
+            # Инкремент идёт по водяному знаку, так что повтор безвреден, а
+            # неудача не трогает ни данные, ни отчёт — потому и `|| true`.
+            if make ch-load-metrics >> "$LOG" 2>&1; then
+                echo "WATCHDOG $(date '+%F %T'): ряды Prometheus догружены в ClickHouse." >> "$LOG"
+            else
+                echo "WATCHDOG $(date '+%F %T'): ряды в ClickHouse НЕ догрузились — повторить: make ch-load-metrics" >> "$LOG"
+            fi || true
         else
             echo "WATCHDOG ERROR $(date '+%F %T'): отчёт не собрался (см. выше) — повторить: make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines" >> "$LOG"
             notify warn "$STAND-$SERIES: отчёт не собрался" \
