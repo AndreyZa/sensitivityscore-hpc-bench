@@ -254,6 +254,30 @@ data:
         static_configs:
           - targets: ["pushgateway.sensitivityscore-monitoring.svc.cluster.local:9091"]
 
+      # --- PDU стойки (SNMP через snmp-exporter) --------------------------
+      # Адреса и карта банков установлены 20.08.2026. Обе AP8853 отвечают
+      # SNMPv2c; community лежит в Secret snmp-exporter-auth, не в git.
+      # Метки: a = правая (10.21.200.246), b = левая (10.21.200.247) — как
+      # их назвал партнёр, глядя на стойку.
+      #
+      # ВАЖНО ДЛЯ ПОТРЕБИТЕЛЕЙ ЧИСЕЛ: на этих PDU висят ЧУЖИЕ потребители.
+      # Измерено ступенькой нагрузки 20.08: при простое наши три сервера дают
+      # 773 Вт из ~2950 Вт по обеим PDU, то есть 3/4 показаний — не наши.
+      # Наши узлы сидят на банке 1 ОБЕИХ PDU (банк 2 у 247 — 1610 Вт чужих и
+      # на нашу нагрузку не реагирует, банк 2 у 246 пуст). Абсолютную
+      # энергию узлов из PDU брать НЕЛЬЗЯ; разность плеч — можно: прирост по
+      # PDU (+1525 Вт) сошёлся с приростом по iDRAC (+1550 Вт) в пределах 2%.
+      - job_name: pdu
+        metrics_path: /snmp
+        params: {module: [apc_rpdu2], auth: [pdu_ro]}
+        static_configs:
+          - {targets: ["10.21.200.246"], labels: {pdu: a}}
+          - {targets: ["10.21.200.247"], labels: {pdu: b}}
+        relabel_configs:
+          - {source_labels: [__address__], target_label: __param_target}
+          - {source_labels: [__param_target], target_label: instance}
+          - {target_label: __address__, replacement: snmp-exporter.sensitivityscore-monitoring.svc:9116}
+
       # --- Alertmanager: доставка уведомлений -----------------------------
       # Нужен не для полноты, а ради одной метрики:
       # alertmanager_notifications_failed_total. Она закрывает весь путь
