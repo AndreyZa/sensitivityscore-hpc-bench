@@ -17,18 +17,49 @@ metadata:
     app: clickhouse
 data:
   prometheus.xml: |
+    <!-- С 20.08.2026 секция в форме handlers: тот же порт 9363 несёт
+         /metrics (самомониторинг CH, как раньше — скрейпы не трогать) и
+         принимает remote_write в default.prom_ts (миграция 006, движок
+         TimeSeries) — сырые ряды Prometheus живут в той же базе, что
+         energy_windows и результаты серий, и любое число статьи
+         пересчитывается из сырья. Обкатано на лабе (прототип ts-proto,
+         k8s/monitoring/energy/README.md): рестарт CH без потерь — WAL
+         Prometheus дослал буфер; ~6 Б/сэмпл. -->
     <clickhouse>
       <prometheus>
-        <endpoint>/metrics</endpoint>
         <port>9363</port>
-        <!-- metrics — мгновенные (соединения, слияния в полёте);
-             events — накопительные счётчики (вставленные строки, запросы);
-             asynchronous_metrics — фоновые замеры раз в минуту, среди них
-             размеры таблиц и свободное место на диске;
-             errors — счётчики по кодам ошибок. -->
-        <metrics>true</metrics>
-        <events>true</events>
-        <asynchronous_metrics>true</asynchronous_metrics>
-        <errors>true</errors>
+        <handlers>
+          <expose>
+            <url>/metrics</url>
+            <handler>
+              <type>expose_metrics</type>
+              <!-- metrics — мгновенные (соединения, слияния в полёте);
+                   events — накопительные счётчики (вставленные строки);
+                   asynchronous_metrics — фоновые замеры раз в минуту,
+                   среди них размеры таблиц и свободное место на диске;
+                   errors — счётчики по кодам ошибок. -->
+              <metrics>true</metrics>
+              <events>true</events>
+              <asynchronous_metrics>true</asynchronous_metrics>
+              <errors>true</errors>
+            </handler>
+          </expose>
+          <rw>
+            <url>/write</url>
+            <handler>
+              <type>remote_write</type>
+              <database>default</database>
+              <table>prom_ts</table>
+            </handler>
+          </rw>
+          <rr>
+            <url>/read</url>
+            <handler>
+              <type>remote_read</type>
+              <database>default</database>
+              <table>prom_ts</table>
+            </handler>
+          </rr>
+        </handlers>
       </prometheus>
     </clickhouse>
