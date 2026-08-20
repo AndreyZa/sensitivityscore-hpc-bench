@@ -39,9 +39,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import time
+
+_EW = pathlib.Path(__file__).with_name("energy-window.py")
 
 # Поды, которые НЕ считаются работой: они есть на каждом узле всегда, и
 # если считать их, ни один узел никогда не будет признан простаивающим.
@@ -274,8 +277,64 @@ class PowerSavePolicy:
         return sorted(self.suspended)[:1]
 
 
+class WindowRecorder:
+    """Пишет окна переходов в ClickHouse через тот же energy-window.py, что
+    и калибровка. Без этого цена цикла считается только тем окном, которое
+    держали в руках: 20.08.2026 первое гашение прода пришлось разбирать
+    прямыми запросами к Prometheus, и повторить их на другом окне было
+    нечем (долг 3.2 «Плана расчётов» статьи).
+
+    Имя окна — `cycle-off-rep<N>` / `cycle-boot-rep<N>`: конвенцию читает
+    analysis/energy_metrics.py, номер повторения кодируется именем, потому
+    что колонки rep в energy_windows нет."""
+
+    DRAIN_S = 60.0   # хвост спада мощности после команды выключения
+
+    def __init__(self, stand: str, run_label: str, ch_host: str, ch_port: int,
+                 sources: tuple[str, ...] = ("ipmi",), enabled: bool = True):
+        self.stand, self.run_label = stand, run_label
+        self.ch_host, self.ch_port = ch_host, ch_port
+        self.sources, self.enabled = sources, enabled
+        self._next_rep = 0
+        self._rep_of: dict[str, int] = {}
+
+    def open_cycle(self, node: str) -> int:
+        """Номер цикла выдаётся при ГАШЕНИИ и держится за узлом до его
+        подъёма. Счётчик, общий на все узлы и растущий после каждой
+        записи, разложил бы гашение и подъём ОДНОГО цикла по разным
+        номерам, и цена цикла сложилась бы из половинок разных циклов —
+        у первого не было бы подъёма, у последнего гашения."""
+        self._rep_of[node] = self._next_rep
+        self._next_rep += 1
+        return self._rep_of[node]
+
+    def rep_for(self, node: str) -> int:
+        return self._rep_of.get(node, -1)
+
+    def close_cycle(self, node: str) -> None:
+        self._rep_of.pop(node, None)
+
+    def record(self, kind: str, node: str, t0: float, t1: float) -> None:
+        if not self.enabled:
+            return
+        for source in self.sources:
+            cmd = [sys.executable, str(_EW),
+                   "--source", source, "--mode", "power",
+                   "--start", str(int(t0)), "--end", str(int(t1)),
+                   "--window", f"{kind}-rep{self.rep_for(node)}",
+                   "--stand", self.stand, "--run-label", self.run_label,
+                   "--config", "power-save",
+                   "--ch-host", self.ch_host, "--ch-port", str(self.ch_port)]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                # Окно не записалось — это потеря данных, а не сбой политики:
+                # гашение уже состоялось. Кричим, но узел не трогаем.
+                print(f"  ВНИМАНИЕ: окно {kind}-rep{self.rep_for(node)} ({source}) не "
+                      f"записано: {r.stderr.strip()[:200]}", file=sys.stderr)
+
+
 def tick(policy: PowerSavePolicy, cluster: Cluster, executor, now: float,
-         verbose: bool = True) -> dict:
+         verbose: bool = True, recorder: "WindowRecorder | None" = None) -> dict:
     nodes = cluster.nodes()
     workload = cluster.workload_by_node()
     pending = cluster.pending_pods()
@@ -287,8 +346,13 @@ def tick(policy: PowerSavePolicy, cluster: Cluster, executor, now: float,
         if verbose:
             print(f"[{time.strftime('%H:%M:%S')}] подъём {node}: "
                   f"{pending} подов ждут места")
+        t_boot0 = time.time()
         executor.power_on(node)
-        if cluster.wait_ready(node, policy.resume_timeout):
+        ok = cluster.wait_ready(node, policy.resume_timeout)
+        if recorder is not None:
+            recorder.record("cycle-boot", node, t_boot0, time.time())
+            recorder.close_cycle(node)
+        if ok:
             cluster.cordon(node, False)
             policy.suspended.discard(node)
             policy.idle_since[node] = now
@@ -308,7 +372,15 @@ def tick(policy: PowerSavePolicy, cluster: Cluster, executor, now: float,
                   f"простой {idle_for:.0f} c ≥ порога "
                   f"{policy.suspend_time:.0f} c")
         cluster.cordon(node, True)
+        t_off0 = time.time()
         executor.power_off(node)
+        if recorder is not None:
+            recorder.open_cycle(node)
+            # Окно гашения закрывается с запасом DRAIN_S: узел уходит в Off
+            # не мгновенно (замерено 18 с), и обрезать окно по возврату
+            # вызова значит недосчитать хвост спада мощности.
+            recorder.record("cycle-off", node, t_off0,
+                            time.time() + WindowRecorder.DRAIN_S)
         policy.suspended.add(node)
         acted["suspended"].append(node)
 
@@ -409,6 +481,34 @@ def self_test() -> int:
     assert acted["resumed"] == [] and acted["resume_failed"], acted
     assert "wrk-b6" in p2.suspended and "wrk-b6" in c2.cordoned, p2.suspended
 
+    # 6a. Окна переходов записываются с правильными именами и номерами:
+    #     подъём и гашение одного цикла обязаны попасть в ОДИН rep, иначе
+    #     цена цикла сложится из половинок разных циклов.
+    class RecSpy(WindowRecorder):
+        def __init__(self):
+            super().__init__("test", "lbl", "localhost", 8123, enabled=False)
+            self.seen: list[tuple[str, int]] = []
+
+        def record(self, kind, node, t0, t1):
+            self.seen.append((kind, node, self.rep_for(node)))
+
+    c6, e6, r6 = FakeCluster(), FakeExecutor(), RecSpy()
+    p6 = PowerSavePolicy(T, RT, min_active=2)
+    tick(p6, c6, e6, now=0, verbose=False, recorder=r6)
+    tick(p6, c6, e6, now=T, verbose=False, recorder=r6)
+    assert r6.seen == [("cycle-off", "wrk-b6", 0)], r6.seen
+    c6.pending_count = 1
+    tick(p6, c6, e6, now=T + 1, verbose=False, recorder=r6)
+    assert r6.seen[-1] == ("cycle-boot", "wrk-b6", 0), r6.seen
+    # Разные узлы — разные циклы, даже если гаснут в одном такте.
+    c6.pending_count = 0
+    p7 = PowerSavePolicy(T, RT, min_active=1)
+    c7, e7, r7 = FakeCluster(), FakeExecutor(), RecSpy()
+    tick(p7, c7, e7, now=0, verbose=False, recorder=r7)
+    tick(p7, c7, e7, now=T, verbose=False, recorder=r7)
+    reps = {n: r for _, n, r in r7.seen}
+    assert len(set(reps.values())) == len(reps) == 2, r7.seen
+
     # 7. Исключённые узлы не гасятся.
     c3, e3 = FakeCluster(), FakeExecutor()
     p3 = PowerSavePolicy(T, RT, min_active=1, exclude=("wrk-b7",))
@@ -422,7 +522,8 @@ def self_test() -> int:
     assert "-K" in cmd and "-u" not in cmd
 
     print("self-test: ок (порог, min-active, подъём по очереди, сброс "
-          "счётчика, отказ подъёма, исключения, пароль вне argv)")
+          "счётчика, отказ подъёма, окна переходов, исключения, пароль "
+          "вне argv)")
     return 0
 
 
@@ -460,6 +561,13 @@ def main(argv=None) -> int:
     ap.add_argument("--interval", type=float, default=30.0,
                     help="период опроса, с (default 30)")
     ap.add_argument("--once", action="store_true", help="один такт и выход")
+    ap.add_argument("--record-windows", action="store_true",
+                    help="писать окна cycle-off/cycle-boot в ClickHouse "
+                         "(вход analysis/energy_metrics.py --cycle)")
+    ap.add_argument("--stand", default="prod")
+    ap.add_argument("--run-label", default="", help="метка серии для окон")
+    ap.add_argument("--ch-host", default="localhost")
+    ap.add_argument("--ch-port", type=int, default=8123)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -488,9 +596,16 @@ def main(argv=None) -> int:
           f"{args.resume_timeout:.0f} c, минимум активных {args.min_active}, "
           f"исполнитель {executor.name}"
           + (" [dry-run]" if args.dry_run else ""))
+    recorder = None
+    if args.record_windows:
+        if not args.run_label:
+            ap.error("--record-windows требует --run-label")
+        recorder = WindowRecorder(args.stand, args.run_label,
+                                  args.ch_host, args.ch_port,
+                                  enabled=not args.dry_run)
     while True:
         try:
-            tick(policy, cluster, executor, time.time())
+            tick(policy, cluster, executor, time.time(), recorder=recorder)
         except RuntimeError as exc:
             print(f"такт пропущен: {exc}", file=sys.stderr)
         if args.once:
