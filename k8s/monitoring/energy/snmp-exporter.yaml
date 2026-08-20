@@ -97,6 +97,17 @@ spec:
     metadata:
       labels: {app: snmp-exporter}
     spec:
+      # Привязка к системной ВМ ОБЯЗАТЕЛЬНА, и это не косметика: без неё
+      # планировщик поставил экспортер на измерительный узел (20.08.2026 —
+      # приземлился на wrk-b8). Посторонний процесс на bench ломает методику
+      # («кроме агента метрик на узле не работает ничего») и тихо портит
+      # числа серии, а заявление об этом стоит в статье.
+      nodeSelector:
+        node-role.kubernetes.io/ss-system: ""
+      tolerations:
+        - key: node-role.kubernetes.io/ss-system
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: snmp-exporter
           image: prom/snmp-exporter:v0.26.0
