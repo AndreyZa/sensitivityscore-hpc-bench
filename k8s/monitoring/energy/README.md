@@ -83,3 +83,23 @@
 Съём энергии окна в ClickHouse — `scripts/energy-window.py` (границы окна →
 разность накопительного счётчика → sensitivityscore.energy_windows,
 миграция 003).
+
+## Прототип: remote_write → ClickHouse TimeSeries (лаба, 20.08.2026)
+
+`ch-timeseries-proto.yaml` — неймспейс `ts-proto` на local72: отдельный CH
+26.7 с экспериментальным движком TimeSeries + миниатюрный Prometheus,
+пишущий в него remote_write'ом (самоскрейп как источник рядов). Итоги
+обкатки:
+
+- пишет и читается: ~250 метрик, SQL через `timeSeriesData()/-Tags()/-Metrics()`;
+- **переживает рестарт CH без потерь**: hostPath держит данные, а
+  Prometheus дослал из WAL всё накопленное за простой приёмника — дыры нет;
+- хранение ~6 Б/сэмпл до мерджей — для энергометрик прода пренебрежимо;
+- грабли: (1) движок за флагом `allow_experimental_time_series_table`;
+  (2) пользователь `default` образа заперт на localhost — remote_write
+  нужен отдельный пользователь (заголовок `X-ClickHouse-User`).
+
+Вывод для прода: Prometheus остаётся скрейп/алерт-слоем, remote_write в
+CH добавляется как долговечный архив сырых рядов (провенанс чисел статьи).
+Решение об интеграции — после Ш-фаз; на прод этот манифест не применять.
+Снос прототипа: `kubectl delete ns ts-proto` + `/var/lib/ch-ts-proto` на узле.

@@ -1,0 +1,149 @@
+# ПРОТОТИП (только лаба local72): Prometheus remote_write -> ClickHouse
+# TimeSeries. Цель — проверить экспериментальный движок как долговечный
+# архив сырых рядов при живом Prometheus-слое (обсуждение 20.08.2026).
+# НА ПРОД НЕ ПРИМЕНЯТЬ: движок за флагом allow_experimental_*, решение об
+# интеграции — после Ш-фаз. Отдельный неймспейс ts-proto, отдельный CH —
+# харнессный clickhouse не затрагивается. Снос: kubectl delete ns ts-proto
+# (hostPath /var/lib/ch-ts-proto на узле остаётся, чистить руками).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ts-proto
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ch-ts-config
+  namespace: ts-proto
+data:
+  # remote_write/remote_read поверх движка TimeSeries (порт 9092)
+  prometheus-handlers.xml: |
+    <clickhouse>
+      <prometheus>
+        <port>9092</port>
+        <handlers>
+          <rw>
+            <url>/write</url>
+            <handler>
+              <type>remote_write</type>
+              <database>default</database>
+              <table>prom_ts</table>
+            </handler>
+          </rw>
+          <rr>
+            <url>/read</url>
+            <handler>
+              <type>remote_read</type>
+              <database>default</database>
+              <table>prom_ts</table>
+            </handler>
+          </rr>
+        </handlers>
+      </prometheus>
+    </clickhouse>
+  users-experimental.xml: |
+    <clickhouse>
+      <profiles>
+        <default>
+          <allow_experimental_time_series_table>1</allow_experimental_time_series_table>
+        </default>
+      </profiles>
+      <!-- default в образе заперт на localhost; remote_write приходит с
+           пода Prometheus. Отдельный пользователь без пароля — прототип
+           живёт только во внутрикластерной сети лабы. -->
+      <users>
+        <prom>
+          <no_password/>
+          <networks><ip>::/0</ip></networks>
+          <profile>default</profile>
+          <quota>default</quota>
+        </prom>
+      </users>
+    </clickhouse>
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS default.prom_ts ENGINE = TimeSeries;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ch-ts
+  namespace: ts-proto
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: ch-ts}}
+  template:
+    metadata: {labels: {app: ch-ts}}
+    spec:
+      containers:
+        - name: clickhouse
+          # тот же тег, что у харнессного CH лабы — образ уже на узле
+          image: clickhouse/clickhouse-server:26.7.3.19
+          resources:
+            requests: {cpu: 100m, memory: 512Mi}
+            limits: {memory: 1536Mi}   # лаба падала от memory-hog: жёсткий кап
+          ports:
+            - {containerPort: 8123}
+            - {containerPort: 9092}
+          volumeMounts:
+            - {name: cfg, mountPath: /etc/clickhouse-server/config.d/prometheus-handlers.xml, subPath: prometheus-handlers.xml}
+            - {name: cfg, mountPath: /etc/clickhouse-server/users.d/users-experimental.xml, subPath: users-experimental.xml}
+            - {name: cfg, mountPath: /docker-entrypoint-initdb.d/init.sql, subPath: init.sql}
+            - {name: data, mountPath: /var/lib/clickhouse}
+      volumes:
+        - name: cfg
+          configMap: {name: ch-ts-config}
+        - name: data
+          hostPath: {path: /var/lib/ch-ts-proto, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ch-ts
+  namespace: ts-proto
+spec:
+  selector: {app: ch-ts}
+  ports:
+    - {name: http, port: 8123}
+    - {name: promproto, port: 9092}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prom-ts-config
+  namespace: ts-proto
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: self          # источник рядов для прототипа — сам Prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+    remote_write:
+      - url: http://ch-ts.ts-proto.svc.cluster.local:9092/write
+        headers:
+          X-ClickHouse-User: prom
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prom-ts
+  namespace: ts-proto
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prom-ts}}
+  template:
+    metadata: {labels: {app: prom-ts}}
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2h"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 384Mi}
+          volumeMounts:
+            - {name: cfg, mountPath: /etc/prometheus}
+      volumes:
+        - name: cfg
+          configMap: {name: prom-ts-config}
