@@ -206,6 +206,26 @@ class Metal3Executor:
         return "On" if out.strip() == "true" else "Off"
 
 
+def wait_power_state(executor, node: str, want: str, timeout: float,
+                     poll: float = 5.0) -> bool:
+    """Дождаться, пока BMC подтвердит состояние питания.
+
+    Смена состояния НЕ мгновенна: у Dell гашение занимало 18 с, эмулятор
+    Redfish (sushy-tools) специально задерживает её на 1–11 с — «hardware
+    actions are not immediate». Читать PowerState сразу после команды
+    бессмысленно: вернётся прежнее значение (поймано на эмуляторе
+    20.08.2026)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if executor.power_state(node) == want:
+                return True
+        except RuntimeError:
+            pass
+        time.sleep(poll)
+    return False
+
+
 class NoopExecutor:
     """Режим наблюдения: политика считается и логируется, питание цело."""
 
@@ -227,10 +247,13 @@ class PowerSavePolicy:
     проверить самотестом без кластера и без BMC."""
 
     def __init__(self, suspend_time: float, resume_timeout: float,
-                 min_active: int, exclude: tuple[str, ...] = ()):
+                 min_active: int, exclude: tuple[str, ...] = (),
+                 verify_off: bool = True, off_timeout: float = 120.0):
         self.suspend_time = suspend_time
         self.resume_timeout = resume_timeout
         self.min_active = min_active
+        self.verify_off = verify_off
+        self.off_timeout = off_timeout
         self.exclude = set(exclude)
         self.idle_since: dict[str, float] = {}
         self.suspended: set[str] = set()
@@ -340,7 +363,8 @@ def tick(policy: PowerSavePolicy, cluster: Cluster, executor, now: float,
     pending = cluster.pending_pods()
     policy.observe(nodes, workload, now)
 
-    acted = {"suspended": [], "resumed": [], "resume_failed": []}
+    acted = {"suspended": [], "resumed": [], "resume_failed": [],
+             "suspend_failed": []}
 
     for node in policy.to_resume(nodes, pending):
         if verbose:
@@ -374,6 +398,19 @@ def tick(policy: PowerSavePolicy, cluster: Cluster, executor, now: float,
         cluster.cordon(node, True)
         t_off0 = time.time()
         executor.power_off(node)
+        # Подтверждение обязательно. Не подтвердившееся гашение — худший из
+        # исходов политики: узел закордонен (работы нет) и включён (полная
+        # мощность холостого хода), то есть чистый убыток по обеим осям.
+        # Такой узел возвращаем в планирование, а не оставляем висеть.
+        if policy.verify_off and not wait_power_state(
+                executor, node, "Off", policy.off_timeout):
+            print(f"  ВНИМАНИЕ: {node} не подтвердил Off за "
+                  f"{policy.off_timeout:.0f} c — возвращаю в планирование",
+                  file=sys.stderr)
+            cluster.cordon(node, False)
+            policy.idle_since[node] = now
+            acted["suspend_failed"].append(node)
+            continue
         if recorder is not None:
             recorder.open_cycle(node)
             # Окно гашения закрывается с запасом DRAIN_S: узел уходит в Off
@@ -415,11 +452,21 @@ class FakeCluster(Cluster):
 
 
 class FakeExecutor(NoopExecutor):
-    def __init__(self):
+    def __init__(self, off_works: bool = True):
         self.calls: list[tuple[str, str]] = []
+        self.state: dict[str, str] = {}
+        self.off_works = off_works
 
-    def power_off(self, node): self.calls.append(("off", node))
-    def power_on(self, node): self.calls.append(("on", node))
+    def power_off(self, node):
+        self.calls.append(("off", node))
+        if self.off_works:
+            self.state[node] = "Off"
+
+    def power_on(self, node):
+        self.calls.append(("on", node))
+        self.state[node] = "On"
+
+    def power_state(self, node): return self.state.get(node, "On")
 
 
 def self_test() -> int:
@@ -509,6 +556,17 @@ def self_test() -> int:
     reps = {n: r for _, n, r in r7.seen}
     assert len(set(reps.values())) == len(reps) == 2, r7.seen
 
+    # 6b. Гашение, которое BMC не подтвердил, откатывается: узел не должен
+    #     остаться закордоненным и включённым (без работы и на полной
+    #     мощности — убыток по обеим осям).
+    c8, e8 = FakeCluster(), FakeExecutor(off_works=False)
+    p8 = PowerSavePolicy(T, RT, min_active=1, off_timeout=0.1)
+    tick(p8, c8, e8, now=0, verbose=False)
+    acted = tick(p8, c8, e8, now=T, verbose=False)
+    assert acted["suspended"] == [] and acted["suspend_failed"], acted
+    assert not c8.cordoned, c8.cordoned
+    assert not p8.suspended, p8.suspended
+
     # 7. Исключённые узлы не гасятся.
     c3, e3 = FakeCluster(), FakeExecutor()
     p3 = PowerSavePolicy(T, RT, min_active=1, exclude=("wrk-b7",))
@@ -522,7 +580,8 @@ def self_test() -> int:
     assert "-K" in cmd and "-u" not in cmd
 
     print("self-test: ок (порог, min-active, подъём по очереди, сброс "
-          "счётчика, отказ подъёма, окна переходов, исключения, пароль "
+          "счётчика, отказ подъёма и отказ гашения, окна переходов, "
+          "исключения, пароль "
           "вне argv)")
     return 0
 
@@ -561,6 +620,10 @@ def main(argv=None) -> int:
     ap.add_argument("--interval", type=float, default=30.0,
                     help="период опроса, с (default 30)")
     ap.add_argument("--once", action="store_true", help="один такт и выход")
+    ap.add_argument("--no-verify-off", action="store_true",
+                    help="не ждать подтверждения Off от BMC (по умолчанию ждём)")
+    ap.add_argument("--off-timeout", type=float, default=120.0,
+                    help="сколько ждать подтверждения Off, с (default 120)")
     ap.add_argument("--record-windows", action="store_true",
                     help="писать окна cycle-off/cycle-boot в ClickHouse "
                          "(вход analysis/energy_metrics.py --cycle)")
@@ -591,7 +654,9 @@ def main(argv=None) -> int:
 
     policy = PowerSavePolicy(args.suspend_time, args.resume_timeout,
                              args.min_active,
-                             tuple(n for n in args.suspend_exc.split(",") if n))
+                             tuple(n for n in args.suspend_exc.split(",") if n),
+                             verify_off=not args.no_verify_off,
+                             off_timeout=args.off_timeout)
     print(f"power_save: порог {args.suspend_time:.0f} c, бюджет подъёма "
           f"{args.resume_timeout:.0f} c, минимум активных {args.min_active}, "
           f"исполнитель {executor.name}"
