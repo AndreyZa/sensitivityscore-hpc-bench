@@ -19,7 +19,7 @@ data:
   prometheus.xml: |
     <!-- С 20.08.2026 секция в форме handlers: тот же порт 9363 несёт
          /metrics (самомониторинг CH, как раньше — скрейпы не трогать) и
-         принимает remote_write в default.prom_ts (миграция 006, движок
+         принимает remote_write в sensitivityscore.prom_ts (миграция 006, движок
          TimeSeries) — сырые ряды Prometheus живут в той же базе, что
          energy_windows и результаты серий, и любое число статьи
          пересчитывается из сырья. Обкатано на лабе (прототип ts-proto,
@@ -48,7 +48,7 @@ data:
             <url>/write</url>
             <handler>
               <type>remote_write</type>
-              <database>default</database>
+              <database>sensitivityscore</database>
               <table>prom_ts</table>
             </handler>
           </rw>
@@ -56,7 +56,7 @@ data:
             <url>/read</url>
             <handler>
               <type>remote_read</type>
-              <database>default</database>
+              <database>sensitivityscore</database>
               <table>prom_ts</table>
             </handler>
           </rr>

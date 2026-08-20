@@ -12,4 +12,4 @@
 -- без потерь (WAL Prometheus дослал буфер), ~6 Б/сэмпл до слияний.
 -- Чтение — timeSeriesData()/timeSeriesTags()/timeSeriesMetrics().
 SET allow_experimental_time_series_table = 1;
-CREATE TABLE IF NOT EXISTS prom_ts ENGINE = TimeSeries;
+CREATE TABLE IF NOT EXISTS sensitivityscore.prom_ts ENGINE = TimeSeries;
