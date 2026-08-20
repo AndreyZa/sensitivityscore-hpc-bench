@@ -26,7 +26,7 @@
 #   банках; чистота банков включает вердикт Э0.1 (--clean-banks).
 #
 # Community в git не живёт: auths — отдельным файлом из Secret, второй
-# --config.file (снятие: v0.25+ умеет несколько конфигов через запятую).
+# --config.file (флаг ПОВТОРЯЕТСЯ; через запятую не работает — проверено).
 # Создание секрета (файл держать вне репо):
 #   printf 'auths:\n  pdu_ro:\n    community: <RO_COMMUNITY>\n    version: 2\n' > /tmp/pdu-auth.yml
 #   kubectl -n sensitivityscore-monitoring create secret generic snmp-exporter-auth \
@@ -112,7 +112,12 @@ spec:
         - name: snmp-exporter
           image: prom/snmp-exporter:v0.26.0
           args:
-            - --config.file=/etc/snmp_exporter/snmp.yml,/etc/snmp_exporter_auth/auth.yml
+            # ДВА ОТДЕЛЬНЫХ флага, не список через запятую: 0.26 не режет
+            # значение по запятым, а трактует его как одно имя файла. При
+            # записи через запятую модуль грузился, а файл с community — нет,
+            # и любой запрос отвечал «Unknown auth 'pdu_ro'» (20.08.2026).
+            - --config.file=/etc/snmp_exporter/snmp.yml
+            - --config.file=/etc/snmp_exporter_auth/auth.yml
           ports:
             - containerPort: 9116
           volumeMounts:
