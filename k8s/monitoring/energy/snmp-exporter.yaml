@@ -27,7 +27,10 @@
 #
 # Community в git не живёт: auths — отдельным файлом из Secret, второй
 # --config.file (флаг ПОВТОРЯЕТСЯ; через запятую не работает — проверено).
-# Создание секрета (файл держать вне репо):
+# Создание секрета — целью make (community не попадает ни в git, ни в
+# history при вводе через read -rs):
+#   read -rs c && make snmp-secret PDU_COMMUNITY="$c" && unset c
+# Ручной путь, если нужен файл (держать вне репо):
 #   printf 'auths:\n  pdu_ro:\n    community: <RO_COMMUNITY>\n    version: 2\n' > /tmp/pdu-auth.yml
 #   kubectl -n sensitivityscore-monitoring create secret generic snmp-exporter-auth \
 #     --from-file=auth.yml=/tmp/pdu-auth.yml && rm /tmp/pdu-auth.yml

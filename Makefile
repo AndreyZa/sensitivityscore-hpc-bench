@@ -342,6 +342,19 @@ monitoring-secret: ## Создать секрет grafana-admin со случа�
 		echo ""; \
 	fi
 
+.PHONY: snmp-secret
+snmp-secret: ## Секрет с SNMP-community для PDU: make snmp-secret PDU_COMMUNITY=<community> (в git не попадает)
+	@test -n "$(PDU_COMMUNITY)" || { \
+		echo "укажи community: make snmp-secret PDU_COMMUNITY=<community>"; \
+		echo "  read -rs даёт ввести его не оставляя в history:"; \
+		echo "    read -rs c && make snmp-secret PDU_COMMUNITY=\"$$c\" && unset c"; exit 1; }
+	@$(KUBECTL) create namespace $(MONITORING_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
+	@printf 'auths:\n  pdu_ro:\n    community: %s\n    version: 2\n' "$(PDU_COMMUNITY)" \
+		| $(KUBECTL) -n $(MONITORING_NAMESPACE) create secret generic snmp-exporter-auth \
+			--from-file=auth.yml=/dev/stdin --dry-run=client -o yaml \
+		| $(KUBECTL) apply -f -
+	@echo "secret/snmp-exporter-auth обновлён — перекатить сборщик: kubectl -n $(MONITORING_NAMESPACE) rollout restart deploy/snmp-exporter"
+
 .PHONY: notifier-secret
 notifier-secret: ## Secret ss-notifier-config из config.env (NOTIFIER_ENV=...); значения не печатаются
 	@$(KUBECTL) create namespace $(MONITORING_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - >/dev/null
