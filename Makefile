@@ -1153,6 +1153,7 @@ analysis-self-test: venv-analysis ## Самопроверка скриптов B
 	cd analysis && ../$(ANALYSIS_VENV)/bin/python energy_metrics.py --self-test
 	python3 scripts/power-save.py --self-test
 	python3 scripts/pdu-register-check.py --self-test
+	python3 scripts/energy-windows-per-arm.py --self-test
 	$(ANALYSIS_VENV)/bin/python -m pytest analysis/tests/ -q
 
 .PHONY: placement-oracle
