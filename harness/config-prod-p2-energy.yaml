@@ -1,0 +1,107 @@
+# config-prod-p2-energy.yaml — фаза P2 энергостатьи: вклад ОДНОГО ЛИШЬ
+# размещения в Дж/задача, при всех узлах включённых.
+#
+# Чем отличается от калибровочных серий (mixed-calib-*): там измерялась
+# интерференция, и для неё нужны ШТОРМЫ — искусственные агрессоры,
+# создающие «дорогой узел». Здесь измеряется энергия, и штормов нет
+# намеренно: агрессор ест ватты, не будучи задачей, и попадает в
+# числитель Дж/задача, не попадая в знаменатель. Ландшафт создаёт сама
+# нагрузка, а решает, где ей встать, испытуемый планировщик.
+#
+# ЧЕТЫРЕ ПЛЕЧА (карта в harness/submit/k8s_submit.py):
+#   A-default   штатный планировщик Kubernetes — база сравнения;
+#   A-packing   TargetLoadPacking, консолидация до целевой утилизации;
+#   A-peaks     минимальный скачок мощности по калиброванной модели
+#               (K0/K1/K2 из P1, загружены 20.08.2026);
+#   A-trimaran  load-aware БЕЗ энергетического критерия — контроль класса:
+#               без него нельзя отличить «выиграл, потому что знает
+#               мощность» от «выиграл, потому что вообще смотрит на
+#               нагрузку».
+#
+# ТРИ УРОВНЯ ПОДАЧИ — отдельными сценариями, различаются ТОЛЬКО
+# интервалом пуассоновского потока. Уровень подачи здесь не декорация:
+# на выпуклой кривой P(x) (излом 80 %, P1) выигрыш политики зависит от
+# того, попадает ли она в турбо-зону, а это определяется именно подачей.
+#   feed-low   узлы недогружены, есть куда консолидировать;
+#   feed-mid   около излома — самая интересная точка;
+#   feed-high  за изломом, консолидировать некуда.
+#
+# ОЖИДАНИЕ, ЗАФИКСИРОВАННОЕ ДО ПРОГОНА (P1 его развернула): кривая
+# выпуклая, поэтому Peaks будет РАЗНОСИТЬ нагрузку, а не уплотнять, и
+# при feed-low окажется ближе к default, чем к packing. Более того, на
+# малых утилизациях модель систематически выбирает пустой узел
+# (перерасход +32 Вт, таблица 4 статьи) — если это воспроизведётся на
+# потоке, Peaks проиграет packing по Дж/задача при feed-low.
+#
+# ПОСЛЕ ПРОГОНА (порядок важен, второй шаг раньше был невозможен):
+#   make ch-load-all STAND=prod RUN_LABEL=p2-energy \
+#       RESULTS_FILE=harness/results/results-prod-p2-energy.parquet \
+#       BASELINES_FILE=harness/results/baselines-prod-p2-energy.parquet
+#   ./scripts/energy-windows-per-arm.py --stand prod --run-label p2-energy \
+#       --prom http://localhost:19090
+#   analysis/.venv/bin/python analysis/energy_metrics.py \
+#       --run-label p2-energy --baseline A-default
+#
+# Оценка длительности: 4 плеча × 3 уровня × 10 повторений × 6 задач.
+# При ~4 мин на задачу и параллелизме 2 на узел — ориентировочно 2 ночи;
+# уровни можно гонять по одному за ночь (--scenarios feed-mid).
+
+extends: config-prod-base.yaml
+
+profiles:
+  - ml-inference
+  - high-s-io
+  - high-s-net
+
+scheduler_variants:
+  - default
+  - packing
+  - peaks
+  - trimaran
+
+repetitions: 10
+
+pressure_scenarios:
+  - name: feed-low
+    victims:
+      - { profile: ml-inference, count: 2 }
+      - { profile: high-s-io, count: 2 }
+      - { profile: high-s-net, count: 2 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 60      # редкий поток: узлы недогружены
+    aggressors_per_node: [0]
+    storms: []
+    stabilize_seconds: 60
+    repetitions: 10
+
+  - name: feed-mid
+    victims:
+      - { profile: ml-inference, count: 2 }
+      - { profile: high-s-io, count: 2 }
+      - { profile: high-s-net, count: 2 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 25      # как в калибровочных сериях: около излома
+    aggressors_per_node: [0]
+    storms: []
+    stabilize_seconds: 60
+    repetitions: 10
+
+  - name: feed-high
+    victims:
+      - { profile: ml-inference, count: 3 }
+      - { profile: high-s-io, count: 3 }
+      - { profile: high-s-net, count: 3 }
+    victim_arrival:
+      mode: poisson
+      interval_seconds: 10      # плотный поток: за изломом, места нет
+    aggressors_per_node: [0]
+    storms: []
+    stabilize_seconds: 60
+    repetitions: 10
+
+output:
+  results_dir: "results"
+  results_file: "results-prod-p2-energy.parquet"
+  baselines_file: "baselines-prod-p2-energy.parquet"
