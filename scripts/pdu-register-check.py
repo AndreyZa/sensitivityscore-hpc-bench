@@ -102,7 +102,7 @@ def check(prom: str, t0: float, t1: float, step: int) -> int:
               f"расхождение {rel * 100:5.2f} % (порог {limit * 100:.1f} %) — {mark}{note}")
         if quant > DRIFT_LIMIT:
             need_h = (ENERGY_TO_J / 2.0 / DRIFT_LIMIT) / (integral_j / (t1 - t0)) / 3600
-            print(f"           для вердикта по 0.5 %% нужно окно от {need_h:.0f} ч "
+            print(f"           для вердикта по 0.5 % нужно окно от {need_h:.0f} ч "
                   "при этой мощности")
         if rel > limit:
             bad.append(f"дрейф {pdu} {rel * 100:.2f} % (порог {limit * 100:.1f} %)")
