@@ -22,7 +22,8 @@
          сильнее — направление проверки безопасно до Д3);
   Э0.1   |Σ IPMI − Σ PDU| / Σ PDU ≤ 8 %     — агрегат; ЧЕСТНА только на
          чистых банках (Д3), до тех пор — репортится без вердикта;
-  Э0.2   Σ RAPL / PDU в заданной полосе     — только при --e02-band lo:hi
+  Э0.2   Σ RAPL / Σ IPMI в заданной полосе  — только при --e02-band lo:hi
+         (знаменатель — розеточная мощность УЗЛОВ, не стойки: см. ниже)
          (полоса зависит от уровня нагрузки окна: 0.50:0.85 полная,
          0.35:0.65 холостой ход — задаёт оператор по типу окна).
 
@@ -186,10 +187,19 @@ def run(args: argparse.Namespace) -> int:
             failures.append(f"Э0.1 нарушена: расхождение IPMI↔PDU {dev:.1%}")
         if args.e02_band:
             lo, hi = (float(x) for x in args.e02_band.split(":"))
-            share = sum(pkgdram[n] for n in nodes) / pdu_j
+            # Знаменатель — РОЗЕТОЧНАЯ МОЩНОСТЬ УЗЛОВ (IPMI), а не показание
+            # PDU. Смысл критерия — «какую долю потребления узла видит RAPL»
+            # (вентиляторы, диски, NIC, потери БП он не видит), и на
+            # выделенной стойке PDU этой доле равен. На ОБЩЕЙ стойке — нет:
+            # 20.08.2026 стенду принадлежат 3 узла из 11, и деление на PDU
+            # давало 0.10 при полосе 0.35–0.65, то есть ложный «стоп до
+            # выяснения» на исправном приборе. Отношение к PDU осталось
+            # рядом справочно — оно показывает долю стенда в стойке.
+            share = sum(pkgdram[n] for n in nodes) / sum_ipmi
             ok = lo <= share <= hi
-            print(f"Э0.2: ΣRAPL/PDU = {share:.2f} (полоса {lo}..{hi}) — "
-                  + ("ok" if ok else "FAIL"))
+            print(f"Э0.2: ΣRAPL/ΣIPMI = {share:.2f} (полоса {lo}..{hi}) — "
+                  + ("ok" if ok else "FAIL")
+                  + f" | справочно ΣRAPL/PDU = {sum(pkgdram[n] for n in nodes) / pdu_j:.2f}")
             if not ok:
                 failures.append(f"Э0.2 вне полосы: {share:.2f} не в [{lo}, {hi}]")
 
@@ -277,7 +287,7 @@ def self_test() -> int:
     # 3. --clean-banks: |40000−108000|/108000 = 63% > 8% — rc 1.
     assert run(parse_args(common + ["--pdu-metric", "pdu_energy_kwh",
                                     "--clean-banks"])) == 1
-    # 4. Полоса Э0.2: ΣRAPL/PDU = 220/108000 — вне 0.5:0.85 — rc 1.
+    # 4. Полоса Э0.2: ΣRAPL/ΣIPMI = 220/44000 — вне 0.5:0.85 — rc 1.
     assert run(parse_args(common + ["--pdu-metric", "pdu_energy_kwh",
                                     "--e02-band", "0.50:0.85"])) == 1
     srv.shutdown()
