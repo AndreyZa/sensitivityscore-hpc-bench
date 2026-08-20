@@ -416,10 +416,20 @@ def main() -> None:
                           ("base", "расширенный скоринг α + β·s")]:
         t = score_table(p_mixed, coefs, scheme)
         picks = t.idxmin(axis=1)
-        ok = {p: picks[p] == emp.loc[p].idxmin() for p in picks.index}
+        # Сверяемся только по профилям, которые в СЕРИИ реально были: состав
+        # жертв меняется от кампании к кампании (v2 заменила high-s на
+        # ml-inference), и обращение к отсутствующей строке роняло весь
+        # калибратор на последнем шаге — уже посчитав цены. Пропущенные
+        # профили называем вслух: молчаливое сужение проверки выглядело бы
+        # как «всё сошлось».
+        measured = [x for x in picks.index if x in emp.index]
+        skipped = [x for x in picks.index if x not in emp.index]
+        ok = {x: picks[x] == emp.loc[x].idxmin() for x in measured}
         print(f"\n-- {label}: выбор узла по профилям --")
         print(t.round(3))
         print("выбор:", dict(picks), "| совпал с эмпирически лучшим:", ok)
+        if skipped:
+            print("  не проверены (нет в этой серии):", ", ".join(skipped))
 
     if args.out_json:
         w = {a: coefs[f"alpha_{a}"] + coefs[f"beta_{a}"] for a in AXES}
