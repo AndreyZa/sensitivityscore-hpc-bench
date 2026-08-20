@@ -1970,6 +1970,90 @@ data:
               "legendFormat": "{{node}}"
             }
           ]
+        },
+        {
+          "type": "row",
+          "title": "PDU стойки (внимание: стойка ОБЩАЯ)",
+          "id": 16,
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 28}
+        },
+        {
+          "type": "timeseries",
+          "title": "Мощность PDU и доля наших узлов",
+          "id": 17,
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 16, "x": 0, "y": 29},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "custom": {"lineWidth": 2, "fillOpacity": 6, "showPoints": "never"}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "pdu_device_power_centikw * 10", "legendFormat": "PDU {{pdu}} (вся стойка)"},
+            {"refId": "B", "expr": "sum(pdu_device_power_centikw) * 10", "legendFormat": "стойка целиком"},
+            {"refId": "C", "expr": "sum(idrac_power_watts)", "legendFormat": "наши три узла"}
+          ],
+          "description": "Верхние линии — ВСЯ стойка, а не стенд: в ней 11 узлов и два коммутатора, наши только три. Измерено 20.08.2026: на простое наши узлы дают 773 Вт из ~2950 Вт. Поэтому абсолютную энергию узлов отсюда брать нельзя — она берётся из RAPL/IPMI, а PDU служит сверкой. Что читать по этому графику: РАЗНОСТЬ. Прирост стойки при нашей нагрузке обязан совпадать с приростом линии «наши три узла» (проверено ступенькой: +1525 Вт против +1550 Вт, 2%). Если стойка растёт, а наша линия нет — это работают соседи."
+        },
+        {
+          "type": "stat",
+          "title": "Доля наших узлов в стойке",
+          "id": 18,
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 29},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {"mode": "absolute", "steps": [
+                {"color": "red", "value": null}, {"color": "green", "value": 20}
+              ]}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "100 * sum(idrac_power_watts) / (sum(pdu_device_power_centikw) * 10)"}
+          ],
+          "description": "Сколько процентов потребления стойки — наше. На простое около четверти. Величина нужна не сама по себе, а как индикатор соседей: резкое падение доли при неизменной нашей нагрузке означает, что кто-то в стойке запустил свою кампанию, и сверка энергоокон с PDU в этот период недостоверна."
+        },
+        {
+          "type": "timeseries",
+          "title": "Токи банков (наши узлы — банк 1 обеих PDU)",
+          "id": 19,
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 37},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "amp",
+              "custom": {"lineWidth": 2, "fillOpacity": 0, "showPoints": "never"}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "pdu_bank_current_deciamp / 10", "legendFormat": "PDU {{pdu}} / банк {{bank}}"}
+          ],
+          "description": "Карта снята ступенчатым тестом 20.08.2026: двойные БП узлов разведены по обеим PDU, и наша нагрузка приходится на БАНК 1 каждой. Банк 2 у PDU b (1610 Вт) на нашу нагрузку не реагирует вовсе — это чистые соседи; банк 2 у PDU a пуст. Токи здесь — вольт-амперы, а мощность выше — ватты: на простое они расходятся в полтора раза из-за коэффициента мощности слабо нагруженного БП, и сравнивать их напрямую нельзя."
+        },
+        {
+          "type": "timeseries",
+          "title": "Энергия стойки за интервал (накопительный регистр)",
+          "id": 20,
+          "datasource": {"type": "prometheus", "uid": "sensitivityscore-prom"},
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 37},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "kwatth",
+              "custom": {"lineWidth": 2, "fillOpacity": 6, "showPoints": "never"}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "increase(pdu_device_energy_decikwh[$__interval]) / 10", "legendFormat": "PDU {{pdu}}"}
+          ],
+          "description": "Прирост накопительного регистра — точка правды для энергоокон (шаг регистра 0.1 кВт·ч, отсюда --pdu-factor 3.6e5 в energy-window.py). Ступенчатость линии при коротких интервалах — свойство регистра, а не сбой сбора: на нашей разности плеч ~1.5 кВт один шаг набегает за четыре минуты, поэтому окна короче двух часов для сравнения плеч непригодны."
         }
       ],
       "annotations": {
