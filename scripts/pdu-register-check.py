@@ -85,12 +85,42 @@ def check(prom: str, t0: float, t1: float, step: int) -> int:
             print(f"  PDU {pdu}: нет мощности для сверки")
             continue
         rel = abs(delta_j - integral_j) / integral_j
-        mark = "ok" if rel <= DRIFT_LIMIT else "ПРЕВЫШЕНО"
+        # Порог не может быть жёстче собственной дискретности счётчика:
+        # шаг регистра 0.1 кВт·ч, значит разность на границах окна известна
+        # с точностью ±полшага. Пока энергия окна мала, эта неопределённость
+        # больше 0.5 %, и сравнивать с 0.5 % бессмысленно — так у PDU с
+        # малой нагрузкой два шага за два часа давали «дрейф 5 %» на
+        # исправном счётчике (20.08.2026). Порог берётся как максимум из
+        # методического 0.5 % и фактической дискретности окна.
+        quant = (ENERGY_TO_J / 2.0) / integral_j
+        limit = max(DRIFT_LIMIT, quant)
+        mark = "ok" if rel <= limit else "ПРЕВЫШЕНО"
+        note = "" if quant <= DRIFT_LIMIT else \
+            f" [окно мало: квантование ±{quant * 100:.1f} %]"
         print(f"  PDU {pdu}: регистр {delta_j / 3.6e6:8.3f} кВт·ч | "
               f"интеграл {integral_j / 3.6e6:8.3f} кВт·ч | "
-              f"расхождение {rel * 100:5.2f} % (порог {DRIFT_LIMIT * 100:.1f} %) — {mark}")
-        if rel > DRIFT_LIMIT:
-            bad.append(f"дрейф {pdu} {rel * 100:.2f} %")
+              f"расхождение {rel * 100:5.2f} % (порог {limit * 100:.1f} %) — {mark}{note}")
+        if quant > DRIFT_LIMIT:
+            need_h = (ENERGY_TO_J / 2.0 / DRIFT_LIMIT) / (integral_j / (t1 - t0)) / 3600
+            print(f"           для вердикта по 0.5 %% нужно окно от {need_h:.0f} ч "
+                  "при этой мощности")
+        if rel > limit:
+            bad.append(f"дрейф {pdu} {rel * 100:.2f} % (порог {limit * 100:.1f} %)")
+
+    tot_reg = sum((pts[-1][1] - pts[0][1]) * ENERGY_TO_J for pts in energy.values()
+                  if pts[-1][1] >= pts[0][1])
+    tot_int = sum(integrate([(t, v * POWER_TO_W) for t, v in power[pdu]])
+                  for pdu in power)
+    if tot_int > 0:
+        rel = abs(tot_reg - tot_int) / tot_int
+        quant = (ENERGY_TO_J * len(energy) / 2.0) / tot_int
+        limit = max(DRIFT_LIMIT, quant)
+        mark = "ok" if rel <= limit else "ПРЕВЫШЕНО"
+        print(f"  ОБЕ PDU (то, чем пользуются энергоокна): регистр "
+              f"{tot_reg / 3.6e6:.3f} кВт·ч | интеграл {tot_int / 3.6e6:.3f} кВт·ч | "
+              f"расхождение {rel * 100:.2f} % (порог {limit * 100:.1f} %) — {mark}")
+        if rel > limit:
+            bad.append(f"дрейф суммы {rel * 100:.2f} %")
 
     print("\n=== 2. Чужая нагрузка в стойке (вход в методику, не критерий) ===")
     rack = q_range(prom, f"sum({POWER_METRIC}) * {POWER_TO_W}", t0, t1, step)
