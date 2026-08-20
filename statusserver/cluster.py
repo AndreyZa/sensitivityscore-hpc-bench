@@ -142,8 +142,53 @@ _SNAP_CACHE: dict = {"ts": 0.0, "data": {}}
 SNAP_TTL_SECONDS = 5  # частое авто-обновление страницы не должно долбить API
 
 
+# Что штатно живёт на измерительном узле и посторонним не считается:
+# сетевой слой k0s, агент метрик стенда и балансировщик апстрима. Всё
+# остальное там — повод присмотреться (методика: «кроме агента метрик на
+# узле не работает ничего»).
+EXPECTED_ON_BENCH = (
+    "kube-proxy", "kube-router", "konnectivity-agent", "nllb-",
+    "sensitivityscore-metrics-agent",
+)
+
+
+def foreign_on_bench(bench: list[str]) -> list[list[str]]:
+    """Посторонняя занятость измерительных узлов.
+
+    Страница знает только про серии: она читает лог прогона и parquet.
+    Всё, что запущено мимо харнесса — калибровочная лестница P1, разовый
+    нагрузочный тест, случайно приземлившийся на bench системный под, —
+    для неё невидимо, и стенд выглядит свободным, когда он занят
+    (замечено 20.08.2026 на лестнице P1). Здесь перечисляется ЛЮБОЙ под на
+    измерительных узлах, кроме заведомо штатных; жертвы серии показаны
+    отдельным списком и сюда не дублируются.
+    """
+    if not bench:
+        return []
+    ok, out, _ = _kubectl(
+        ["get", "pods", "-A", "--no-headers", "--field-selector",
+         "status.phase=Running", "-o",
+         "custom-columns=NS:.metadata.namespace,N:.metadata.name,"
+         "NODE:.spec.nodeName,OWNER:.metadata.ownerReferences[0].kind"])
+    if not ok:
+        return []
+    rows = []
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2] not in set(bench):
+            continue
+        ns, name, node = parts[0], parts[1], parts[2]
+        owner = parts[3] if len(parts) > 3 else ""
+        if any(name.startswith(pref) for pref in EXPECTED_ON_BENCH):
+            continue
+        if owner == "Job":          # жертвы серии — в своём списке
+            continue
+        rows.append([f"{ns}/{name}", node])
+    return rows
+
+
 def kubectl_snapshot() -> dict:
-    """Живые Job'ы и генераторы фоновой нагрузки в bench-неймспейсе."""
+    """Живые Job'ы, генераторы нагрузки и посторонняя занятость bench."""
     now = time.time()
     if now - _SNAP_CACHE["ts"] < SNAP_TTL_SECONDS and _SNAP_CACHE["data"]:
         return _SNAP_CACHE["data"]
@@ -165,5 +210,6 @@ def kubectl_snapshot() -> dict:
             )
         except Exception as e:  # noqa: BLE001
             out[name] = [[f"({e})"]]
+    out["foreign"] = foreign_on_bench(_STAND_CACHE["data"].get("bench") or [])
     _SNAP_CACHE.update(ts=now, data=out)
     return out

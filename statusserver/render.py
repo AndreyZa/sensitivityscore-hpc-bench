@@ -321,17 +321,30 @@ def cluster_section(d: dict) -> str:
     running = sum(1 for a in aggr if len(a) >= 3 and a[2] == "Running")
     jobs = cl.get("jobs", [])
     active_jobs = sum(1 for j in jobs if len(j) >= 2 and j[1] not in ("", "<none>"))
+    foreign = cl.get("foreign", [])
     badge = (
         f"<span class='chip {'good' if running else 'dim'}'>генераторы фоновой "
         f"нагрузки: {running} активны</span> "
         f"<span class='chip'>задач выполняется: {active_jobs}</span>"
     )
+    # Посторонняя занятость измерительных узлов — В ШАПКЕ, а не в
+    # раскрывающемся блоке: страница читает лог серии и про всё, что
+    # запущено мимо харнесса, не знает. Стенд при этом выглядел свободным,
+    # когда на нём шла калибровочная лестница (20.08.2026).
+    if foreign:
+        badge += (f" <span class='chip warn'>на измерительных узлах есть "
+                  f"постороннее: {len(foreign)}</span>")
     aggr_rows = [[a[0], a[1].replace("worker-", "w-") if len(a) > 1 else "", a[2] if len(a) > 2 else ""] for a in aggr]
     return (
         f"<p>{badge}</p>"
         "<details><summary class='dim'>подробнее (задачи / генераторы нагрузки)</summary>"
         + "<h4>Генераторы фоновой нагрузки</h4>" + table(["под", "узел", "состояние"], aggr_rows)
         + "<h4>Задачи</h4>" + table(["задача", "выполняется"], jobs)
+        + ("<h4>Постороннее на измерительных узлах</h4>"
+           "<p class='dim'>Всё, что занимает bench мимо харнесса: калибровка, "
+           "разовые нагрузочные пробы, случайно приземлившийся системный под. "
+           "Штатные сетевые компоненты и агент метрик сюда не попадают.</p>"
+           + table(["под", "узел"], foreign) if foreign else "")
         + "</details>"
     )
 
@@ -701,6 +714,7 @@ td.good{{background:var(--goodbg)}} td.warn{{background:var(--warnbg)}} td.bad{{
 .chip{{display:inline-block;background:var(--line);border-radius:999px;
   padding:.15em .7em;font-size:.82em;margin-right:.3em}}
 .chip.good{{background:var(--goodbg);color:var(--good)}}
+.chip.warn{{background:var(--warnbg);color:var(--warn)}}
 .takeaway{{margin:.3em 0 .8em;font-size:.92em}}
 .method{{font-size:.9em;padding-left:1.2em}} .method li{{margin:.35em 0}}
 .note{{font-size:.82em;margin-top:.6em}}
