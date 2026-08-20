@@ -39,30 +39,68 @@ def model(x, k0, k1, k2):
     return k0 + k1 * np.exp(k2 * np.asarray(x, dtype=float))
 
 
+# Сетка K2 для сканирования. Диапазон покрывает обе ветви (вогнутую K2<0 и
+# выпуклую K2>0); окрестность нуля исключена — там exp(K2·x) вырождается в
+# константу, K0 и K1 перестают различаться, и МНК-система сингулярна.
+K2_GRID = np.concatenate([
+    -np.geomspace(0.2, 1e-3, 400),   # вогнутая ветвь
+    np.geomspace(1e-3, 0.2, 400),    # выпуклая ветвь
+])
+
+
+def _k01_for_k2(xs, ws, k2):
+    """При ФИКСИРОВАННОМ K2 модель линейна по K0 и K1 — обычный МНК."""
+    a = np.column_stack([np.ones_like(xs), np.exp(k2 * xs)])
+    (k0, k1), *_ = np.linalg.lstsq(a, ws, rcond=None)
+    return float(k0), float(k1)
+
+
 def fit_points(xs, ws):
-    """K0/K1/K2 по точкам. Стартуем с двух приближений — вогнутого
-    (K1<0, K2<0: P(0)=K0+K1 — холостой ход, K0 — плато) и выпуклого
-    (K1>0, K2>0) — и берём лучшее по остатку: старт одной формы на данных
-    другой уводит curve_fit в вырожденную квазилинейную ветку (наблюдалось
-    на self-test), а форма кривой — это Э1.5, её нельзя навязывать стартом."""
+    """K0/K1/K2 по точкам: сканирование K2 по сетке, K0 и K1 — МНК при
+    фиксированном K2, затем уточнение локальным методом из найденной точки.
+
+    Почему не curve_fit с несколькими стартами (так было до 20.08.2026):
+    задача трёхпараметрическая на ~11 ступенях и плохо обусловлена — в
+    пределах +5 % от минимума RMSE K1 гуляет впятеро. Локальный метод из
+    произвольного старта уходит в ближайший овраг: старт вогнутой формы на
+    выпуклых данных давал вырожденную квазилинейную ветку. Сканирование по
+    единственному нелинейному параметру находит глобальный минимум по
+    построению и делает фит воспроизводимым (результат не зависит от
+    стартов), а форма кривой остаётся исходом (Э1.5), а не допущением:
+    сетка симметрично покрывает обе ветви."""
     xs, ws = np.asarray(xs, float), np.asarray(ws, float)
-    span = float(ws.max() - ws.min()) or 1.0
-    seeds = [
-        [float(ws.max()), -span, -0.05],                       # вогнутая
-        [float(ws.min()), span / math.exp(3.0), 0.03],         # выпуклая
-    ]
     best = None
-    for p0 in seeds:
-        try:
-            p, _ = curve_fit(model, xs, ws, p0=p0, maxfev=20000)
-        except RuntimeError:
-            continue
-        sse = float(np.sum((model(xs, *p) - ws) ** 2))
+    for k2 in K2_GRID:
+        k0, k1 = _k01_for_k2(xs, ws, k2)
+        sse = float(np.sum((model(xs, k0, k1, k2) - ws) ** 2))
         if best is None or sse < best[0]:
-            best = (sse, p)
+            best = (sse, (k0, k1, float(k2)))
     if best is None:
-        raise RuntimeError("фит не сошёлся ни с одного старта")
+        raise RuntimeError("сканирование по сетке K2 не дало решения")
+    try:  # уточнение: сетка даёт K2 с шагом сетки, локальный метод — точнее
+        p, _ = curve_fit(model, xs, ws, p0=list(best[1]), maxfev=20000)
+        if float(np.sum((model(xs, *p) - ws) ** 2)) <= best[0]:
+            best = (float(np.sum((model(xs, *p) - ws) ** 2)),
+                    tuple(float(v) for v in p))
+    except RuntimeError:
+        pass
     return tuple(float(v) for v in best[1])
+
+
+def k2_interval(xs, ws, tol=0.05):
+    """Диапазон K2, дающий RMSE не хуже (1+tol) от минимума, и размах K1
+    внутри него — мера обусловленности задачи (в статью, к коэффициентам)."""
+    xs, ws = np.asarray(xs, float), np.asarray(ws, float)
+    sses = []
+    for k2 in K2_GRID:
+        k0, k1 = _k01_for_k2(xs, ws, k2)
+        sses.append((float(np.sum((model(xs, k0, k1, k2) - ws) ** 2)), k2, k1))
+    best_sse = min(s for s, _, _ in sses)
+    # RMSE = sqrt(SSE/n): порог по RMSE в (1+tol) раз — это SSE в (1+tol)^2
+    ok = [(k2, k1) for s, k2, k1 in sses if s <= best_sse * (1.0 + tol) ** 2]
+    k2s = [k for k, _ in ok]
+    k1s = [k for _, k in ok]
+    return (min(k2s), max(k2s)), (min(k1s), max(k1s))
 
 
 def fit_node(rows: list[tuple[float, float]], rmse_limit: float) -> dict:
@@ -85,7 +123,17 @@ def fit_node(rows: list[tuple[float, float]], rmse_limit: float) -> dict:
         result["e16_pass"] = None  # мало ступеней — критерий не применим
 
     k0, k1, k2 = fit_points(xs, ws)
+    # RMSE ПУБЛИКУЕМЫХ коэффициентов на всех точках — не то же самое, что
+    # RMSE валидационного фита на удержанных ступенях (разные фиты!).
+    # Смешение этих двух чисел — замечание рецензии 20.08.2026.
+    rmse_all = float(np.sqrt(np.mean((model(xs, k0, k1, k2) - np.array(ws)) ** 2)))
+    (k2lo, k2hi), (k1lo, k1hi) = k2_interval(xs, ws)
     result.update({"k0": k0, "k1": k1, "k2": k2,
+                   "rmse_all_w": rmse_all,
+                   "rmse_all_share": rmse_all / peak,
+                   "k2_range_5pct": [k2lo, k2hi],
+                   "k1_range_5pct": [k1lo, k1hi],
+                   "resid_at_zero_w": float(model(min(xs), k0, k1, k2) - ws[0]),
                    "idle_w": k0 + k1,           # P(0)
                    "idle_share": (k0 + k1) / peak,  # Э1.3
                    "concave": k1 < 0 and k2 < 0})   # Э1.5
@@ -104,8 +152,14 @@ def run(args) -> int:
         r = fit_node(rows, args.rmse_limit)
         out[node or "node"] = r
         name = node or "(узел не указан)"
-        print(f"{name}: K0={r['k0']:.1f} K1={r['k1']:.1f} K2={r['k2']:.4f}  "
+        print(f"{name}: K0={r['k0']:.1f} K1={r['k1']:.2f} K2={r['k2']:.4f}  "
               f"idle {r['idle_w']:.0f} Вт ({r['idle_share']:.0%} пика {r['peak_w']:.0f} Вт)")
+        print(f"  фит по всем точкам: RMSE {r['rmse_all_w']:.1f} Вт "
+              f"= {r['rmse_all_share']:.1%} пика; остаток на холостом ходу "
+              f"{r['resid_at_zero_w']:+.1f} Вт")
+        print(f"  обусловленность (+5% RMSE): K2 ∈ [{r['k2_range_5pct'][0]:.4f}, "
+              f"{r['k2_range_5pct'][1]:.4f}], K1 ∈ [{r['k1_range_5pct'][0]:.2f}, "
+              f"{r['k1_range_5pct'][1]:.2f}]")
         if r["e16_pass"] is None:
             print(f"  Э1.6: ступеней {r['points']} < 6 — валидация не применима")
         else:
