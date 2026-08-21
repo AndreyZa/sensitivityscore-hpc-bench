@@ -1,0 +1,20 @@
+# Второй проход фазы P3: те же нагрузка, дозы и сценарий, но плечи идут
+# при РАБОТАЮЩЕМ контроллере гашения (scripts/power-save.py). Всё, кроме
+# двух ключей ниже, наследуется — определение сценария существует в одном
+# месте, расходиться нечему.
+#
+# Отдельный файл результатов обязателен: харнесс переписывает results с
+# нуля на каждом прогоне, и второй проход затёр бы первый. Оба файла
+# грузятся в ClickHouse под ОДНОЙ меткой p3-energy, поэтому плечи всех
+# трёх видов оказываются в одной таблице и сравниваются штатно.
+
+extends: config-prod-p3-energy.yaml
+
+scheduler_variants:
+  - peaks-gash
+  - packing-gash
+
+output:
+  results_dir: "results"
+  results_file: "results-prod-p3-energy-gash.parquet"
+  baselines_file: "baselines-prod-p3-energy.parquet"

@@ -41,6 +41,13 @@ SCHEDULER_NAME_BY_CONFIG = {
     # Энерговетка (партнёрская, без SS): профили в scheduler-config.yaml.
     "A-peaks": "peaks",        # мин. скачок мощности (Trimaran Peaks)
     "A-packing": "packing",    # упаковка до целевой утилизации (TLP)
+    # P3: те же планировщики, но плечо идёт с работающим контроллером
+    # гашения (scripts/power-save.py). Суффикс нужен именно как ИМЯ ПЛЕЧА:
+    # без него «peaks без гашения» и «peaks с гашением» писали бы в results
+    # одно и то же значение config и стали бы неразличимы, а вклад гашения
+    # только из их разности и получается.
+    "A-peaks-gash": "peaks",
+    "A-packing-gash": "packing",
     "B-default": "default-scheduler",
     "B-sensitivityscore": "sensitivityscore",
     "B-trimaran": "trimaran",
