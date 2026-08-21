@@ -1,0 +1,48 @@
+# BareMetalHost'ы для ПРОВЕРКИ НА ЭМУЛЯТОРЕ. Адреса ведут в bmc-emu, к
+# боевым BMC отношения не имеют.
+#
+# externallyProvisioned: true — ключевое. Узлы стенда уже установлены и
+# работают; BMO в этом режиме не трогает диски, не гоняет инспекцию и не
+# разворачивает образ, а управляет ровно одним — питанием через
+# spec.online. Это и есть то, что нам нужно от Metal3 и что сравнивается
+# с прямым вызовом Redfish из scripts/power-save.py.
+#
+# Учётка фиктивна: sushy с фиктивным драйвером аутентификацию не
+# проверяет. На боевых BMC вместо этого пойдёт существующий Secret.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: emu-bmc-creds
+  namespace: baremetal-operator-system
+type: Opaque
+stringData:
+  username: emulator
+  password: emulator
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: emu-wrk-b6
+  namespace: baremetal-operator-system
+spec:
+  online: true
+  externallyProvisioned: true
+  bootMACAddress: "00:00:00:00:00:06"
+  bmc:
+    address: redfish+http://sushy-emulator.bmc-emu.svc:8000/redfish/v1/Systems/11111111-1111-1111-1111-000000000006
+    credentialsName: emu-bmc-creds
+    disableCertificateVerification: true
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: emu-wrk-b8
+  namespace: baremetal-operator-system
+spec:
+  online: true
+  externallyProvisioned: true
+  bootMACAddress: "00:00:00:00:00:08"
+  bmc:
+    address: redfish+http://sushy-emulator.bmc-emu.svc:8000/redfish/v1/Systems/11111111-1111-1111-1111-000000000008
+    credentialsName: emu-bmc-creds
+    disableCertificateVerification: true
