@@ -98,8 +98,27 @@ def fetch_results(stand: str, run_label: str, host: str, port: int,
     return df.to_dict(orient="records")
 
 
+def fetch_results_file(path: str) -> list[dict]:
+    """Строки результатов из parquet харнесса, а не из ClickHouse.
+
+    Харнесс дописывает parquet ПОСЛЕ КАЖДОГО плеча, поэтому этот путь даёт
+    окна прямо во время прогона — предварительный расчёт на середине серии,
+    не дожидаясь загрузки в базу. В сами числа статьи такие окна не идут:
+    там источник один — ClickHouse (правило работы).
+    """
+    import pandas as pd
+    df = pd.read_parquet(path)
+    for col in ("start_ts", "end_ts"):
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].astype("int64") / 1e9
+    return df.to_dict(orient="records")
+
+
 def run(args) -> int:
-    rows = fetch_results(args.stand, args.run_label, args.ch_host, args.ch_port)
+    if args.results_file:
+        rows = fetch_results_file(args.results_file)
+    else:
+        rows = fetch_results(args.stand, args.run_label, args.ch_host, args.ch_port)
     if not rows:
         print(f"результатов с меткой {args.run_label} нет", file=sys.stderr)
         return 1
@@ -133,6 +152,12 @@ def run(args) -> int:
                 print(f"  {src}: НЕ ЗАПИСАНО — {r.stderr.strip()[:200]}",
                       file=sys.stderr)
                 rc = 1
+            elif args.dry_run:
+                # В сухом прогоне «ok» бесполезно: смотреть надо на то, что
+                # БЫЛО БЫ записано. Дочерний скрипт печатает строки JSON.
+                for line in r.stdout.splitlines():
+                    if line.startswith("{"):
+                        print(f"  {line}")
             else:
                 print(f"  {src}: ok")
     print(f"окон: {len(windows)}; проверка расчёта — "
@@ -193,6 +218,9 @@ def main(argv=None) -> int:
     ap.add_argument("--ch-host", default="localhost")
     ap.add_argument("--ch-port", type=int, default=8123)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--results-file", default="",
+                    help="parquet харнесса вместо ClickHouse (окна по ходу "
+                         "прогона; в числа статьи такие окна не идут)")
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
