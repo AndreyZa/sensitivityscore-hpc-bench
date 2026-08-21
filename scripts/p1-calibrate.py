@@ -201,8 +201,32 @@ def collect_energy(args, steps: list[dict]) -> None:
         print(f"записано: {path} ({len(rows)} ступеней) — вход fit_power_model.py")
 
 
+def steps_from_csv(path) -> list[dict]:
+    """Ступени уже снятой лестницы: границы окон из steps.csv.
+
+    Нужно, чтобы пересчитать окна энергии, НЕ повторяя двухчасовой прогон:
+    Prometheus держит ряды 365 дней, и границы ступеней — единственное, чего
+    не хватает для пересчёта. Так лестница P1 доехала до ClickHouse задним
+    числом: снималась она до того, как окна стали писаться в базу, и жила
+    только в CSV репозитория.
+    """
+    steps = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            steps.append({"load": int(row["load"]),
+                          "t0": float(row["t0"]), "t1": float(row["t1"]),
+                          "x": float(row["x"]) if row["x"] else None})
+    return steps
+
+
 def main(argv) -> int:
     args = parse_args(argv)
+    if args.from_steps:
+        steps = steps_from_csv(args.from_steps)
+        print(f"пересчёт окон по {args.from_steps}: {len(steps)} ступеней, "
+              f"узел {args.node}, нагрузка НЕ запускается")
+        collect_energy(args, steps)
+        return 0
     loads = [int(x) for x in args.steps.split(",")]
     est = len(loads) * (args.settle + args.hold) / 60
     print(f"узел {args.node}, ступени {loads}, ~{est:.0f} мин"
@@ -257,6 +281,9 @@ def parse_args(argv):
     ap.add_argument("--out-dir", default="analysis/p1-calib")
     ap.add_argument("--ch-host", default="", help="вставлять окна в ClickHouse")
     ap.add_argument("--ch-port", type=int, default=8123)
+    ap.add_argument("--from-steps", default="",
+                    help="пересчитать окна по готовому steps.csv, "
+                         "не запуская нагрузку")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     args.sources = [s.strip() for s in args.sources.split(",") if s.strip()]
