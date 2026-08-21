@@ -339,8 +339,34 @@ class WindowRecorder:
         self.stand, self.run_label, self.prom = stand, run_label, prom
         self.ch_host, self.ch_port = ch_host, ch_port
         self.sources, self.enabled = sources, enabled
-        self._next_rep = 0
         self._rep_of: dict[str, int] = {}
+        # Нумерация продолжается с того места, где кончили прошлые прогоны
+        # с ТОЙ ЖЕ меткой, а не начинается с нуля. Счётчик жил в памяти
+        # процесса, и каждый новый запуск снова выдавал rep0: окна разных
+        # циклов приходили под одним именем, а таблица ReplacingMergeTree
+        # схлопывала их в одну строку. Четыре проверочных цикла 21.08.2026
+        # оставили в базе один. Для самой фазы P3 это тоже существенно:
+        # перезапуск после сбоя затёр бы уже собранные циклы.
+        self._next_rep = self._max_rep() + 1 if enabled else 0
+
+    def _max_rep(self) -> int:
+        try:
+            import clickhouse_connect
+            client = clickhouse_connect.get_client(
+                host=self.ch_host, port=self.ch_port, username="default",
+                database="sensitivityscore")
+            rows = client.query(
+                "SELECT max(toInt32OrNull(extract(window, 'rep(\\d+)$'))) "
+                "FROM sensitivityscore.energy_windows "
+                "WHERE run_label = %(l)s AND stand = %(s)s "
+                "AND window LIKE 'cycle-%%'",
+                parameters={"l": self.run_label, "s": self.stand}).result_rows
+            return int(rows[0][0]) if rows and rows[0][0] is not None else -1
+        except Exception as exc:      # noqa: BLE001 — база недоступна
+            print(f"  не удалось узнать номер последнего цикла ({exc}); "
+                  f"нумерация начнётся с нуля и может затереть прошлые окна",
+                  file=sys.stderr)
+            return -1
 
     def open_cycle(self, node: str) -> int:
         """Номер цикла выдаётся при ГАШЕНИИ и держится за узлом до его
