@@ -702,6 +702,23 @@ def main(argv=None) -> int:
     if args.record_windows:
         if not args.run_label:
             ap.error("--record-windows требует --run-label")
+        # Prometheus проверяется ДО первого гашения. Окно считается по
+        # нему, и недоступность выясняется иначе только постфактум —
+        # узел уже погашен и поднят, а цены цикла нет. Так вышло дважды
+        # подряд (21.08.2026), поэтому проверка ранняя и жёсткая.
+        if not args.dry_run:
+            import urllib.error
+            import urllib.request
+            probe = args.prom.rstrip("/") + "/api/v1/query?query=up"
+            try:
+                with urllib.request.urlopen(probe, timeout=10) as r:
+                    if r.status != 200:
+                        raise RuntimeError(f"код {r.status}")
+            except (OSError, urllib.error.URLError, RuntimeError) as exc:
+                print(f"--record-windows задан, но Prometheus {args.prom} "
+                      f"не отвечает ({exc}); окна цикла записать будет "
+                      f"нечем — подними проброс и повтори", file=sys.stderr)
+                return 2
         recorder = WindowRecorder(args.stand, args.run_label,
                                   args.ch_host, args.ch_port, args.prom,
                                   enabled=not args.dry_run)

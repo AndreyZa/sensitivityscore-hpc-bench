@@ -32,9 +32,14 @@ EXC=$(echo "$MAP" | tr ',' '\n' | cut -d= -f1 | grep -v "^$NODE$" | paste -sd,)
 LOG=/tmp/p3-cycle-$NODE.log
 cd "$(dirname "$0")/.." || exit 1
 
+# Проброса нужно ДВА. Контроллер пишет окна в ClickHouse, но считает их
+# по Prometheus — без второго записи молча не будет, что и случилось на
+# первых двух прогонах.
 nohup $K -n sensitivityscore-system port-forward svc/clickhouse 8124:8123 \
     >/tmp/pf-ch.log 2>&1 &
-sleep 5
+nohup $K -n sensitivityscore-monitoring port-forward svc/prometheus 19090:9090 \
+    >/tmp/pf-prom.log 2>&1 &
+sleep 6
 
 nohup python3 -u scripts/power-save.py \
     --executor redfish --idrac-map "$MAP" --suspend-exc "$EXC" \
@@ -84,7 +89,7 @@ if [ "$st" != "Ready" ]; then
     exit 1
 fi
 kill $CTL 2>/dev/null
-pkill -f "port-forward svc/clickhouse"
+pkill -f "port-forward svc/clickhouse"; pkill -f "port-forward svc/prometheus"
 
 echo "=== лог контроллера ==="; cat "$LOG"
 echo "=== состояние узла ==="; $K get node "$NODE" --no-headers
