@@ -28,9 +28,18 @@ step "конфиг ClickHouse в поде == ConfigMap"
 # не трогает. Значит apply без рестарта не доезжает — и это молча.
 for f in prometheus.xml; do
     live=$($KUBECTL -n "$NS" exec clickhouse-0 -- cat "/etc/clickhouse-server/config.d/$f" 2>/dev/null | md5sum | cut -c1-32)
-    want=$($KUBECTL -n "$NS" get cm clickhouse-config -o jsonpath="{.data.$f}" 2>/dev/null | md5sum | cut -c1-32)
-    [ -n "$live" ] && [ "$live" = "$want" ] && ok "$f совпадает" \
-        || bad "$f в поде отличается от ConfigMap — нужен rollout restart statefulset/clickhouse"
+    # Точка в имени ключа экранируется: без этого jsonpath читает
+    # data.prometheus.xml как вложенность, возвращает пустоту, и сравнение
+    # всегда «не совпало» — страж, который кричит вместо проверки.
+    want=$($KUBECTL -n "$NS" get cm clickhouse-config -o "jsonpath={.data.${f/./\\.}}" 2>/dev/null | md5sum | cut -c1-32)
+    empty=$(printf '' | md5sum | cut -c1-32)
+    if [ -z "$live" ] || [ "$want" = "$empty" ]; then
+        bad "$f не прочитан ни из пода, ни из ConfigMap — проверка недействительна"
+    elif [ "$live" = "$want" ]; then
+        ok "$f совпадает"
+    else
+        bad "$f в поде отличается от ConfigMap — нужен rollout restart statefulset/clickhouse"
+    fi
 done
 
 step "движок TimeSeries включён"
