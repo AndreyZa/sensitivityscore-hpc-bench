@@ -325,6 +325,13 @@ class WindowRecorder:
     что колонки rep в energy_windows нет."""
 
     DRAIN_S = 60.0   # хвост спада мощности после команды выключения
+    # Сколько ждать ПОСЛЕ конца окна, прежде чем его считать. Опрос BMC
+    # идёт раз в 30 с, а окно гашения закрывается на DRAIN_S вперёд, то
+    # есть в будущем. Запись сразу после команды давала окно, внутри
+    # которого нет ни одного сэмпла: последний опрос прошёл до его начала,
+    # следующий ещё не наступил, и energy-window.py честно отказывался
+    # («нет сэмплов в окне»). Ждём конец окна плюс интервал опроса.
+    SETTLE_S = 35.0
 
     def __init__(self, stand: str, run_label: str, ch_host: str, ch_port: int,
                  prom: str = "http://localhost:19090",
@@ -354,6 +361,10 @@ class WindowRecorder:
     def record(self, kind: str, node: str, t0: float, t1: float) -> None:
         if not self.enabled:
             return
+        wait = t1 + self.SETTLE_S - time.time()
+        if wait > 0:
+            print(f"  жду {wait:.0f} c, чтобы окно {kind} наполнилось сэмплами")
+            time.sleep(wait)
         for source in self.sources:
             # Команда собирается общим сборщиком (scripts/energy_sources.py).
             # Здесь стоял свой список флагов, разошедшийся с настоящим
