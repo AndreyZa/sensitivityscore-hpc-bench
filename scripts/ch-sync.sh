@@ -59,21 +59,8 @@ for tbl in results baselines energy_windows; do
     done
 done
 
-# Ряды метрик — по ВРЕМЕНИ ДАННЫХ (ts), а не вставки: это поток, у него
-# нет меток серий, и догружать надо ровно то, чего в приёмнике ещё нет.
-for st in $(src -q "SELECT DISTINCT stand FROM $DB.metrics_samples FORMAT TSV" | tr -d '\r'); do
-    mark=$(dst "$POD" -- clickhouse-client -q \
-        "SELECT ifNull(toString(max(ts)), '1970-01-01 00:00:00') FROM $DB.metrics_samples WHERE stand='$st'" 2>/dev/null | tr -d '\r')
-    pending=$(src -q "SELECT count() FROM $DB.metrics_samples WHERE stand='$st' AND ts > '$mark'" | tr -d '\r')
-    printf '%-16s стенд %-6s приёмник до %s, к переносу %s\n' "metrics_samples" "$st" "$mark" "${pending:-?}"
-    [ "$DRY_RUN" = "1" ] && continue
-    [ "${pending:-0}" -gt 0 ] 2>/dev/null || continue
-    if src -q "SELECT * FROM $DB.metrics_samples WHERE stand='$st' AND ts > '$mark' FORMAT Native" \
-        | dst -i "$POD" -- clickhouse-client -q "INSERT INTO $DB.metrics_samples FORMAT Native"; then
-        echo "    перенесено: $pending"
-    else
-        echo "    ОШИБКА переноса metrics_samples $st" >&2; rc=1
-    fi
-done
+# Таблица metrics_samples заморожена (см. коммит о снятии ch-load-metrics):
+# её больше никто не пишет, поэтому и зеркалить нечего. Живой архив сырых
+# рядов — prom_ts, он наполняется remote_write'ом на самом проде.
 
 exit $rc
