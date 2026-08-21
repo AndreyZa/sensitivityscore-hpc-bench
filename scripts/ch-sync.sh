@@ -27,26 +27,53 @@ src() { kubectl --kubeconfig "$SRC_KUBECONFIG" -n "$NS" exec "$POD" -- clickhous
 dst() { kubectl --kubeconfig "$DST_KUBECONFIG" -n "$NS" exec "$@"; }
 
 rc=0
-for pair in "results:ingested_at" "baselines:ingested_at" \
-            "energy_windows:inserted_at" "metrics_samples:inserted_at"; do
-    tbl=${pair%%:*}; col=${pair##*:}
+
+# Кампанийные таблицы сверяются ПО МЕТКАМ СЕРИЙ, а не по времени вставки.
+# Время вставки здесь негодный признак: в приёмник историю грузили пачками
+# и в другом порядке, поэтому его max перепрыгивает через строки прода, и
+# «к переносу 0» означало бы не совпадение, а слепоту.
+for tbl in results baselines energy_windows; do
     n_src=$(src -q "SELECT count() FROM $DB.$tbl" 2>/dev/null | tr -d '\r')
     n_dst=$(dst "$POD" -- clickhouse-client -q "SELECT count() FROM $DB.$tbl" 2>/dev/null | tr -d '\r')
-    mark=$(dst "$POD" -- clickhouse-client -q \
-        "SELECT ifNull(toString(max($col)), '1970-01-01 00:00:00') FROM $DB.$tbl" 2>/dev/null | tr -d '\r')
-    pending=$(src -q "SELECT count() FROM $DB.$tbl WHERE $col > '$mark'" 2>/dev/null | tr -d '\r')
+    # метки, где в приёмнике строк меньше, чем в источнике
+    missing=$(src -q "SELECT DISTINCT concat(stand, '\t', run_label) FROM $DB.$tbl FORMAT TSV" 2>/dev/null)
+    to_copy=""
+    while IFS=$'\t' read -r st lb; do
+        [ -n "${st:-}" ] || continue
+        a=$(src -q "SELECT count() FROM $DB.$tbl WHERE stand='$st' AND run_label='$lb'" | tr -d '\r')
+        b=$(dst "$POD" -- clickhouse-client -q "SELECT count() FROM $DB.$tbl FINAL WHERE stand='$st' AND run_label='$lb'" 2>/dev/null | tr -d '\r')
+        [ "${a:-0}" -gt "${b:-0}" ] 2>/dev/null && to_copy="$to_copy $st/$lb"
+    done <<< "$missing"
 
-    printf '%-16s источник %-8s приёмник %-8s к переносу %s\n' \
-        "$tbl" "${n_src:-?}" "${n_dst:-?}" "${pending:-?}"
+    printf '%-16s источник %-8s приёмник %-8s расходятся:%s\n' \
+        "$tbl" "${n_src:-?}" "${n_dst:-?}" "${to_copy:- нет}"
+    [ "$DRY_RUN" = "1" ] && continue
+    for pair in $to_copy; do
+        st=${pair%%/*}; lb=${pair##*/}
+        if src -q "SELECT * FROM $DB.$tbl WHERE stand='$st' AND run_label='$lb' FORMAT Native" \
+            | dst -i "$POD" -- clickhouse-client -q "INSERT INTO $DB.$tbl FORMAT Native"; then
+            echo "    перенесено: $st/$lb"
+        else
+            echo "    ОШИБКА переноса $tbl $st/$lb" >&2; rc=1
+        fi
+    done
+done
+
+# Ряды метрик — по ВРЕМЕНИ ДАННЫХ (ts), а не вставки: это поток, у него
+# нет меток серий, и догружать надо ровно то, чего в приёмнике ещё нет.
+for st in $(src -q "SELECT DISTINCT stand FROM $DB.metrics_samples FORMAT TSV" | tr -d '\r'); do
+    mark=$(dst "$POD" -- clickhouse-client -q \
+        "SELECT ifNull(toString(max(ts)), '1970-01-01 00:00:00') FROM $DB.metrics_samples WHERE stand='$st'" 2>/dev/null | tr -d '\r')
+    pending=$(src -q "SELECT count() FROM $DB.metrics_samples WHERE stand='$st' AND ts > '$mark'" | tr -d '\r')
+    printf '%-16s стенд %-6s приёмник до %s, к переносу %s\n' "metrics_samples" "$st" "$mark" "${pending:-?}"
     [ "$DRY_RUN" = "1" ] && continue
     [ "${pending:-0}" -gt 0 ] 2>/dev/null || continue
-
-    if src -q "SELECT * FROM $DB.$tbl WHERE $col > '$mark' FORMAT Native" \
-        | dst -i "$POD" -- clickhouse-client -q "INSERT INTO $DB.$tbl FORMAT Native"; then
+    if src -q "SELECT * FROM $DB.metrics_samples WHERE stand='$st' AND ts > '$mark' FORMAT Native" \
+        | dst -i "$POD" -- clickhouse-client -q "INSERT INTO $DB.metrics_samples FORMAT Native"; then
         echo "    перенесено: $pending"
     else
-        echo "    ОШИБКА переноса $tbl" >&2
-        rc=1
+        echo "    ОШИБКА переноса metrics_samples $st" >&2; rc=1
     fi
 done
+
 exit $rc
