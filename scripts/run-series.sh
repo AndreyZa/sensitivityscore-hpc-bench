@@ -544,6 +544,51 @@ EOF
     ) || fail "weights.json в ConfigMap НЕ совпадает со score_weights конфига (регрет считался бы не теми весами) — kubectl patch cm sensitivity-config"
     ok "weights.json == score_weights конфига"
 
+    # Конфиг планировщика в кластере == конфиг в репозитории, И под поднят
+    # ПОСЛЕ его применения. Две разные ошибки, обе бесшумные: «поправил
+    # файл, забыл применить» и «применил, забыл перезапустить»
+    # (KubeSchedulerConfiguration читается один раз при старте процесса,
+    # обновление тома ConfigMap на живой процесс не действует). Цена ошибки
+    # — вся серия: плечи меряются настроенными не так, как написано в
+    # репозитории и в статье. Поймано 21.08.2026 на смене целевой
+    # утилизации плеча упаковки с 40 на 75 %.
+    (python3 - <<'EOF'
+import json, subprocess, sys
+from datetime import datetime
+
+def kget(*a):
+    return subprocess.check_output(
+        ["kubectl", "-n", "sensitivityscore-system", *a], text=True)
+
+def ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+want = open("k8s/scheduler-config/scheduler-config.yaml", encoding="utf-8").read()
+cm = json.loads(kget("get", "cm", "scheduler-config", "-o", "json"))
+if cm["data"]["scheduler-config.yaml"] != want:
+    sys.exit("ConfigMap расходится с k8s/scheduler-config/scheduler-config.yaml "
+             "— make scheduler-apply-config")
+
+stamps = [f["time"] for f in cm["metadata"].get("managedFields", []) if f.get("time")]
+if not stamps:
+    sys.exit(0)          # нечем сравнивать — молчим, а не выдумываем вердикт
+applied = max(ts(s) for s in stamps)
+
+pods = json.loads(kget("get", "pods", "-l", "component=scheduler", "-o", "json"))
+starts = [p["status"]["startTime"] for p in pods["items"] if p["status"].get("startTime")]
+if not starts:
+    sys.exit("не вижу подов планировщика (component=scheduler)")
+started = min(ts(s) for s in starts)
+
+if started < applied:
+    sys.exit(f"под поднят {started:%d.%m %H:%M}, ConfigMap применён "
+             f"{applied:%d.%m %H:%M} — процесс работает со СТАРЫМ конфигом; "
+             f"kubectl -n sensitivityscore-system rollout restart "
+             f"deployment/sensitivityscore-scheduler")
+EOF
+    ) || fail "планировщик настроен не так, как задаёт репозиторий"
+    ok "scheduler-config == репозиторий, под поднят после применения"
+
     if ! redis_alive; then
         echo "  ..: поднимаю port-forward redis :$REDIS_PORT"
         redis_pf_start
