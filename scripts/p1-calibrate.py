@@ -37,6 +37,8 @@ import pathlib
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 _EW = pathlib.Path(__file__).with_name("energy-window.py")
 _spec = importlib.util.spec_from_file_location("energy_window", _EW)
@@ -156,6 +158,31 @@ def run_step(args, load: int) -> tuple[float, float, float | None]:
     return t0, t1, x
 
 
+def step_power_se(prom: str, node: str, t0: float, t1: float) -> tuple[float, int]:
+    """Стандартная ошибка средней мощности ступени и число сэмплов.
+
+    ЗАЧЕМ. Без неё у результата о ранжировании нет интервала: доля неверно
+    ранжированных пар — детерминированная функция лестницы, и вся её
+    неопределённость приходит от неопределённости самих ступеней. Разброс
+    внутри ступени берётся из тех же рядов, по которым считалось среднее,
+    поэтому ничего нового измерять не нужно.
+    """
+    q = f'idrac_power_watts{{node="{node}"}}[{int(t1 - t0)}s]'
+    url = prom.rstrip("/") + "/api/v1/query?" + urllib.parse.urlencode(
+        {"query": q, "time": f"{t1:.0f}"})
+    with urllib.request.urlopen(url, timeout=30) as r:
+        data = json.load(r)["data"]["result"]
+    if not data:
+        return float("nan"), 0
+    vals = [float(v[1]) for v in data[0]["values"]]
+    n = len(vals)
+    if n < 2:
+        return float("nan"), n
+    mean = sum(vals) / n
+    sd = (sum((v - mean) ** 2 for v in vals) / (n - 1)) ** 0.5
+    return sd / n ** 0.5, n
+
+
 def collect_energy(args, steps: list[dict]) -> None:
     """Окна энергии по ступеням: dry-run строки energy-window -> calib-CSV
     (+ вставка в ClickHouse тем же вызовом, если задан --ch-host)."""
@@ -184,9 +211,17 @@ def collect_energy(args, steps: list[dict]) -> None:
                 r = json.loads(line)
                 if r["node"] != args.node or s["x"] is None:
                     continue
-                rows.append({"x": f"{s['x']:.2f}",
-                             "watts": f"{r['avg_power_w']:.2f}",
-                             "node": args.node})
+                row = {"x": f"{s['x']:.2f}",
+                       "watts": f"{r['avg_power_w']:.2f}",
+                       "node": args.node}
+                # Мгновенная мощность есть только у ipmi — у RAPL и PDU в
+                # окне лежит накопительный счётчик, разброса внутри ступени
+                # у него нет по построению.
+                if source == "ipmi":
+                    se, n = step_power_se(args.prom, args.node, s["t0"], s["t1"])
+                    row["se_w"] = "" if se != se else f"{se:.2f}"
+                    row["n"] = str(n)
+                rows.append(row)
             if args.ch_host:
                 _ew.run(_ew.parse_args(
                     [a for a in argv if a != "--dry-run"]
@@ -194,8 +229,9 @@ def collect_energy(args, steps: list[dict]) -> None:
         if args.dry_run:
             continue
         path = pathlib.Path(args.out_dir) / f"calib-{source}.csv"
+        fields = ["x", "watts", "node"] + (["se_w", "n"] if source == "ipmi" else [])
         with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["x", "watts", "node"])
+            w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(rows)
         print(f"записано: {path} ({len(rows)} ступеней) — вход fit_power_model.py")
