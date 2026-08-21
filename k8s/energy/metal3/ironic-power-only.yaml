@@ -1,0 +1,73 @@
+# Ironic для Metal3 в режиме ТОЛЬКО ПИТАНИЕ. Лаба, против эмулятора sushy.
+#
+# От апстримного ironic-deployment/base здесь убрано всё, что обслуживает
+# развёртывание по сети: dnsmasq, httpd, ipa-downloader и hostNetwork.
+# Узлы стенда уже установлены и заводятся как externallyProvisioned —
+# BMO у них трогает единственное поле spec.online, а PXE не участвует.
+# Оставленный контейнер один: сам ironic.
+#
+# Переменные взяты из апстримного ironic_bmo_configmap.env и подрезаны:
+# PXE-адреса остаются формальными значениями (скрипты конфигурации их
+# требуют), интерфейс — eth0 пода, потому что hostNetwork нам не нужен.
+#
+# ЭТО ЭКСПЕРИМЕНТ ПО ОЦЕНКЕ, а не боевой компонент. Вопрос, на который он
+# отвечает: что мы получаем за два дополнительных сервиса (ironic + BMO)
+# против одного curl к Redfish из scripts/power-save.py.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ironic-bmo-configmap
+  namespace: baremetal-operator-system
+data:
+  HTTP_PORT: "6180"
+  PROVISIONING_INTERFACE: "eth0"
+  DHCP_RANGE: "172.22.0.10,172.22.0.100"
+  DEPLOY_KERNEL_URL: "http://127.0.0.1:6180/images/ironic-python-agent.kernel"
+  DEPLOY_RAMDISK_URL: "http://127.0.0.1:6180/images/ironic-python-agent.initramfs"
+  IRONIC_ENDPOINT: "http://ironic.baremetal-operator-system.svc:6385/v1/"
+  IRONIC_KERNEL_PARAMS: "console=ttyS0"
+  USE_IRONIC_INSPECTOR: "false"
+  IRONIC_USE_MARIADB: "false"
+  IRONIC_EXPOSE_JSON_RPC: "false"
+  IRONIC_REVERSE_PROXY_SETUP: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ironic
+  namespace: baremetal-operator-system
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # один conductor, второго быть не должно
+  selector:
+    matchLabels: { name: ironic }
+  template:
+    metadata:
+      labels: { name: ironic }
+    spec:
+      containers:
+        - name: ironic
+          image: quay.io/metal3-io/ironic:release-38.0_2026-08-21_d32741a086eae8da41a120f3dc079e9b3c6d40f4
+          command: ["/bin/runironic"]
+          envFrom:
+            - configMapRef: { name: ironic-bmo-configmap }
+          ports:
+            - { containerPort: 6385, name: api }
+          volumeMounts:
+            - { mountPath: /shared, name: ironic-data }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+      volumes:
+        - name: ironic-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ironic
+  namespace: baremetal-operator-system
+spec:
+  selector: { name: ironic }
+  ports:
+    - { name: api, port: 6385, targetPort: 6385 }
