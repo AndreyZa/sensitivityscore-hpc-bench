@@ -23,4 +23,16 @@ data:
           </networks>
         </default>
       </users>
+      <!-- Движок TimeSeries помечен экспериментальным и по умолчанию
+           запрещён: CREATE TABLE ... ENGINE = TimeSeries отбивается, пока
+           настройка равна нулю. Включаем осознанно — на нём стоит приём
+           remote_write от Prometheus (миграция 006), то есть путь, ради
+           которого ClickHouse и становится долговременным хранилищем
+           рядов вместо ретеншена Prometheus.
+           Настройка профильная, поэтому живёт в users.d, а не в config.d. -->
+      <profiles>
+        <default>
+          <allow_experimental_time_series_table>1</allow_experimental_time_series_table>
+        </default>
+      </profiles>
     </clickhouse>
