@@ -59,7 +59,14 @@ def arm_windows(rows: list[dict], min_tasks: int = 1) -> list[dict]:
     даёт Дж/задача, не сопоставимую с полными повторениями."""
     groups: dict[tuple[str, int], list[dict]] = {}
     for r in rows:
-        if r.get("warmup"):
+        # Прогрев помечен в results полем approximation="warmup" — отдельной
+        # колонки warmup в таблице нет и не было. Скрипт запрашивал именно
+        # её, и на живой базе падал на UNKNOWN_IDENTIFIER; самотест этого не
+        # ловил, потому что кормит функцию своими словарями и до SQL не
+        # доходит. Признак взят из analysis/load.py:filter_valid — там же,
+        # где его читает весь остальной анализ. (21.08.2026, до первого
+        # расчёта P2.)
+        if r.get("approximation") == "warmup":
             continue
         if r.get("start_ts") is None or r.get("end_ts") is None:
             continue
@@ -85,7 +92,7 @@ def fetch_results(stand: str, run_label: str, host: str, port: int,
     df = client.query_df(
         "SELECT config, rep, "
         "toUnixTimestamp64Milli(start_ts)/1000.0 AS start_ts, "
-        "toUnixTimestamp64Milli(end_ts)/1000.0 AS end_ts, warmup "
+        "toUnixTimestamp64Milli(end_ts)/1000.0 AS end_ts, approximation "
         "FROM results FINAL WHERE stand = %(stand)s AND run_label = %(label)s",
         parameters={"stand": stand, "label": run_label})
     return df.to_dict(orient="records")
@@ -136,14 +143,14 @@ def run(args) -> int:
 def self_test() -> int:
     rows = [
         # два плеча по два повторения, по три задачи
-        {"config": "A-peaks", "rep": 1, "start_ts": 100.0, "end_ts": 200.0, "warmup": 0},
-        {"config": "A-peaks", "rep": 1, "start_ts": 110.0, "end_ts": 250.0, "warmup": 0},
-        {"config": "A-peaks", "rep": 1, "start_ts": 105.0, "end_ts": 240.0, "warmup": 0},
-        {"config": "A-peaks", "rep": 2, "start_ts": 400.0, "end_ts": 500.0, "warmup": 0},
-        {"config": "A-default", "rep": 1, "start_ts": 300.0, "end_ts": 390.0, "warmup": 0},
+        {"config": "A-peaks", "rep": 1, "start_ts": 100.0, "end_ts": 200.0, "approximation": ""},
+        {"config": "A-peaks", "rep": 1, "start_ts": 110.0, "end_ts": 250.0, "approximation": ""},
+        {"config": "A-peaks", "rep": 1, "start_ts": 105.0, "end_ts": 240.0, "approximation": ""},
+        {"config": "A-peaks", "rep": 2, "start_ts": 400.0, "end_ts": 500.0, "approximation": ""},
+        {"config": "A-default", "rep": 1, "start_ts": 300.0, "end_ts": 390.0, "approximation": ""},
         # warmup и строка без времён (ошибка размещения) — не должны попасть
-        {"config": "A-peaks", "rep": 9, "start_ts": 1.0, "end_ts": 2.0, "warmup": 1},
-        {"config": "A-peaks", "rep": 8, "start_ts": None, "end_ts": None, "warmup": 0},
+        {"config": "A-peaks", "rep": 9, "start_ts": 1.0, "end_ts": 2.0, "approximation": "warmup"},
+        {"config": "A-peaks", "rep": 8, "start_ts": None, "end_ts": None, "approximation": ""},
     ]
     w = arm_windows(rows)
     keys = [(x["config"], x["rep"]) for x in w]
@@ -165,7 +172,7 @@ def self_test() -> int:
     for x in w:
         grp = [r for r in rows if r["config"] == x["config"]
                and r["rep"] == x["rep"] and r["start_ts"] is not None
-               and not r["warmup"]]
+               and r["approximation"] != "warmup"]
         assert x["t0"] <= min(g["start_ts"] for g in grp), x
         assert x["t1"] >= max(g["end_ts"] for g in grp), x
 
