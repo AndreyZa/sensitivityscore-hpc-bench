@@ -2,7 +2,9 @@
 #
 # Источник: github.com/metal3-io/baremetal-operator, релиз v0.13.0,
 # файл baremetal-operator.yaml. Ниже — ровно он, минус объекты, которым
-# нужен cert-manager, которого на лабе нет:
+# нужен cert-manager, которого на лабе нет (сам вебхук при этом гасится
+# штатным флагом --webhook-port=0 у менеджера — без него BMO падает на
+# отсутствующем сертификате, снятия объектов мало):
 #   
 #   Service/baremetal-operator-webhook-service
 #   Certificate/baremetal-operator-serving-cert
@@ -3646,6 +3648,12 @@ spec:
       containers:
       - args:
         - --enable-leader-election
+        # Вебхук выключается ШТАТНЫМ флагом, а не отсутствием
+        # сертификата: в main.go enableWebhook := webhookPort != 0.
+        # Просто снять Certificate было недостаточно — менеджер всё
+        # равно поднимал сервер вебхука и падал на
+        # /tmp/k8s-webhook-server/serving-certs/tls.crt.
+        - --webhook-port=0
         command:
         - /baremetal-operator
         env:
