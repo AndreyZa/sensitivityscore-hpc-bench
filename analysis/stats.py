@@ -374,3 +374,90 @@ def run_all_comparisons(
         out["mw_p_holm"] = holm_bonferroni(out["mw_p_value"])
         out["wsr_p_holm"] = holm_bonferroni(out["wsr_p_value"])
     return out
+
+
+# ---------------------------------------------------------------- самопроверка
+
+def self_test() -> int:
+    """Оценки проверяются на данных с ИЗВЕСТНЫМ ответом.
+
+    Модуль до сих пор был без самотеста, хотя из него приходит каждый
+    интервал в обеих статьях: bootstrap_ci и paired_diff_ci дают числа,
+    которые печатаются в таблицах. Ошибка здесь не выглядит как ошибка —
+    интервал просто оказывается не тем, и это неотличимо на глаз.
+    """
+    rng = np.random.default_rng(0)
+
+    # 1. Точечная оценка — ровно медиана, интервал её накрывает.
+    v = np.arange(1.0, 100.0)
+    lo, point, hi = bootstrap_ci(v, rng=np.random.default_rng(1))
+    assert point == 50.0, point
+    assert lo < 50.0 < hi, (lo, hi)
+
+    # 2. Одинаковое зерно — одинаковый интервал (числа статьи обязаны
+    #    воспроизводиться командой, а не «примерно»).
+    a1 = bootstrap_ci(v, rng=np.random.default_rng(7))
+    a2 = bootstrap_ci(v, rng=np.random.default_rng(7))
+    assert a1 == a2, (a1, a2)
+
+    # 3. Покрытие. Главное свойство интервала: 95% интервалов накрывают
+    #    истинную медиану. Проверяем прямым перебором — на 300 выборках
+    #    доля обязана лежать около 0,95; широкий допуск взят под шум самой
+    #    оценки доли, узкий превратил бы тест в ложно падающий.
+    hits = 0
+    trials = 300
+    for _ in range(trials):
+        s = rng.normal(loc=10.0, scale=2.0, size=25)
+        l, _, h = bootstrap_ci(s, n_boot=400, rng=rng)
+        hits += l <= 10.0 <= h
+    cover = hits / trials
+    assert 0.86 <= cover <= 1.0, f"покрытие {cover:.2f} вместо ~0,95"
+
+    # 4. Парная разность: сопоставление ПО КЛЮЧУ, а не по позиции. Плечо
+    #    может потерять повторение, и позиционное выравнивание тогда молча
+    #    сравнит разные прогоны — интервал получится не тот, а сообщения
+    #    об ошибке не будет.
+    base = pd.Series({r: 100.0 + r for r in range(10)})
+    arm = pd.Series({r: 110.0 + r for r in range(10)})
+    shuffled = arm.sample(frac=1.0, random_state=3)      # тот же индекс, другой порядок
+    lo, point, hi = paired_diff_ci(shuffled, base, rng=np.random.default_rng(2))
+    assert abs(point - 10.0) < 1e-9, point
+    assert abs(lo - 10.0) < 1e-9 and abs(hi - 10.0) < 1e-9, (lo, hi)
+
+    # ...и пары берутся только по ОБЩИМ ключам.
+    partial = arm.drop(index=[0, 1, 2])
+    _, point2, _ = paired_diff_ci(partial, base, rng=np.random.default_rng(2))
+    assert abs(point2 - 10.0) < 1e-9, point2
+    assert np.isnan(paired_diff_ci(pd.Series({99: 1.0}), base)[1])
+
+    # 5. Cliff's delta на разделённых выборках — ровно ±1.
+    assert cliffs_delta([10, 11, 12], [1, 2, 3])["delta"] == 1.0
+    assert cliffs_delta([1, 2, 3], [10, 11, 12])["delta"] == -1.0
+    assert cliffs_delta([1, 2, 3], [1, 2, 3])["magnitude"] == "negligible"
+
+    # 6. Holm: наименьшее p умножается на m, наибольшее не трогается,
+    #    монотонность сохраняется, NaN не считается в семью.
+    adj = holm_bonferroni([0.01, 0.04, 0.03, np.nan])
+    assert abs(adj[0] - 0.03) < 1e-12, adj
+    assert np.isnan(adj[3])
+    assert adj[1] >= adj[2] >= adj[0], adj
+
+    # 7. Повторение — одно наблюдение: члены пачки схлопываются средним.
+    df = pd.DataFrame({"config": ["A"] * 4, "rep": [0, 0, 1, 1],
+                       "makespan_s": [10.0, 20.0, 30.0, 50.0]})
+    s = rep_level_series(df, "A")
+    assert list(s) == [15.0, 40.0], list(s)
+
+    # 8. Вариация — безразмерная и сравнима между плечами разного масштаба.
+    assert abs(coefficient_of_variation([10, 12, 14]) -
+               coefficient_of_variation([100, 120, 140])) < 1e-12
+
+    print("self-test: ок (медиана и её интервал, воспроизводимость по зерну, "
+          "покрытие 95%, парность по ключу, Cliff's delta, Holm, "
+          "схлопывание пачки, CV)")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(self_test())
