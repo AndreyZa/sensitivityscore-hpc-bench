@@ -35,6 +35,31 @@ data:
         - static_configs:
             - targets: ["alertmanager.sensitivityscore-monitoring.svc.cluster.local:9093"]
 
+    # Долговременное хранение рядов в ClickHouse. Prometheus остаётся
+    # скрейп- и алерт-слоем, но перестаёт быть ЕДИНСТВЕННЫМ местом, где
+    # живут сырые сэмплы: до этого «пересчитайте с другим окном» через
+    # месяц было невыполнимо — ряды умирали с ретеншеном.
+    #
+    # Список метрик закрытый и совпадает со списком scripts/ch-load-metrics.py:
+    # льём то, из чего считаются результаты, а не весь TSDB (там ~115 тысяч
+    # рядов, и ClickHouse делит диск ss-system с самим Prometheus).
+    # Приёмник — prometheus-порт ClickHouse в форме handlers (9363/write),
+    # таблица prom_ts на движке TimeSeries (миграция 006).
+    remote_write:
+      - url: http://clickhouse.sensitivityscore-system.svc.cluster.local:9363/write
+        remote_timeout: 30s
+        queue_config:
+          # Отставание допустимо: это архив, а не источник для алертов.
+          # Лучше подождать, чем ронять сэмплы при недоступности CH.
+          capacity: 10000
+          max_shards: 4
+          min_backoff: 100ms
+          max_backoff: 10s
+        write_relabel_configs:
+          - source_labels: [__name__]
+            regex: "ss_node_.*|ss_agent_.*|ss_loadwatcher_.*|ss_series_.*|idrac_.*|pdu_.*|container_cpu_cfs_.*"
+            action: keep
+
     scrape_configs:
       # --- сам Prometheus -----------------------------------------------
       - job_name: prometheus
