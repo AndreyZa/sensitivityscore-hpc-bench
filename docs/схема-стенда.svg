@@ -36,7 +36,7 @@
         <text class="t-sub"  x="714" y="92">окна энергии, результаты</text>
 
         <!-- ── Полоса 2: стойка ─────────────────────────────── -->
-        <text class="t-band" x="20" y="146">Стойка (разделяемая)</text>
+        <text class="t-band" x="20" y="152">Стойка (разделяемая)</text>
         <rect class="rack" x="20" y="158" width="620" height="230" rx="3"/>
 
         <!-- измерительные узлы -->
@@ -74,7 +74,7 @@
 
         <!-- PDU -->
         <rect class="box" x="612" y="182" width="10" height="162" rx="2"/>
-        <text class="t-sub" x="606" y="362" text-anchor="end">PDU A/B</text>
+        <text class="t-sub" x="617" y="176" text-anchor="middle">PDU A/B</text>
 
         <!-- ── Полоса 3: источники измерения ────────────────── -->
         <text class="t-band" x="20" y="422">Источники измерения</text>
@@ -95,14 +95,13 @@
 
         <!-- ── Связи ─────────────────────────────────────────── -->
         <!-- планирование -->
-        <path class="e-sched" d="M 300 100 L 300 140 L 130 140 L 130 182" marker-end="url(#ar-sched)"/>
-        <path class="e-sched" d="M 320 100 L 320 152 L 318 152 L 318 182" marker-end="url(#ar-sched)"/>
-        <path class="e-sched" d="M 340 100 L 340 140 L 506 140 L 506 182" marker-end="url(#ar-sched)"/>
-        <text class="t-edge" x="352" y="134">размещение подов</text>
+        <path class="e-sched" d="M 300 100 L 300 134 L 130 134 L 130 182" marker-end="url(#ar-sched)"/>
+        <path class="e-sched" d="M 320 100 L 320 182" marker-end="url(#ar-sched)"/>
+        <path class="e-sched" d="M 340 100 L 340 134 L 506 134 L 506 182" marker-end="url(#ar-sched)"/>
+        <text class="t-edge" x="352" y="126">размещение подов</text>
 
         <!-- питание -->
         <path class="e-power" d="M 585 100 L 585 160 L 545 160 L 545 182" marker-end="url(#ar-power)"/>
-        <text class="t-edge" x="556" y="156" fill="#b45309">включить / выключить</text>
 
         <!-- измерение вверх -->
         <path class="e-meas" d="M 118 434 L 118 400 L 700 400 L 700 108" marker-end="url(#ar-meas)"/>
@@ -114,7 +113,7 @@
         <path class="e-meas" d="M 118 434 L 118 344"/>
         <path class="e-meas" d="M 334 434 L 334 268"/>
         <path class="e-meas" d="M 566 434 L 566 268"/>
-        <path class="e-meas" d="M 617 434 L 617 372"/>
+        <path class="e-meas" d="M 617 434 L 617 344"/>
 
         <defs>
           <marker id="ar-sched" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
