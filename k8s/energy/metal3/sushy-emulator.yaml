@@ -1,0 +1,91 @@
+# sushy-tools — эмулятор Redfish-контроллеров для проверки Metal3 без
+# прод-железа. Поднимается на ЛАБЕ (k0s local72), к проду отношения не
+# имеет и иметь не должен.
+#
+# Зачем в репозитории. В первый раз (20.08.2026) эмулятор поднимали руками
+# и после проверки снесли — манифесты не сохранились, и повторить проверку
+# было нечем. Теперь это воспроизводимая фикстура: она нужна и для BMO, и
+# для любой будущей правки контроллера гашения, которую нельзя обкатывать
+# на боевых узлах.
+#
+# ФИКТИВНЫЙ ДРАЙВЕР ВЫБРАН НАМЕРЕННО. Он не эмулирует реальную машину, а
+# отдаёт состояние питания с ЗАДЕРЖКОЙ 1–11 с («hardware actions are not
+# immediate»). Именно это свойство поймало главную ошибку прошлой
+# проверки: контроллер читал PowerState сразу после команды и видел
+# прежнее значение. На настоящем железе гашение занимает 18 с, то есть
+# эмулятор воспроизводит нужный класс поведения, а не удобный.
+#
+# Имена систем совпадают с узлами стенда, чтобы карта node=host в
+# power-save.py и BareMetalHost'ы отличались от боевых только адресом.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bmc-emu
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sushy-config
+  namespace: bmc-emu
+data:
+  sushy.conf: |
+    SUSHY_EMULATOR_LISTEN_IP = u'0.0.0.0'
+    SUSHY_EMULATOR_LISTEN_PORT = 8000
+    SUSHY_EMULATOR_SSL_CERT = None
+    SUSHY_EMULATOR_SSL_KEY = None
+    # Фиктивные системы: без libvirt и без гипервизора вообще.
+    SUSHY_EMULATOR_FAKE_DRIVER = True
+    SUSHY_EMULATOR_FAKE_SYSTEMS = [
+        {u'uuid': u'11111111-1111-1111-1111-000000000006',
+         u'name': u'wrk-b6'},
+        {u'uuid': u'11111111-1111-1111-1111-000000000007',
+         u'name': u'wrk-b7'},
+        {u'uuid': u'11111111-1111-1111-1111-000000000008',
+         u'name': u'wrk-b8'},
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sushy-emulator
+  namespace: bmc-emu
+  labels: { app: sushy-emulator }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: sushy-emulator }
+  template:
+    metadata:
+      labels: { app: sushy-emulator }
+    spec:
+      containers:
+        - name: sushy
+          # Тег датирован и неизменяем: `latest` у metal3 двигается
+          # ежедневно, и проверка, прошедшая вчера, назавтра означала бы
+          # уже другой код.
+          image: quay.io/metal3-io/sushy-tools:release-38.0_2026-08-21_d32741a086eae8da41a120f3dc079e9b3c6d40f4
+          command: ["sushy-emulator", "--config", "/etc/sushy/sushy.conf"]
+          ports:
+            - { containerPort: 8000, name: redfish }
+          volumeMounts:
+            - { name: config, mountPath: /etc/sushy }
+          readinessProbe:
+            httpGet: { path: /redfish/v1/Systems, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: config
+          configMap: { name: sushy-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sushy-emulator
+  namespace: bmc-emu
+spec:
+  selector: { app: sushy-emulator }
+  ports:
+    - { name: redfish, port: 8000, targetPort: 8000 }
