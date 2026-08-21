@@ -220,7 +220,7 @@ def cycle_cost(energy: pd.DataFrame, p_off_w: float, p_idle_w: float,
 
 # ------------------------------------------------------------------ ввод
 
-def figdata_block(metrics: pd.DataFrame, baseline: str) -> dict:
+def figdata_block(metrics: pd.DataFrame, baseline: str, rng=None) -> dict:
     """Числа таблицы политик в том виде, в каком они попадут в статью.
 
     ЗАЧЕМ. Числа §6 до сих пор переносились в статью руками: analysis
@@ -238,7 +238,7 @@ def figdata_block(metrics: pd.DataFrame, baseline: str) -> dict:
                     "edp_mln": round(row["edp"] / 1e6, 2),
                     "makespan_s": round(row["median_makespan_s"], 1)}
     if baseline in med.index:
-        cmp = compare_arms(metrics, baseline)
+        cmp = compare_arms(metrics, baseline, rng=rng)
         for _, r in cmp.iterrows():
             out[r["config"]]["diff_pct"] = round(r["rel_pct"], 2)
             out[r["config"]]["lo_pct"] = round(r["lo"] / med.loc[baseline, "j_per_task"] * 100, 2)
@@ -408,6 +408,12 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-coverage-gaps", action="store_true",
                     help="не валить расчёт при разрыве покрытия (по умолчанию валит)")
     ap.add_argument("--out", default="", help="куда записать JSON")
+    # Бутстреп без зерна давал границы ДИ, которые не повторялись: в
+    # статье стояло «от −2,01 до +0,64», а пересчёт того же окна давал
+    # «от −1,90 до +0,64». Разница в пределах шума бутстрепа, но число в
+    # статье обязано воспроизводиться командой, а не «примерно».
+    ap.add_argument("--seed", type=int, default=0,
+                    help="зерно бутстрепа (default 0 — числа воспроизводимы)")
     ap.add_argument("--figdata", default="",
                     help="дописать блок p2.<уровень> в figdata.json статьи")
     args = ap.parse_args(argv)
@@ -459,7 +465,8 @@ def main(argv=None) -> int:
         if args.baseline in set(m["config"]):
             print()
             for metric in ("j_per_task", "edp"):
-                cmp = compare_arms(m, args.baseline, metric=metric)
+                cmp = compare_arms(m, args.baseline, metric=metric,
+                                   rng=np.random.default_rng(args.seed))
                 print(cmp.to_string(index=False,
                                     float_format=lambda v: f"{v:,.2f}"))
         out = {"per_rep": m.to_dict(orient="records")}
@@ -469,7 +476,8 @@ def main(argv=None) -> int:
             p2 = fd.setdefault("p2", {})
             p2["_comment"] = ("политики размещения по уровням подачи; "
                               "медианы по повторениям, ДИ парного бутстрепа")
-            p2[key] = figdata_block(m, args.baseline)
+            p2[key] = figdata_block(m, args.baseline,
+                                    rng=np.random.default_rng(args.seed))
             Path(args.figdata).write_text(
                 json.dumps(fd, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8")
