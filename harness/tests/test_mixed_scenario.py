@@ -155,3 +155,34 @@ def test_deploy_placebo_skips_kubectl(monkeypatch):
     monkeypatch.setattr(agg, "_apply_and_wait", _boom)
     agg.deploy([], 0, PLACEBO, {"kubernetes": {"namespace": "bench"},
                                 "images": {"aggressor": "img"}})
+
+
+def test_pressured_nodes_skip_system_node(monkeypatch):
+    """Системный узел под давление не берётся.
+
+    Он сортируется первым по имени (ss-system < wrk-*), и сценарий без
+    storms и без явного aggressor_nodes выбирал именно его: там redis,
+    планировщик и metrics-server, и ни одной жертвы. Taint не спасает —
+    агрессоры пиннятся nodeName, мимо планировщика. До 21.08.2026 функция
+    ходила в kubectl сама, с селектором только по control-plane.
+    """
+    import submit.aggressors as agg
+    monkeypatch.setattr(agg, "list_worker_nodes",
+                        lambda exclude=(): ["wrk-b6", "wrk-b7", "wrk-b8"])
+    scenario = {"name": "feed-mid", "storms": [], "pressured_node_count": 1}
+    assert agg.resolve_pressured_nodes(scenario, {}) == ["wrk-b6"]
+
+
+def test_pressured_nodes_leave_one_clean(monkeypatch):
+    """Счёт «нужна хотя бы одна чистая нода» ведётся по РАБОЧИМ узлам.
+
+    Системный узел раньше числился рабочим, и порог был завышен на единицу:
+    сценарий, давящий все три измерительных узла, проходил проверку.
+    """
+    import pytest
+    import submit.aggressors as agg
+    monkeypatch.setattr(agg, "list_worker_nodes",
+                        lambda exclude=(): ["wrk-b6", "wrk-b7", "wrk-b8"])
+    scenario = {"name": "all", "storms": [], "pressured_node_count": 3}
+    with pytest.raises(RuntimeError, match="ALL 3 worker nodes"):
+        agg.resolve_pressured_nodes(scenario, {})

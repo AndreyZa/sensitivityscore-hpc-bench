@@ -36,6 +36,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+from .k8s_submit import list_worker_nodes
+
 log = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
@@ -93,25 +95,20 @@ def resolve_pressured_nodes(scenario: dict, cfg: dict) -> list[str]:
     if explicit:
         return list(explicit)
 
-    result = subprocess.run(
-        [
-            "kubectl",
-            "get",
-            "nodes",
-            "--selector=!node-role.kubernetes.io/control-plane",
-            "-o",
-            "jsonpath={.items[*].metadata.name}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    # Отбрасываем exclude_nodes — те же ноды, что матрица обходит через
-    # nodeAffinity (напр. worker без egress к registry): агрессор туда бы не
-    # стянул образ, а victim'ы туда всё равно не планируются, так что давить
-    # их бессмысленно. Держим согласованным с list_worker_nodes(exclude=...).
-    excluded = set(cfg.get("exclude_nodes", []))
-    workers = sorted(w for w in result.stdout.split() if w not in excluded)
+    # Список узлов берётся у list_worker_nodes, а НЕ своим kubectl: здесь
+    # стоял собственный вызов с селектором только по control-plane, без
+    # исключения роли ss-system. Системный узел сортируется первым по имени,
+    # поэтому сценарий без storms и без явного aggressor_nodes выбирал под
+    # давление ИНФРАСТРУКТУРНЫЙ узел — тот, где живут redis, планировщик и
+    # metrics-server и где нет ни одной жертвы. Taint его бы не спас:
+    # агрессоры пиннятся nodeName, мимо планировщика, а taint проверяет
+    # планировщик. Не выстрелило до сих пор только потому, что все прошлые
+    # сценарии с агрессорами задавали storms, а те возвращаются раньше.
+    # Заодно чинится счёт в guard ниже: системный узел числился «рабочим»,
+    # и порог «нужна хотя бы одна чистая нода» был завышен на единицу.
+    # (21.08.2026, замечено по строке «pressured nodes = ss-system» в логе
+    # P2, где агрессоров нет и потому последствий не было.)
+    workers = list_worker_nodes(cfg.get("exclude_nodes", []))
     count = scenario.get("pressured_node_count", 1)
     if count >= len(workers):
         raise RuntimeError(
