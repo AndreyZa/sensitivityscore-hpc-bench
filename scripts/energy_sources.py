@@ -35,11 +35,25 @@ SOURCES: dict[str, list[str]] = {
 
 def window_cmd(source: str, prom: str, t0: float, t1: float, window: str,
                config: str, stand: str, run_label: str,
-               ch_host: str, ch_port: int, dry_run: bool = False) -> list[str]:
-    """Полная командная строка energy-window.py для одного окна."""
+               ch_host: str, ch_port: int, dry_run: bool = False,
+               node: str = "") -> list[str]:
+    """Полная командная строка energy-window.py для одного окна.
+
+    node ограничивает окно ОДНИМ узлом. Это нужно окнам цикла гашения:
+    гасится один узел, а energy-window.py по умолчанию пишет строку на
+    каждый узел, попавший в метрику. Соседи в этот момент стоят на
+    холостом ходу, и их энергия, просуммированная в цену цикла, давала
+    248 кДж вместо 32 (21.08.2026).
+    """
     if source not in SOURCES:
         raise ValueError(f"неизвестный источник энергии: {source!r}")
-    cmd = [sys.executable, str(EW), "--prom", prom, *SOURCES[source],
+    args = list(SOURCES[source])
+    if node:
+        i = args.index("--metric") + 1
+        m = args[i]
+        args[i] = (f'{m}{{node="{node}"}}' if "{" not in m
+                   else m.replace("{", f'{{node="{node}",', 1))
+    cmd = [sys.executable, str(EW), "--prom", prom, *args,
            "--factor", "1", "--t0", str(int(t0)), "--t1", str(int(t1)),
            "--window", window, "--config", config,
            "--stand", stand, "--run-label", run_label,

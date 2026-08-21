@@ -400,7 +400,7 @@ class WindowRecorder:
             cmd = window_cmd(source, self.prom, t0, t1,
                              f"{kind}-rep{self.rep_for(node)}", "power-save",
                              self.stand, self.run_label,
-                             self.ch_host, self.ch_port)
+                             self.ch_host, self.ch_port, node=node)
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode != 0:
                 # Окно не записалось — это потеря данных, а не сбой политики:

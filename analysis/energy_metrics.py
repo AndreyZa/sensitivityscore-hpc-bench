@@ -172,8 +172,22 @@ def cycle_cost(energy: pd.DataFrame, p_off_w: float, p_idle_w: float,
     tr = energy[energy["kind"].isin(("cycle-off", "cycle-boot"))].dropna(subset=["rep"])
     if tr.empty:
         return {"reps": 0}
+    # Цена цикла — свойство ОДНОГО узла, того, который гасили. Если в окне
+    # оказалось несколько узлов, суммировать их нельзя: соседи в этот
+    # момент стоят на холостом ходу, и их энергия превращает цену цикла в
+    # цену стенда. Так и вышло 21.08.2026 — 248 кДж вместо 32, потому что
+    # окна писались по всем узлам сразу. Отказываем громко: тихо взять
+    # один узел из нескольких значило бы гадать, какой именно гасили.
     per_rep = {}
     for rep, grp in tr.groupby("rep"):
+        many = grp["nodes"].max()
+        if many is not None and many > 1:
+            raise ValueError(
+                f"окно цикла rep{int(rep)} собрано по {int(many)} узлам — "
+                f"цена цикла считается по ОДНОМУ гасимому узлу, соседи в "
+                f"этот момент стоят на холостом ходу и превращают её в цену "
+                f"стенда; перезапиши окна свежим scripts/power-save.py, он "
+                f"ограничивает метрику узлом")
         extra = float((grp["energy_j"] - p_off_w * grp["duration_s"]).sum())
         per_rep[int(rep)] = extra
     vals = np.array(list(per_rep.values()), dtype=float)
@@ -288,6 +302,15 @@ def self_test() -> int:
             cyc.append({"config": "P3", "window": f"{kind}-rep{rep}",
                         "node": "wrk-b8", "source": "ipmi",
                         "energy_j": 200.0 * 300.0, "ts_start": 0.0, "ts_end": 300.0})
+    # Окно, собранное по нескольким узлам, обязано ОТКАЗАТЬ, а не
+    # посчитаться: соседи на холостом ходу давали 248 кДж вместо 32.
+    multi = [dict(r, node=n) for r in cyc for n in ("wrk-b6", "wrk-b7", "wrk-b8")]
+    try:
+        cycle_cost(window_energy(pd.DataFrame(multi)), p_off_w=20.0, p_idle_w=260.0)
+        raise AssertionError("цена цикла посчиталась по трём узлам — страж не сработал")
+    except ValueError as exc:
+        assert "одному гасимому узлу" in str(exc), exc
+
     c = cycle_cost(window_energy(pd.DataFrame(cyc)), p_off_w=20.0, p_idle_w=260.0)
     assert abs(c["e_cycle_j"] - 108_000) < 1.0, c["e_cycle_j"]
     # T = 108 кДж / (260−20) Вт = 450 c = 7,5 мин
