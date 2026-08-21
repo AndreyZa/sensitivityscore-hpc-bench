@@ -74,9 +74,23 @@ def window_energy(windows: pd.DataFrame, source: str = DEFAULT_SOURCE) -> pd.Dat
     out = g.agg(energy_j=("energy_j", "sum"),
                 ts_start=("ts_start", "min"),
                 ts_end=("ts_end", "max"),
-                nodes=("node", "nunique")).reset_index()
+                nodes=("node", "nunique"),
+                rows=("energy_j", "size")).reset_index()
+    # Одно плечо одного повторения — по одному окну на узел. Больше значит,
+    # что под меткой серии лежит НЕСКОЛЬКО сценариев: нумерация повторений
+    # в каждом начинается с нуля, и arm-rep0 уровня подачи feed-mid здесь
+    # сложился бы с arm-rep0 уровня feed-low. Молча это даёт удвоенную
+    # энергию и вдвое заниженную Дж/задача, поэтому — отказ с указанием,
+    # чего не хватает вызывающему.
+    doubled = out[out["rows"] > out["nodes"]]
+    if not doubled.empty:
+        r = doubled.iloc[0]
+        raise ValueError(
+            f"окно {r['config']}/{r['kind']}-rep{r['rep']} встречается "
+            f"{int(r['rows'])} раз на {int(r['nodes'])} узлах — под меткой "
+            f"серии лежит несколько сценариев; укажи --scenario")
     out["duration_s"] = out["ts_end"] - out["ts_start"]
-    return out
+    return out.drop(columns=["rows"])
 
 
 def coverage(energy: pd.DataFrame, results: pd.DataFrame,
@@ -206,11 +220,12 @@ def cycle_cost(energy: pd.DataFrame, p_off_w: float, p_idle_w: float,
 # ------------------------------------------------------------------ ввод
 
 def load_from_ch(run_label: str, stand: str, host: str, port: int,
-                 database: str = "sensitivityscore") -> tuple[pd.DataFrame, pd.DataFrame]:
+                 database: str = "sensitivityscore",
+                 scenario: str = "") -> tuple[pd.DataFrame, pd.DataFrame]:
     import clickhouse_connect
     client = clickhouse_connect.get_client(host=host, port=port,
                                            username="default", database=database)
-    params = {"label": run_label, "stand": stand}
+    params = {"label": run_label, "stand": stand, "scenario": scenario}
     windows = client.query_df(
         "SELECT config, window, node, source, energy_j, avg_power_w, "
         "toUnixTimestamp64Milli(ts_start)/1000.0 AS ts_start, "
@@ -229,7 +244,16 @@ def load_from_ch(run_label: str, stand: str, host: str, port: int,
         # прогрева нет (эталоны пропускаются, и rep у прогрева отрицательный),
         # поэтому это защита от будущего конфига, а не исправление ошибки.
         "WHERE run_label = %(label)s AND stand = %(stand)s "
-        "AND approximation != 'warmup'", parameters=params)
+        "AND approximation != 'warmup'"
+        + (" AND scenario = %(scenario)s" if scenario else ""),
+        parameters=params)
+    if scenario and not results.empty:
+        # У окон энергии поля сценария нет, зато сценарии идут подряд:
+        # отбираем окна по времени самого сценария. Запас в 10 минут — на
+        # окно, открытое до первой задачи и закрытое после последней.
+        lo = results["start_ts"].min() - 600.0
+        hi = results["end_ts"].max() + 600.0
+        windows = windows[(windows["ts_start"] >= lo) & (windows["ts_end"] <= hi)]
     return windows, results
 
 
@@ -316,11 +340,24 @@ def self_test() -> int:
     # T = 108 кДж / (260−20) Вт = 450 c = 7,5 мин
     assert abs(c["t_min"] - 7.5) < 0.01, c["t_min"]
 
+    # Два сценария под одной меткой: повторения нумеруются заново, окна
+    # arm-rep0 совпадают по имени. Складывать их нельзя — страж обязан
+    # сработать, иначе Дж/задача занижается вдвое молча.
+    second = win.copy()
+    second["ts_start"] += 100_000.0
+    second["ts_end"] += 100_000.0
+    try:
+        window_energy(pd.concat([win, second], ignore_index=True))
+        raise AssertionError("два сценария сложились в одно окно — страж молчит")
+    except ValueError as exc:
+        assert "--scenario" in str(exc), exc
+
     # Пустой источник — не падение, а пустой результат (метка ещё не залита).
     assert window_energy(win, source="pdu").empty
 
     print("self-test: ок (сумма по узлам, Дж/задача, парное сравнение, "
-          "покрытие окна, перепутанный rep, цена цикла и порог T)")
+          "покрытие окна, перепутанный rep, два сценария под меткой, "
+          "цена цикла и порог T)")
     return 0
 
 
@@ -333,6 +370,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ch-port", type=int, default=8123)
     ap.add_argument("--source", default=DEFAULT_SOURCE,
                     help=f"источник энергии (default {DEFAULT_SOURCE})")
+    ap.add_argument("--scenario", default="",
+                    help="сценарий (уровень подачи), если под меткой их несколько")
     ap.add_argument("--baseline", default="default",
                     help="плечо сравнения (default: default)")
     ap.add_argument("--cycle", action="store_true",
@@ -350,7 +389,8 @@ def main(argv=None) -> int:
         ap.error("--run-label обязателен (кроме --self-test)")
 
     windows, results = load_from_ch(args.run_label, args.stand,
-                                    args.ch_host, args.ch_port)
+                                    args.ch_host, args.ch_port,
+                                    scenario=args.scenario)
     if windows.empty:
         print(f"окон с меткой {args.run_label} нет", file=sys.stderr)
         return 1
