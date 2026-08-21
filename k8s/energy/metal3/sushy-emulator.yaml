@@ -35,13 +35,24 @@ data:
     SUSHY_EMULATOR_SSL_KEY = None
     # Фиктивные системы: без libvirt и без гипервизора вообще.
     SUSHY_EMULATOR_FAKE_DRIVER = True
+    # Поля обязательны все: драйвер читает power_state напрямую
+    # (fakedriver.get_power_state -> self._get(identity)['power_state']),
+    # и на записи без него эмулятор отдаёт HTTP 500, а Ironic показывает
+    # BareMetalHost'у «registration error». Форма взята из умолчания
+    # самого драйвера, а не придумана.
     SUSHY_EMULATOR_FAKE_SYSTEMS = [
         {u'uuid': u'11111111-1111-1111-1111-000000000006',
-         u'name': u'wrk-b6'},
+         u'name': u'wrk-b6', u'power_state': u'On',
+         u'external_notifier': False,
+         u'nics': [{u'mac': u'00:00:00:00:00:06', u'ip': u'172.22.0.106'}]},
         {u'uuid': u'11111111-1111-1111-1111-000000000007',
-         u'name': u'wrk-b7'},
+         u'name': u'wrk-b7', u'power_state': u'On',
+         u'external_notifier': False,
+         u'nics': [{u'mac': u'00:00:00:00:00:07', u'ip': u'172.22.0.107'}]},
         {u'uuid': u'11111111-1111-1111-1111-000000000008',
-         u'name': u'wrk-b8'},
+         u'name': u'wrk-b8', u'power_state': u'On',
+         u'external_notifier': False,
+         u'nics': [{u'mac': u'00:00:00:00:00:08', u'ip': u'172.22.0.108'}]},
     ]
 ---
 apiVersion: apps/v1
