@@ -64,9 +64,25 @@ spec:
       resources: {requests: {cpu: "200"}}
 POD
 
-for _ in $(seq 1 40); do grep -q "подъём $NODE" "$LOG" && break; sleep 10; done
-sleep 30
+# Ждём НЕ сообщения о начале подъёма, а фактической готовности узла.
+# Первый прогон (21.08.2026) ждал строку «подъём» и через 30 с убивал
+# контроллер — а загрузка занимает около трёх минут, так что kill обрывал
+# wait_ready и последующий uncordon: узел остался Ready, но закордоненным,
+# и возвращать его пришлось руками. Контроллер обязан довести цикл сам.
+echo "--- жду готовности $NODE (загрузка около 3 минут) ---"
+for _ in $(seq 1 60); do
+    st=$($K get node "$NODE" --no-headers 2>/dev/null | awk '{print $2}')
+    echo "  $(date +%H:%M:%S) $NODE: ${st:-нет ответа}"
+    [ "$st" = "Ready" ] && break
+    sleep 15
+done
 $K delete pod wake-trigger -n sensitivityscore-bench --ignore-not-found >/dev/null
+st=$($K get node "$NODE" --no-headers 2>/dev/null | awk '{print $2}')
+if [ "$st" != "Ready" ]; then
+    echo "ВНИМАНИЕ: $NODE так и не вернулся в строй ($st) — контроллер НЕ убиваю,"
+    echo "          он ещё в бюджете подъёма; смотри $LOG и состояние узла."
+    exit 1
+fi
 kill $CTL 2>/dev/null
 pkill -f "port-forward svc/clickhouse"
 

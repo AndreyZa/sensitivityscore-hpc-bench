@@ -34,7 +34,8 @@ import pathlib
 import subprocess
 import sys
 
-_EW = pathlib.Path(__file__).with_name("energy-window.py")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from energy_sources import SOURCES, window_cmd  # noqa: E402
 
 # Интерпретатор. Скрипту нужен clickhouse_connect, а он стоит только в
 # analysis/.venv — в системном python3 его нет. Шебанг ведёт именно туда, и
@@ -58,21 +59,6 @@ def _reexec_in_venv() -> None:
 
 if "--self-test" not in sys.argv:
     _reexec_in_venv()
-
-# Те же аргументы, что у калибровки P1 (scripts/p1-calibrate.py): один
-# источник — одно определение, иначе окна серий и окна лестницы окажутся
-# посчитаны по-разному и станут несравнимы.
-SOURCES = {
-    "ipmi":      ["--metric", "idrac_power_watts", "--node-label", "node",
-                  "--source", "ipmi", "--mode", "power"],
-    "rapl-pkg":  ["--metric",
-                  'sum by(node)(ss_node_rapl_joules_total{domain=~"package-.*"})',
-                  "--node-label", "node", "--source", "rapl-pkg"],
-    "rapl-dram": ["--metric",
-                  'sum by(node)(ss_node_rapl_joules_total{domain="dram"})',
-                  "--node-label", "node", "--source", "rapl-dram"],
-}
-
 
 def arm_windows(rows: list[dict], min_tasks: int = 1) -> list[dict]:
     """Строки результатов -> окна (плечо, повторение).
@@ -161,15 +147,10 @@ def run(args) -> int:
             if src not in SOURCES:
                 print(f"неизвестный источник {src!r}", file=sys.stderr)
                 return 2
-            cmd = [sys.executable, str(_EW), "--prom", args.prom,
-                   *SOURCES[src], "--factor", "1",
-                   "--t0", str(w["t0"]), "--t1", str(w["t1"]),
-                   "--window", f"arm-rep{w['rep']}",
-                   "--config", w["config"],
-                   "--stand", args.stand, "--run-label", args.run_label,
-                   "--ch-host", args.ch_host, "--ch-port", str(args.ch_port)]
-            if args.dry_run:
-                cmd.append("--dry-run")
+            cmd = window_cmd(src, args.prom, w["t0"], w["t1"],
+                             f"arm-rep{w['rep']}", w["config"],
+                             args.stand, args.run_label,
+                             args.ch_host, args.ch_port, args.dry_run)
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"  {src}: НЕ ЗАПИСАНО — {r.stderr.strip()[:200]}",

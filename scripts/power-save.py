@@ -44,7 +44,8 @@ import subprocess
 import sys
 import time
 
-_EW = pathlib.Path(__file__).with_name("energy-window.py")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from energy_sources import window_cmd  # noqa: E402
 
 # Селектор измерительных узлов. Стоял `role=bench` — такой метки на стенде
 # НЕТ, узлы помечены `node-role.kubernetes.io/bench` (так их метит
@@ -326,8 +327,9 @@ class WindowRecorder:
     DRAIN_S = 60.0   # хвост спада мощности после команды выключения
 
     def __init__(self, stand: str, run_label: str, ch_host: str, ch_port: int,
+                 prom: str = "http://localhost:19090",
                  sources: tuple[str, ...] = ("ipmi",), enabled: bool = True):
-        self.stand, self.run_label = stand, run_label
+        self.stand, self.run_label, self.prom = stand, run_label, prom
         self.ch_host, self.ch_port = ch_host, ch_port
         self.sources, self.enabled = sources, enabled
         self._next_rep = 0
@@ -353,13 +355,15 @@ class WindowRecorder:
         if not self.enabled:
             return
         for source in self.sources:
-            cmd = [sys.executable, str(_EW),
-                   "--source", source, "--mode", "power",
-                   "--start", str(int(t0)), "--end", str(int(t1)),
-                   "--window", f"{kind}-rep{self.rep_for(node)}",
-                   "--stand", self.stand, "--run-label", self.run_label,
-                   "--config", "power-save",
-                   "--ch-host", self.ch_host, "--ch-port", str(self.ch_port)]
+            # Команда собирается общим сборщиком (scripts/energy_sources.py).
+            # Здесь стоял свой список флагов, разошедшийся с настоящим
+            # интерфейсом energy-window.py: `--start/--end` вместо `--t0/--t1`,
+            # без `--prom` и `--metric`. Окна не писались вовсе, и узнали мы
+            # об этом на первом же живом цикле.
+            cmd = window_cmd(source, self.prom, t0, t1,
+                             f"{kind}-rep{self.rep_for(node)}", "power-save",
+                             self.stand, self.run_label,
+                             self.ch_host, self.ch_port)
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode != 0:
                 # Окно не записалось — это потеря данных, а не сбой политики:
@@ -591,7 +595,24 @@ def self_test() -> int:
     cmd = ["curl", "-sk", "-K", "-", "-X", "POST"]
     assert "-K" in cmd and "-u" not in cmd
 
-    print("self-test: ок (порог, min-active, подъём по очереди, сброс "
+    # Команда записи окна ДОЛЖНА приниматься парсером energy-window.py.
+    # Проверка от противного: зовём с заведомо мёртвым Prometheus и требуем,
+    # чтобы отказ был ЛЮБЫМ, кроме argparse-usage. Именно usage-ошибку
+    # выдавал прежний вызов (`--start/--end` вместо `--t0/--t1`, без --prom
+    # и --metric), и увидели мы её только на живом цикле гашения, когда
+    # окна уже потерялись. Мок здесь бесполезен: ошибка была в интерфейсе
+    # между двумя настоящими программами.
+    import subprocess as _sp
+    for src in ("ipmi", "rapl-pkg"):
+        cmd = window_cmd(src, "http://127.0.0.1:1", 100, 200, "cycle-off-rep0",
+                         "power-save", "prod", "self-test", "127.0.0.1", 1)
+        r = _sp.run(cmd, capture_output=True, text=True)
+        combined = r.stdout + r.stderr
+        assert "usage: energy-window.py" not in combined, (
+            f"energy-window.py не принимает аргументы для {src}: "
+            f"{combined.strip()[:200]}")
+
+    print("self-test: ок (аргументы окна, порог, min-active, подъём по очереди, сброс "
           "счётчика, отказ подъёма и отказ гашения, окна переходов, "
           "исключения, пароль "
           "вне argv)")
@@ -643,6 +664,8 @@ def main(argv=None) -> int:
     ap.add_argument("--run-label", default="", help="метка серии для окон")
     ap.add_argument("--ch-host", default="localhost")
     ap.add_argument("--ch-port", type=int, default=8123)
+    ap.add_argument("--prom", default="http://localhost:19090",
+                    help="Prometheus для окон переходов (--record-windows)")
     ap.add_argument("--node-selector", default=BENCH_SELECTOR,
                     help=f"метка измерительных узлов (default {BENCH_SELECTOR})")
     ap.add_argument("--dry-run", action="store_true")
@@ -680,7 +703,7 @@ def main(argv=None) -> int:
         if not args.run_label:
             ap.error("--record-windows требует --run-label")
         recorder = WindowRecorder(args.stand, args.run_label,
-                                  args.ch_host, args.ch_port,
+                                  args.ch_host, args.ch_port, args.prom,
                                   enabled=not args.dry_run)
     # Пустой список узлов — НЕ «нечего делать», а неверный селектор или
     # чужой kubeconfig. Молчаливый no-op здесь дороже всего: контроллер
