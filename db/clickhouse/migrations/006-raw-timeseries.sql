@@ -11,5 +11,9 @@
 -- обкатка на лабе 20.08.2026 — k8s/monitoring/energy/README.md: рестарт CH
 -- без потерь (WAL Prometheus дослал буфер), ~6 Б/сэмпл до слияний.
 -- Чтение — timeSeriesData()/timeSeriesTags()/timeSeriesMetrics().
+-- Флаг действует на сессию schema-Job'а. На ПРОДЕ он вдобавок включён
+-- постоянно, в профиле default (k8s/clickhouse/base/users.yaml): без него
+-- движок запрещён не только при создании таблицы, но и при вставке через
+-- remote_write, то есть приём рядов молча не работал бы.
 SET allow_experimental_time_series_table = 1;
 CREATE TABLE IF NOT EXISTS sensitivityscore.prom_ts ENGINE = TimeSeries;
