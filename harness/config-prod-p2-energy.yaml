@@ -10,7 +10,9 @@
 #
 # ЧЕТЫРЕ ПЛЕЧА (карта в harness/submit/k8s_submit.py):
 #   A-default   штатный планировщик Kubernetes — база сравнения;
-#   A-packing   TargetLoadPacking, консолидация до целевой утилизации;
+#   A-packing   TargetLoadPacking, консолидация до целевой утилизации
+#               (75 % — чуть ниже измеренного излома 80 %, задаётся
+#               в k8s/scheduler-config/scheduler-config.yaml);
 #   A-peaks     минимальный скачок мощности по калиброванной модели
 #               (K0/K1/K2 из P1, загружены 20.08.2026);
 #   A-trimaran  load-aware БЕЗ энергетического критерия — контроль класса:
