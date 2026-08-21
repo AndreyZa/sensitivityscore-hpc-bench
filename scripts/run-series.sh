@@ -794,6 +794,16 @@ $validity}"
                 echo "WATCHDOG $(date '+%F %T'): ряды Prometheus догружены в ClickHouse." >> "$LOG"
             else
                 echo "WATCHDOG $(date '+%F %T'): ряды в ClickHouse НЕ догрузились — повторить: make ch-load-metrics" >> "$LOG"
+            fi
+            # Зеркалирование в агрегатор. Без этого шага расхождение копится
+            # каждой серией: у окон энергии многоприёмникового пути нет
+            # вовсе, и они остаются в одном экземпляре (21.08.2026 — 42
+            # окна в агрегаторе против 411 в проде). Неудача не критична,
+            # серия уже записана, но молчать о ней нельзя.
+            if ./scripts/ch-sync.sh >> "$LOG" 2>&1; then
+                echo "WATCHDOG $(date '+%F %T'): база зеркалирована в агрегатор." >> "$LOG"
+            else
+                echo "WATCHDOG $(date '+%F %T'): зеркалирование НЕ прошло — повторить: scripts/ch-sync.sh" >> "$LOG"
             fi || true
         else
             echo "WATCHDOG ERROR $(date '+%F %T'): отчёт не собрался (см. выше) — повторить: make analyze RESULTS_FILE=$results BASELINES_FILE=$baselines" >> "$LOG"
