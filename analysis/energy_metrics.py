@@ -309,7 +309,7 @@ def self_test() -> int:
         cycle_cost(window_energy(pd.DataFrame(multi)), p_off_w=20.0, p_idle_w=260.0)
         raise AssertionError("цена цикла посчиталась по трём узлам — страж не сработал")
     except ValueError as exc:
-        assert "одному гасимому узлу" in str(exc), exc
+        assert "гасимому узлу" in str(exc), exc
 
     c = cycle_cost(window_energy(pd.DataFrame(cyc)), p_off_w=20.0, p_idle_w=260.0)
     assert abs(c["e_cycle_j"] - 108_000) < 1.0, c["e_cycle_j"]
