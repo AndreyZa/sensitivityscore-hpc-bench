@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1040" viewBox="0 0 900 520" role="img" aria-label="Схема стенда: стойка с тремя измерительными узлами и системным узлом, управляющие виртуальные машины, пути питания и измерения"><style>
+  .t-node { font-family: 'IBM Plex Sans', DejaVu Sans, sans-serif; font-size: 13px; font-weight: 600; fill: #171b22; }
+  .t-sub  { font-family: 'IBM Plex Mono', DejaVu Sans Mono, monospace; font-size: 10.5px; fill: #59606d; }
+  .t-band { font-family: 'IBM Plex Sans', DejaVu Sans, sans-serif; font-size: 10.5px; font-weight: 600; letter-spacing: 1px; fill: #59606d; }
+  .t-edge { font-family: 'IBM Plex Mono', DejaVu Sans Mono, monospace; font-size: 10px; fill: #59606d; }
+  .t-watt { font-family: 'IBM Plex Mono', DejaVu Sans Mono, monospace; font-size: 11px; font-weight: 500; fill: #1a626c; }
+  .box { fill: #ffffff; stroke: #dce0e6; stroke-width: 1; }
+  .box-sunk { fill: #eef0f4; stroke: #dce0e6; stroke-width: 1; }
+  .box-foreign { fill: none; stroke: #8a8f99; stroke-width: 1; stroke-dasharray: 3 3; }
+  .rack { fill: none; stroke: #dce0e6; stroke-width: 1; stroke-dasharray: 5 4; }
+  .e-power { stroke: #b45309; stroke-width: 1.8; fill: none; }
+  .e-meas { stroke: #1a626c; stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+  .e-sched { stroke: #59606d; stroke-width: 1.4; fill: none; }
+</style><rect x="0" y="0" width="900" height="520" fill="#ffffff"/>
+
+        <!-- ── Полоса 1: управление ─────────────────────────── -->
+        <text class="t-band" x="20" y="26">Управление</text>
+        <rect class="box" x="20" y="38" width="200" height="62" rx="2"/>
+        <text class="t-node" x="34" y="60">Control-plane</text>
+        <text class="t-sub"  x="34" y="78">3 ВМ, отдельный хост</text>
+        <text class="t-sub"  x="34" y="92">k0s v1.35.6</text>
+
+        <rect class="box" x="240" y="38" width="230" height="62" rx="2"/>
+        <text class="t-node" x="254" y="60">Планировщик</text>
+        <text class="t-sub"  x="254" y="78">профили: default · packing ·</text>
+        <text class="t-sub"  x="254" y="92">peaks · trimaran</text>
+
+        <rect class="box" x="490" y="38" width="190" height="62" rx="2"/>
+        <text class="t-node" x="504" y="60">Контроллер гашения</text>
+        <text class="t-sub"  x="504" y="78">порог простоя → BMC</text>
+        <text class="t-sub"  x="504" y="92">аналог power_save</text>
+
+        <rect class="box-sunk" x="700" y="38" width="180" height="62" rx="2"/>
+        <text class="t-node" x="714" y="60">Точка правды</text>
+        <text class="t-sub"  x="714" y="78">Prometheus → ClickHouse</text>
+        <text class="t-sub"  x="714" y="92">окна энергии, результаты</text>
+
+        <!-- ── Полоса 2: стойка ─────────────────────────────── -->
+        <text class="t-band" x="20" y="146">Стойка (разделяемая)</text>
+        <rect class="rack" x="20" y="158" width="620" height="230" rx="3"/>
+
+        <!-- измерительные узлы -->
+        <g>
+          <rect class="box" x="42" y="182" width="176" height="86" rx="2"/>
+          <text class="t-node" x="56" y="204">wrk-b6</text>
+          <text class="t-sub"  x="56" y="222">R760 · 2×8462Y+ · 64 ядра</text>
+          <text class="t-sub"  x="56" y="236">384 ГБ · SMT off</text>
+          <text class="t-watt" x="56" y="256">263 Вт простой · 730 пик</text>
+        </g>
+        <g>
+          <rect class="box" x="230" y="182" width="176" height="86" rx="2"/>
+          <text class="t-node" x="244" y="204">wrk-b7</text>
+          <text class="t-sub"  x="244" y="222">то же оборудование</text>
+          <text class="t-sub"  x="244" y="236">контроль однородности</text>
+          <text class="t-watt" x="244" y="256">расхождение ≤ 5,4 %</text>
+        </g>
+        <g>
+          <rect class="box" x="418" y="182" width="176" height="86" rx="2"/>
+          <text class="t-node" x="432" y="204">wrk-b8</text>
+          <text class="t-sub"  x="432" y="222">на нём проверен цикл</text>
+          <text class="t-sub"  x="432" y="236">гашения и подъёма</text>
+          <text class="t-watt" x="432" y="256">23,3 Вт выключен</text>
+        </g>
+
+        <!-- системный узел -->
+        <rect class="box-sunk" x="42" y="286" width="176" height="58" rx="2"/>
+        <text class="t-node" x="56" y="308">ss-system</text>
+        <text class="t-sub"  x="56" y="326">служебный: сбор, БД</text>
+
+        <!-- чужое оборудование -->
+        <rect class="box-foreign" x="230" y="286" width="364" height="58" rx="2"/>
+        <text class="t-node" x="244" y="308" fill="#8a8f99">Чужое оборудование</text>
+        <text class="t-sub"  x="244" y="326">8 узлов и 2 коммутатора — 74 % показаний PDU</text>
+
+        <!-- PDU -->
+        <rect class="box" x="612" y="182" width="10" height="162" rx="2"/>
+        <text class="t-sub" x="606" y="362" text-anchor="end">PDU A/B</text>
+
+        <!-- ── Полоса 3: источники измерения ────────────────── -->
+        <text class="t-band" x="20" y="422">Источники измерения</text>
+        <rect class="box" x="20" y="434" width="196" height="62" rx="2"/>
+        <text class="t-node" x="34" y="456">RAPL</text>
+        <text class="t-sub"  x="34" y="474">агент на узле</text>
+        <text class="t-sub"  x="34" y="488">видит 40–67 % розетки</text>
+
+        <rect class="box" x="236" y="434" width="196" height="62" rx="2"/>
+        <text class="t-node" x="250" y="456">BMC · Redfish</text>
+        <text class="t-sub"  x="250" y="474">розеточная мощность узла</text>
+        <text class="t-sub"  x="250" y="488">абсолютные величины</text>
+
+        <rect class="box" x="452" y="434" width="228" height="62" rx="2"/>
+        <text class="t-node" x="466" y="456">PDU · SNMP</text>
+        <text class="t-sub"  x="466" y="474">стойка целиком, шаг 0,1 кВт·ч</text>
+        <text class="t-sub"  x="466" y="488">сверка приростов</text>
+
+        <!-- ── Связи ─────────────────────────────────────────── -->
+        <!-- планирование -->
+        <path class="e-sched" d="M 300 100 L 300 140 L 130 140 L 130 182" marker-end="url(#ar-sched)"/>
+        <path class="e-sched" d="M 320 100 L 320 152 L 318 152 L 318 182" marker-end="url(#ar-sched)"/>
+        <path class="e-sched" d="M 340 100 L 340 140 L 506 140 L 506 182" marker-end="url(#ar-sched)"/>
+        <text class="t-edge" x="352" y="134">размещение подов</text>
+
+        <!-- питание -->
+        <path class="e-power" d="M 585 100 L 585 160 L 545 160 L 545 182" marker-end="url(#ar-power)"/>
+        <text class="t-edge" x="556" y="156" fill="#b45309">включить / выключить</text>
+
+        <!-- измерение вверх -->
+        <path class="e-meas" d="M 118 434 L 118 400 L 700 400 L 700 108" marker-end="url(#ar-meas)"/>
+        <path class="e-meas" d="M 334 434 L 334 408 L 690 408 L 690 108"/>
+        <path class="e-meas" d="M 566 434 L 566 416 L 680 416 L 680 108"/>
+        <text class="t-edge" x="712" y="396" fill="#1a626c">опрос → хранение</text>
+
+        <!-- источники к узлам -->
+        <path class="e-meas" d="M 118 434 L 118 344"/>
+        <path class="e-meas" d="M 334 434 L 334 268"/>
+        <path class="e-meas" d="M 566 434 L 566 268"/>
+        <path class="e-meas" d="M 617 434 L 617 372"/>
+
+        <defs>
+          <marker id="ar-sched" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" fill="#59606d"/>
+          </marker>
+          <marker id="ar-power" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" fill="#b45309"/>
+          </marker>
+          <marker id="ar-meas" markerWidth="7" markerHeight="7" refX="5.5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" fill="#1a626c"/>
+          </marker>
+        </defs>
+      </svg>
