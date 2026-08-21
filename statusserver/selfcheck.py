@@ -220,8 +220,55 @@ def check_recent_pace() -> bool:
     return bool(problems)
 
 
+def check_running_scenarios() -> bool:
+    """Объём прогона считается по запущенным сценариям, а не по всем в конфиге.
+
+    Регрессия 21.08.2026: серия P2 стартовала с SCENARIOS=feed-mid (один
+    уровень подачи из трёх), а страница делила прогресс на все три —
+    «этап 1 %, осталось ~1414 мин» на прогоне длиной пять часов. Ошибка
+    не безобидная: по такой оценке серию хочется убить как зависшую.
+    """
+    from statusserver.progress import expected_by_scenario, running_scenarios
+
+    cfg = {
+        "configs": ["A"],
+        "scheduler_variants": ["default", "packing", "peaks", "trimaran"],
+        "repetitions": 10,
+        "pressure_scenarios": [
+            {"name": "feed-low", "victims": [{"profile": "p", "count": 6}]},
+            {"name": "feed-mid", "victims": [{"profile": "p", "count": 6}]},
+            {"name": "feed-high", "victims": [{"profile": "p", "count": 9}]},
+        ],
+    }
+    ok = True
+
+    marked = ["=== PRESSURE START 10:19:36 epoch=1787296776 сценарии=feed-mid ==="]
+    if running_scenarios(marked) != {"feed-mid"}:
+        print("FAIL running_scenarios: пометка сценариев не разобрана")
+        ok = False
+
+    plain = ["=== PRESSURE START 10:19:36 epoch=1787296776 ==="]
+    if running_scenarios(plain) is not None:
+        print("FAIL running_scenarios: маркер без пометки обязан давать None "
+              "(старые раннеры гонят все сценарии)")
+        ok = False
+
+    full = sum(expected_by_scenario(cfg).values())
+    one = sum(expected_by_scenario(cfg, {"feed-mid"}).values())
+    if one >= full or one != 240:
+        print(f"FAIL expected_by_scenario: один уровень {one}, все {full}")
+        ok = False
+
+    if ok:
+        print("running_scenarios: ok")
+    return ok
+
+
 def main() -> int:
     failed = False
+
+    if not check_running_scenarios():
+        failed = True
 
     for mod in sorted(PKG.glob("*.py")):
         try:

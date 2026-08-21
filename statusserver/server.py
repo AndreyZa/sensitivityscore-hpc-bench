@@ -15,7 +15,8 @@ from pathlib import Path
 from .cluster import kubectl_snapshot, stand_info
 from .data import analysis_digest, baseline_summary, pressure_results
 from .labels import profile_scenario_map
-from .progress import current_activity, expected_rows, progress, run_phase, run_plan
+from .progress import (current_activity, expected_rows, progress, run_phase,
+                       run_plan, running_scenarios)
 from .render import render_html
 
 ARGS: argparse.Namespace  # заполняется в main()
@@ -81,7 +82,10 @@ def collect() -> dict:
     cfg, cfg_error = load_cfg(Path(ARGS.config))
     results = pressure_results(Path(ARGS.results), cfg)
     baselines = baseline_summary(Path(ARGS.baselines))
-    exp = expected_rows(cfg)
+    # Объём считается по СЦЕНАРИЯМ ЭТОГО ПРОГОНА, а не по всем из конфига:
+    # раннер умеет гонять уровни подачи по одному (SCENARIOS=feed-mid).
+    only = running_scenarios(all_lines)
+    exp = expected_rows(cfg, only)
     report_dir = Path(ARGS.report)
     report_info = {
         "exists": (report_dir / "summary.md").exists(),

@@ -611,10 +611,11 @@ def render_html(d: dict) -> str:
         if "series_eta" in prog:
             eta = (
                 f"серия завершится ~{prog['series_eta']} "
-                f"(осталось ~{prog['series_eta_minutes']} мин, это последний этап)"
+                f"(осталось ~{fmt_dur(prog['series_eta_minutes'])}, это последний этап)"
             )
         elif "eta" in prog:
-            eta = f"этап завершится ~{prog['eta']} (осталось ~{prog['eta_minutes']} мин)"
+            eta = (f"этап завершится ~{prog['eta']} "
+                   f"(осталось ~{fmt_dur(prog['eta_minutes'])})")
             if prog.get("series_eta_pending"):
                 eta += " · ETA всей серии — с началом основной фазы"
         else:

@@ -80,13 +80,37 @@ def current_activity(log_lines_all: list[str], prof_map: dict[str, str]) -> dict
     return act
 
 
-def expected_by_scenario(cfg: dict) -> dict[str, int]:
+def running_scenarios(log_lines_all: list[str]) -> set[str] | None:
+    """Какие сценарии реально идут — из пометки в маркере PRESSURE START.
+
+    Раннер P2 умеет гонять уровни подачи по одному
+    (SCENARIOS=feed-mid), и тогда объём втрое меньше записанного в
+    конфиге. Пока страница этого не знала, она делила прогресс на ВСЕ
+    сценарии конфига: процент выходил втрое заниженным, а «осталось» —
+    втрое завышенным. 21.08.2026 это выглядело как «1 %, осталось
+    ~1414 мин» на серии длиной пять часов.
+
+    Пометки нет — значит раннер старый и гонит всё: возвращаем None, и
+    поведение остаётся прежним.
+    """
+    names: set[str] | None = None
+    for l in log_lines_all:
+        m = re.search(r"=== PRESSURE START .*?сценарии=(\S+)", l)
+        if m:
+            found = {s for s in m.group(1).split(",") if s}
+            names = found or None
+    return names
+
+
+def expected_by_scenario(cfg: dict, only: set[str] | None = None) -> dict[str, int]:
     """Ожидаемое число строк основной серии по каждому сценарию (планировщики
     × интенсивности × повторы × задачи) — для per-сценарного прогресса."""
     variants = cfg.get("scheduler_variants", ["default", "sensitivityscore"])
     arms = sum(len(variants) if c in ("A", "B") else 1 for c in cfg.get("configs", []))
     out = {}
     for sc in cfg.get("pressure_scenarios", []):
+        if only is not None and sc["name"] not in only:
+            continue
         out[f"pressure:{sc['name']}"] = (
             arms
             * len(sc.get("aggressors_per_node", [1]))
@@ -96,7 +120,7 @@ def expected_by_scenario(cfg: dict) -> dict[str, int]:
     return out
 
 
-def expected_rows(cfg: dict) -> dict[str, int]:
+def expected_rows(cfg: dict, only: set[str] | None = None) -> dict[str, int]:
     """Ожидаемое число строк по фазам — зеркалит run_experiment.py."""
     profiles = list(cfg.get("profiles", []))
     for sc in cfg.get("pressure_scenarios", []):
@@ -117,7 +141,7 @@ def expected_rows(cfg: dict) -> dict[str, int]:
             unknown = True
         else:
             baseline_exp *= nodes
-    pressure_exp = sum(expected_by_scenario(cfg).values())
+    pressure_exp = sum(expected_by_scenario(cfg, only).values())
     return {
         "baseline": baseline_exp,
         "pressure": pressure_exp,
@@ -253,8 +277,13 @@ def progress(
                 # засыпания хоста), иначе — по всей фазе.
                 rate = recent_pace(log_lines or []) or cur_done / elapsed
                 remaining = max(cur_exp - cur_done, 0) / rate
+                # Дата у финиша, если он не сегодня. Голое «~10:03» на
+                # многочасовом прогоне читается как «сегодня в 10:03» —
+                # то есть как время, которое УЖЕ прошло (21.08.2026).
+                finish = time.localtime(time.time() + remaining)
                 out["eta"] = time.strftime(
-                    "%H:%M", time.localtime(time.time() + remaining)
+                    "%H:%M" if finish.tm_yday == time.localtime().tm_yday
+                    else "%d.%m %H:%M", finish
                 )
                 out["eta_minutes"] = round(remaining / 60)
                 # Финальный ETA серии. Честно он известен только когда текущий
