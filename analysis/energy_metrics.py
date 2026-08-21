@@ -208,7 +208,14 @@ def load_from_ch(run_label: str, stand: str, host: str, port: int,
         "toUnixTimestamp64Milli(start_ts)/1000.0 AS start_ts, "
         "toUnixTimestamp64Milli(end_ts)/1000.0 AS end_ts "
         "FROM results FINAL "
-        "WHERE run_label = %(label)s AND stand = %(stand)s", parameters=params)
+        # Прогрев отсеивается ТЕМ ЖЕ признаком, что и в построителе окон
+        # (scripts/energy-windows-per-arm.py) и в analysis/load.py. Иначе
+        # знаменатель Дж/задача считал бы задачи, которых нет в числителе:
+        # окно плеча их не покрывает, а в счёт они идут. Сейчас в P2 строк
+        # прогрева нет (эталоны пропускаются, и rep у прогрева отрицательный),
+        # поэтому это защита от будущего конфига, а не исправление ошибки.
+        "WHERE run_label = %(label)s AND stand = %(stand)s "
+        "AND approximation != 'warmup'", parameters=params)
     return windows, results
 
 
