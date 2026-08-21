@@ -33,6 +33,7 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -219,6 +220,32 @@ def cycle_cost(energy: pd.DataFrame, p_off_w: float, p_idle_w: float,
 
 # ------------------------------------------------------------------ ввод
 
+def figdata_block(metrics: pd.DataFrame, baseline: str) -> dict:
+    """Числа таблицы политик в том виде, в каком они попадут в статью.
+
+    ЗАЧЕМ. Числа §6 до сих пор переносились в статью руками: analysis
+    печатала Дж/задача, я перепечатывал их в таблицу, и сверять их было
+    не с чем — make check сличает статью с figdata.json, а блока P2 там
+    не было вовсе. Значит, опечатка в таблице не ловилась ничем.
+    Округление здесь не косметика: make check ищет число в тексте как
+    строку, поэтому в figdata кладём ровно то, что будет напечатано —
+    кДж/задача с одним знаком, а не джоули с пробелом-разделителем.
+    """
+    med = metrics.groupby("config")[["j_per_task", "edp", "median_makespan_s"]].median()
+    out = {}
+    for cfg, row in med.iterrows():
+        out[cfg] = {"kj_per_task": round(row["j_per_task"] / 1000.0, 1),
+                    "edp_mln": round(row["edp"] / 1e6, 2),
+                    "makespan_s": round(row["median_makespan_s"], 1)}
+    if baseline in med.index:
+        cmp = compare_arms(metrics, baseline)
+        for _, r in cmp.iterrows():
+            out[r["config"]]["diff_pct"] = round(r["rel_pct"], 2)
+            out[r["config"]]["lo_pct"] = round(r["lo"] / med.loc[baseline, "j_per_task"] * 100, 2)
+            out[r["config"]]["hi_pct"] = round(r["hi"] / med.loc[baseline, "j_per_task"] * 100, 2)
+    return out
+
+
 def load_from_ch(run_label: str, stand: str, host: str, port: int,
                  database: str = "sensitivityscore",
                  scenario: str = "") -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -381,6 +408,8 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-coverage-gaps", action="store_true",
                     help="не валить расчёт при разрыве покрытия (по умолчанию валит)")
     ap.add_argument("--out", default="", help="куда записать JSON")
+    ap.add_argument("--figdata", default="",
+                    help="дописать блок p2.<уровень> в figdata.json статьи")
     args = ap.parse_args(argv)
 
     if args.self_test:
@@ -434,6 +463,17 @@ def main(argv=None) -> int:
                 print(cmp.to_string(index=False,
                                     float_format=lambda v: f"{v:,.2f}"))
         out = {"per_rep": m.to_dict(orient="records")}
+        if args.figdata:
+            key = args.scenario.split(":")[-1] or args.run_label
+            fd = json.loads(Path(args.figdata).read_text(encoding="utf-8"))
+            p2 = fd.setdefault("p2", {})
+            p2["_comment"] = ("политики размещения по уровням подачи; "
+                              "медианы по повторениям, ДИ парного бутстрепа")
+            p2[key] = figdata_block(m, args.baseline)
+            Path(args.figdata).write_text(
+                json.dumps(fd, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+            print(f"figdata обновлён: p2.{key} в {args.figdata}")
 
     if args.out:
         with open(args.out, "w") as f:
