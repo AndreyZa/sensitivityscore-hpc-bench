@@ -46,6 +46,15 @@ import time
 
 _EW = pathlib.Path(__file__).with_name("energy-window.py")
 
+# Селектор измерительных узлов. Стоял `role=bench` — такой метки на стенде
+# НЕТ, узлы помечены `node-role.kubernetes.io/bench` (так их метит
+# scripts/bootstrap-cluster.sh, так их ищет harness/submit/k8s_submit.py).
+# `kubectl get nodes -l role=bench` возвращал пустой список, и контроллер
+# оказывался тихим no-op: тикал, ничего не находил, ничего не писал.
+# Самотест этого поймать не мог — он подставляет фальшивый кластер и до
+# селектора не доходит. (21.08.2026, на сухом прогоне перед Ш8.)
+BENCH_SELECTOR = "node-role.kubernetes.io/bench"
+
 # Поды, которые НЕ считаются работой: они есть на каждом узле всегда, и
 # если считать их, ни один узел никогда не будет признан простаивающим.
 INFRA_NAMESPACES = ("kube-system", "sensitivityscore-monitoring")
@@ -56,8 +65,10 @@ class Cluster:
     """Доступ к кластеру. Отдельным классом ради самотеста: политика не
     должна знать, откуда пришли факты (реальный kubectl или сценарий)."""
 
-    def __init__(self, kubeconfig: str = "", dry_run: bool = False):
+    def __init__(self, kubeconfig: str = "", dry_run: bool = False,
+                 selector: str = BENCH_SELECTOR):
         self.kubeconfig, self.dry_run = kubeconfig, dry_run
+        self.selector = selector
 
     def _kubectl(self, *rest: str) -> list[str]:
         base = ["kubectl"]
@@ -73,7 +84,8 @@ class Cluster:
 
     def nodes(self) -> dict[str, dict]:
         """{имя: {ready, schedulable}} по узлам с ролью bench."""
-        out = json.loads(self._run("get", "nodes", "-l", "role=bench", "-o", "json"))
+        out = json.loads(self._run("get", "nodes", "-l", self.selector,
+                                   "-o", "json"))
         res = {}
         for it in out["items"]:
             name = it["metadata"]["name"]
@@ -631,6 +643,8 @@ def main(argv=None) -> int:
     ap.add_argument("--run-label", default="", help="метка серии для окон")
     ap.add_argument("--ch-host", default="localhost")
     ap.add_argument("--ch-port", type=int, default=8123)
+    ap.add_argument("--node-selector", default=BENCH_SELECTOR,
+                    help=f"метка измерительных узлов (default {BENCH_SELECTOR})")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -641,7 +655,7 @@ def main(argv=None) -> int:
                  "цены цикла (T = E_цикла/(P_простоя − P_выкл)), а не из "
                  "умолчания")
 
-    cluster = Cluster(args.kubeconfig, args.dry_run)
+    cluster = Cluster(args.kubeconfig, args.dry_run, args.node_selector)
     if args.executor == "redfish":
         if not args.idrac_map:
             ap.error("--executor redfish требует --idrac-map")
@@ -668,6 +682,22 @@ def main(argv=None) -> int:
         recorder = WindowRecorder(args.stand, args.run_label,
                                   args.ch_host, args.ch_port,
                                   enabled=not args.dry_run)
+    # Пустой список узлов — НЕ «нечего делать», а неверный селектор или
+    # чужой kubeconfig. Молчаливый no-op здесь дороже всего: контроллер
+    # исправно тикает всю ночь, ничего не гасит, и серия P3 приходит с
+    # нулевой экономией, которую не отличить от отрицательного результата.
+    try:
+        seen = cluster.nodes()
+    except RuntimeError as exc:
+        print(f"кластер недоступен: {exc}", file=sys.stderr)
+        return 2
+    if not seen:
+        print(f"по селектору {cluster.selector!r} не найдено ни одного узла — "
+              f"гасить нечего и политика бессмысленна; проверь --node-selector "
+              f"и --kubeconfig", file=sys.stderr)
+        return 2
+    print(f"узлов под политикой: {', '.join(sorted(seen))}")
+
     while True:
         try:
             tick(policy, cluster, executor, time.time(), recorder=recorder)
