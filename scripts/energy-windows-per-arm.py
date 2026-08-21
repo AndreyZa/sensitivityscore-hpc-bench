@@ -36,6 +36,29 @@ import sys
 
 _EW = pathlib.Path(__file__).with_name("energy-window.py")
 
+# Интерпретатор. Скрипту нужен clickhouse_connect, а он стоит только в
+# analysis/.venv — в системном python3 его нет. Шебанг ведёт именно туда, и
+# раннер серии, вызывающий скрипт по имени, падал на ModuleNotFoundError уже
+# ПОСЛЕ прогона: окна не записывались, данные приходилось добирать руками
+# (P2, 21.08.2026 — и то же самое двумя часами раньше при ручной проверке).
+# Поэтому скрипт сам переходит в нужный интерпретатор, а не требует помнить
+# про venv на каждом месте вызова.
+def _reexec_in_venv() -> None:
+    try:
+        import clickhouse_connect  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    venv = pathlib.Path(__file__).resolve().parent.parent / "analysis/.venv/bin/python"
+    if not venv.exists() or sys.executable == str(venv):
+        return          # нечем помочь — падаем как раньше, с внятной ошибкой
+    import os
+    os.execv(str(venv), [str(venv), str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
+
+
+if "--self-test" not in sys.argv:
+    _reexec_in_venv()
+
 # Те же аргументы, что у калибровки P1 (scripts/p1-calibrate.py): один
 # источник — одно определение, иначе окна серий и окна лестницы окажутся
 # посчитаны по-разному и станут несравнимы.
