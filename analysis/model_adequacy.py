@@ -43,7 +43,7 @@ LOW_UTIL_PCT = 50      # «оба узла загружены не более ч
 TABLE_PODS = (10, 20, 30)   # строки таблицы 5 статьи
 
 
-def read_ladder(path, step: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
+def read_ladder(path, step: float = 10.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Ступени лестницы: утилизация приводится к НОМИНАЛЬНОЙ сетке.
 
     В CSV лежит фактически достигнутая утилизация (0,15 вместо 0, 90,06
@@ -59,11 +59,12 @@ def read_ladder(path, step: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
     процентного пункта означает, что удержание нагрузки не сработало, и
     тогда молча округлять нельзя.
     """
-    xs, ws = [], []
+    xs, ws, ses = [], [], []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             xs.append(float(row["x"]))
             ws.append(float(row["watts"]))
+            ses.append(float(row["se_w"]) if row.get("se_w") else float("nan"))
     x = np.asarray(xs, float)
     nominal = np.round(x / step) * step
     drift = float(np.max(np.abs(x - nominal)))
@@ -71,7 +72,8 @@ def read_ladder(path, step: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError(f"фактическая утилизация отклоняется от номинала на "
                          f"{drift:.2f} п.п. — приводить к сетке нельзя")
     order = np.argsort(nominal)
-    return nominal[order], np.asarray(ws, float)[order]
+    return (nominal[order], np.asarray(ws, float)[order],
+            np.asarray(ses, float)[order])
 
 
 def _rmse(a, b) -> float:
@@ -146,47 +148,111 @@ def peaks_table(x, w, fit) -> dict:
             "best_cost_w": best_cost, "overspend_w": over}
 
 
-def ranking_quality(x, w, fit) -> dict:
+# Полосы утилизации для разбиения ошибок ранжирования. Пара относится к
+# полосе по СРЕДНЕЙ утилизации двух узлов: вопрос «где модель ошибается» —
+# про режим работы кластера, а не про отдельный узел.
+UTIL_BANDS = ((0, 25), (25, 50), (50, 75), (75, 100))
+
+
+def ranking_quality(x, w, fit, tol_w: float = 0.0) -> dict:
     """Доля пар узлов, где модель ранжирует хуже измерения.
 
-    Пара — два разных уровня утилизации; вопрос к модели один: на какой из
-    двух узлов дешевле поставить под. Это НЕ то же, что точность
-    предсказания мощности, и в этом весь смысл проверки.
+    ОПРЕДЕЛЕНИЕ (его требовала рецензия, и оно должно быть одно и то же в
+    коде и в статье). Кандидаты — ступени лестницы, на которые под ещё
+    влезает (u + pod <= 100). Пара — два РАЗНЫХ кандидата при одном
+    размере пода; свип идёт по размерам POD_SIZES. Цена размещения —
+    прирост мощности узла, у модели свой, у измерения свой. Победитель
+    пары — узел с меньшей ценой. Эталон (ground truth) — измеренная
+    кривая, а не третья модель.
+
+    Ничьи. Пара считается НИЧЬЕЙ и в знаменатель не входит, если
+    измеренные цены различаются не более чем на tol_w ватт: при равных
+    ценах решение модели не может быть ни верным, ни неверным. При
+    tol_w = 0 отсекаются только точные совпадения.
     """
-    pairs = wrong = 0
+    pairs = wrong = ties = low_pairs = low_wrong = 0
     excess = []
-    low_pairs = low_wrong = 0
+    by_band = {b: [0, 0] for b in UTIL_BANDS}
     for pod in POD_SIZES:
         cand, model, meas = placement_costs(x, w, fit, pod)
         for i in range(len(cand)):
             for j in range(i + 1, len(cand)):
+                if abs(meas[i] - meas[j]) <= tol_w:
+                    ties += 1
+                    continue
                 pairs += 1
+                mid = (cand[i] + cand[j]) / 2.0
+                band = next((b for b in UTIL_BANDS if b[0] <= mid < b[1]),
+                            UTIL_BANDS[-1])
+                by_band[band][1] += 1
                 low = cand[i] <= LOW_UTIL_PCT and cand[j] <= LOW_UTIL_PCT
                 low_pairs += low
                 pick = i if model[i] <= model[j] else j
                 best = i if meas[i] <= meas[j] else j
-                if pick != best and abs(meas[i] - meas[j]) > 1e-9:
+                if pick != best:
                     wrong += 1
                     low_wrong += low
+                    by_band[band][0] += 1
                     excess.append(abs(meas[pick] - meas[best]))
+    # «Оба узла загружены не более чем наполовину» — отдельное утверждение
+    # статьи, и считается оно по САМИМ узлам, а не по средней пары: полосы
+    # выше отвечают на другой вопрос («в каком режиме кластера модель
+    # ошибается»), и смешивать два определения нельзя.
     return {
-        "pairs": pairs, "wrong": wrong,
+        "pairs": pairs, "wrong": wrong, "ties": ties,
         "wrong_pct": round(100.0 * wrong / pairs) if pairs else 0,
         "median_excess_w": round(float(np.median(excess))) if excess else 0,
         "max_excess_w": round(float(np.max(excess))) if excess else 0,
         "low_util_wrong_pct": round(100.0 * low_wrong / low_pairs) if low_pairs else 0,
+        "by_band_pct": [round(100.0 * v[0] / v[1]) if v[1] else 0
+                        for v in by_band.values()],
+        "by_band_pairs": [v[1] for v in by_band.values()],
     }
 
 
-def compute(csv_path) -> dict:
-    x, w = read_ladder(csv_path)
+def ranking_ci(x, w, se, tol_w: float = 0.0, n_boot: int = 2000,
+               seed: int = 0) -> tuple[float, float]:
+    """Интервал доли неверно ранжированных пар.
+
+    Доля — детерминированная функция лестницы, поэтому её неопределённость
+    целиком приходит от неопределённости ступеней: каждая ступень
+    разыгрывается как N(измеренная мощность, стандартная ошибка ступени),
+    модель переоценивается заново, свип повторяется. Перцентильный
+    интервал по розыгрышам.
+    """
+    if not np.all(np.isfinite(se)):
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n_boot):
+        wb = w + rng.normal(0.0, se)
+        try:
+            fb = fpm.fit_points(x, wb)
+        except Exception:
+            continue
+        out.append(ranking_quality(x, wb, fb, tol_w)["wrong_pct"])
+    if not out:
+        return float("nan"), float("nan")
+    return (float(np.percentile(out, 2.5)), float(np.percentile(out, 97.5)))
+
+
+def compute(csv_path, tol_w: float = 0.0, n_boot: int = 2000) -> dict:
+    x, w, se = read_ladder(csv_path)
     fit = fpm.fit_points(x, w)
     loo = loo_compare(x, w)
+    rank = ranking_quality(x, w, fit, tol_w)
+    lo, hi = ranking_ci(x, w, se, tol_w, n_boot)
+    if np.isfinite(lo):
+        rank["wrong_lo_pct"], rank["wrong_hi_pct"] = round(lo), round(hi)
+    # Чувствительность к допуску: пары, где цены различаются на пару ватт,
+    # практически равнозначны, и рецензия справедливо спрашивает, не на них
+    # ли держится результат.
+    rank["wrong_pct_tol2w"] = ranking_quality(x, w, fit, 2.0)["wrong_pct"]
     return {
         "modelfit": {"loo_exp_w": loo["exp"], "loo_lin_w": loo["lin"],
                      "loo_piecewise_w": loo["piecewise"]},
         "peaks_decisions": peaks_table(x, w, fit),
-        "ranking": ranking_quality(x, w, fit),
+        "ranking": rank,
     }
 
 
@@ -219,7 +285,7 @@ def self_test() -> int:
     w = 300.0 + 4.0 * np.exp(0.046 * x)
     fit = fpm.fit_points(x, w)
     rq = ranking_quality(x, w, fit)
-    assert rq["pairs"] == 145, rq["pairs"]
+    assert rq["pairs"] + rq["ties"] == 145, rq
     assert rq["wrong"] == 0, rq
     loo = loo_compare(x, w)
     assert loo["exp"] < 1.0, loo
@@ -236,7 +302,13 @@ def self_test() -> int:
     w2 = np.array([260, 310, 320, 330, 340, 350, 360, 370, 380, 460, 540.])
     fit2 = fpm.fit_points(x, w2)
     rq2 = ranking_quality(x, w2, fit2)
-    assert rq2["wrong"] == 25 and rq2["low_util_wrong_pct"] == 29, rq2
+    # Ничьи из знаменателя исключены: при равных измеренных ценах решение
+    # модели не может быть ни верным, ни неверным. На этой синтетике их
+    # много по построению (нижняя ветвь линейна), и проверить надо именно
+    # это — что они посчитаны отдельно, а не записаны в верные.
+    assert rq2["wrong"] == 25 and rq2["ties"] == 56, rq2
+    assert rq2["pairs"] == 145 - 56, rq2
+    assert rq2["by_band_pct"][0] > rq2["by_band_pct"][-1], rq2["by_band_pct"]
     loo2 = loo_compare(x, w2)
     assert loo2["piecewise"] < loo2["exp"], loo2
 
@@ -253,6 +325,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--csv", default=str(HERE / "p1-calib" / "calib-ipmi.csv"))
+    ap.add_argument("--tol", type=float, default=0.0,
+                    help="допуск практически равных цен, Вт (default 0)")
+    ap.add_argument("--boot", type=int, default=2000,
+                    help="розыгрышей для интервала доли (default 2000)")
     ap.add_argument("--check", default="", help="figdata.json для сверки")
     ap.add_argument("--out", default="")
     args = ap.parse_args(argv)
@@ -260,7 +336,7 @@ def main(argv=None) -> int:
     if args.self_test:
         return self_test()
 
-    result = compute(args.csv)
+    result = compute(args.csv, args.tol, args.boot)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.out:
         pathlib.Path(args.out).write_text(
