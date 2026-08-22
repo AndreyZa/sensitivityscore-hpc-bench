@@ -179,8 +179,6 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def main():
-    global ARGS
 def runner_for_log(log_path) -> str | None:
     """Скрипт-раннер серии по пути её лога: harness/prod-p3-energy.log ->
     harness/run-prod-p3-energy.sh.
@@ -198,6 +196,8 @@ def runner_for_log(log_path) -> str | None:
         return None
 
 
+def main():
+    global ARGS
     p = argparse.ArgumentParser(
         description="локальная HTTP-страница прогресса прогонов харнесса"
     )

@@ -315,6 +315,52 @@ def check_passes() -> bool:
     return ok
 
 
+def check_server_starts() -> bool:
+    """Сервер обязан ПОДНЯТЬСЯ и отдать /json, а не просто импортироваться.
+
+    Регрессия 22.08.2026: вспомогательная функция была вставлена внутрь
+    main() на нулевом отступе, из-за чего тело main() оборвалось после
+    первой строки. Модуль импортировался, py_compile проходил, самотест
+    был зелёным — а контейнер молча выходил с кодом 0, не подняв ни
+    сокета. Ловится это только настоящим запуском.
+    """
+    import socket
+    import subprocess
+    import time
+    import urllib.request
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "statusserver", "--port", str(port),
+         "--bind", "127.0.0.1"],
+        cwd=str(PKG.parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(40):
+            if proc.poll() is not None:
+                out = (proc.stdout.read() or b"").decode("utf-8", "replace")
+                print(f"FAIL server: процесс завершился с кодом {proc.returncode}, "
+                      f"не подняв сокет\n{out[-400:]}")
+                return False
+            try:
+                with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/json", timeout=1) as r:
+                    if r.status == 200:
+                        print("server starts: ok (/json отвечает)")
+                        return True
+            except Exception:
+                time.sleep(0.25)
+        print("FAIL server: /json не ответил за 10 с")
+        return False
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def main() -> int:
     failed = False
 
@@ -322,6 +368,9 @@ def main() -> int:
         failed = True
 
     if not check_passes():
+        failed = True
+
+    if not check_server_starts():
         failed = True
 
     for mod in sorted(PKG.glob("*.py")):
