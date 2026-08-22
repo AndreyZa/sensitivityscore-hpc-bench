@@ -95,14 +95,21 @@ def window_energy(windows: pd.DataFrame, source: str = DEFAULT_SOURCE) -> pd.Dat
 
 
 def coverage(energy: pd.DataFrame, results: pd.DataFrame,
-             tolerance_s: float = 5.0) -> list[str]:
+             tolerance_s: float = 5.0, kind: str = "arm") -> list[str]:
     """Задачи каждого (config, rep) обязаны лежать внутри своего окна.
 
     Допуск — на разъезд часов узла и агрегатора; он односторонним быть не
-    может, поэтому применяется к обеим границам."""
+    может, поэтому применяется к обеим границам.
+
+    Проверяются ТОЛЬКО окна плеч. Под той же меткой серии живут окна
+    переходов cycle-off/cycle-boot, которые пишет контроллер гашения, и
+    задач в них нет по построению — узел в этот момент выключен или
+    поднимается. Без фильтра проверка объявляла их разрывом покрытия и
+    отказывалась считать Дж/задача (22.08.2026, первый же P3 с гашением).
+    """
     problems = []
     for _, row in energy.iterrows():
-        if pd.isna(row["rep"]):
+        if pd.isna(row["rep"]) or row.get("kind") != kind:
             continue
         tasks = results[(results["config"] == row["config"])
                         & (results["rep"] == row["rep"])]
