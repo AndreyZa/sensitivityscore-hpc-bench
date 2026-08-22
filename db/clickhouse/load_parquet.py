@@ -165,7 +165,8 @@ def coerce_rows(df: pd.DataFrame, stand: str, run_label: str, source_file: str) 
 
 
 def _guard_run_label(client, table: str, source_file: str, n_rows: int, args,
-                     scenarios: set[str] | None = None) -> None:
+                     scenarios: set[str] | None = None,
+                     configs: set[str] | None = None) -> None:
     """Не дать одной серии молча затереть другую под тем же run_label.
 
     ReplacingMergeTree схлопывает по ключу сортировки, а не по серии: если
@@ -190,16 +191,25 @@ def _guard_run_label(client, table: str, source_file: str, n_rows: int, args,
     # (22.08.2026, feed-high). Защита при этом сохраняется там, где она и
     # нужна: повторная заливка ТОГО ЖЕ сценария с другим числом строк
     # по-прежнему останавливает.
-    scen_filter = ""
+    # ...и в разрезе ПЛЕЧА тоже. Фаза P3 идёт двумя проходами под одной
+    # меткой и одним сценарием, но с разными плечами (A-peaks и
+    # A-peaks-gash) — и это два разных parquet, так задумано. Плечо, как и
+    # сценарий, входит в ключ сортировки, поэтому строки не смешиваются.
+    # Без этого второй проход заливаться отказывался: «под этой меткой уже
+    # лежат другие файлы» (22.08.2026, сразу после первого же P3).
+    flt = ""
     if scenarios:
-        scen_filter = " AND scenario IN {sc:Array(String)}"
+        flt += " AND scenario IN {sc:Array(String)}"
+    if configs:
+        flt += " AND config IN {cf:Array(String)}"
     try:
         rs = client.query(
             f"SELECT source_file, count() FROM {args.database}.{table} FINAL "
             "WHERE stand = {s:String} AND run_label = {l:String}"
-            + scen_filter + " GROUP BY source_file",
+            + flt + " GROUP BY source_file",
             parameters={"s": args.stand, "l": args.run_label,
-                        "sc": sorted(scenarios or [])},
+                        "sc": sorted(scenarios or []),
+                        "cf": sorted(configs or [])},
         ).result_rows
     except Exception as e:
         # Таблицы ещё нет (первая заливка) — это норма. Но так же выглядела бы
@@ -255,10 +265,12 @@ def _load_one(path: Path, table: str, args) -> int:
             host=args.host, port=args.port, username=args.user,
             password=args.password, database=args.database,
         )
-        scen = set()
+        scen, confs = set(), set()
         if "scenario" in df.columns:
             scen = {str(v) for v in df["scenario"].dropna().unique()}
-        _guard_run_label(client, table, path.name, len(rows), args, scen)
+        if "config" in df.columns:
+            confs = {str(v) for v in df["config"].dropna().unique()}
+        _guard_run_label(client, table, path.name, len(rows), args, scen, confs)
         client.insert(table, rows, column_names=INSERT_COLUMNS)
     except OperationalError as e:
         raise SystemExit(f"ERROR: нет связи с ClickHouse {args.host}:{args.port} — {e}")
