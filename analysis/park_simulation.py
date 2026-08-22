@@ -150,16 +150,28 @@ def simulate(arrivals: np.ndarray, durations: np.ndarray, cores: np.ndarray,
     }
 
 
-def trace_from_ch(run_label: str, stand: str, host: str, port: int):
-    """Трасса из настоящей серии: приходы, длительности, запрошенные ядра."""
+def trace_from_ch(run_label: str, stand: str, host: str, port: int,
+                  scenario: str = ""):
+    """Трасса из настоящей серии: приходы, длительности, запрошенные ядра.
+
+    СЦЕНАРИЙ ОБЯЗАТЕЛЕН, когда под меткой их несколько. Уровни подачи
+    гоняются подряд с многочасовыми перерывами между сериями, и без
+    фильтра эти перерывы попадают в трассу как простой, который якобы
+    можно погасить: на метке p2-energy без сценария выходило 14,7-18,8 %
+    экономии против 6-8 % на любом отдельном уровне. Разрыв между
+    сериями — это не свойство нагрузки, а свойство расписания
+    экспериментов, и в оценку для парка ему хода нет.
+    """
     import clickhouse_connect
     c = clickhouse_connect.get_client(host=host, port=port, username="default",
                                       database="sensitivityscore")
     df = c.query_df(
         "SELECT toUnixTimestamp64Milli(start_ts)/1000. AS a, makespan_s AS d "
         "FROM results FINAL WHERE run_label = %(l)s AND stand = %(s)s "
-        "AND makespan_s IS NOT NULL AND approximation != 'warmup' ORDER BY a",
-        parameters={"l": run_label, "s": stand})
+        "AND makespan_s IS NOT NULL AND approximation != 'warmup'"
+        + (" AND scenario = %(sc)s" if scenario else "")
+        + " ORDER BY a",
+        parameters={"l": run_label, "s": stand, "sc": scenario})
     if df.empty:
         raise SystemExit(f"нет задач с меткой {run_label}")
     a = df["a"].to_numpy(float)
@@ -199,6 +211,8 @@ def main() -> int:
     ap.add_argument("--e-cycle-kj", type=float, default=57.0)
     ap.add_argument("--run-label", default="p2-energy")
     ap.add_argument("--stand", default="prod")
+    ap.add_argument("--scenario", default="",
+                    help="уровень подачи, если под меткой их несколько")
     ap.add_argument("--ch-host", default="localhost")
     ap.add_argument("--ch-port", type=int, default=8123)
     ap.add_argument("--out", default="")
@@ -207,7 +221,8 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    a, d, c = trace_from_ch(args.run_label, args.stand, args.ch_host, args.ch_port)
+    a, d, c = trace_from_ch(args.run_label, args.stand, args.ch_host,
+                            args.ch_port, args.scenario)
     # Трасса снята на трёх узлах; на парк большего размера её масштабируем
     # по числу узлов, иначе пятьдесят узлов простаивали бы почти всегда и
     # экономия вышла бы завышенной до бессмыслицы.
