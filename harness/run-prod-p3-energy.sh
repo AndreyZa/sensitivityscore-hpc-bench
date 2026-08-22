@@ -52,10 +52,22 @@ export HARNESS_OVERRIDE_ML_INFERENCE_CPU=28 \
 
 echo "=== PRESSURE START $(date +%H:%M:%S) epoch=$(date +%s) сценарии=sparse ==="
 
+# Какие проходы гнать. Умолчание — оба, как в основном прогоне фазы.
+# P3_PASSES=gash-only пропускает первый проход и гонит только тот, что под
+# контроллером: так добирается третье плечо (config ...-pair.yaml), не
+# переснимая заново вариант без гашения. Дозы, контроллер и уборка при
+# этом те же самые — ради этого ручка и сделана здесь, а не отдельным
+# скриптом: разъехавшиеся дозы сделали бы плечи несопоставимыми.
+P3_PASSES=${P3_PASSES:-both}
+GASH_CONFIG=${GASH_CONFIG:-config-prod-p3-energy-gash.yaml}
+
 # ---- проход 1: без гашения ------------------------------------------------
-.venv/bin/python run_experiment.py --config config-prod-p3-energy.yaml \
-    --pressure --scenarios sparse
-rc1=$?
+rc1=0
+if [ "$P3_PASSES" = "both" ]; then
+    .venv/bin/python run_experiment.py --config config-prod-p3-energy.yaml \
+        --pressure --scenarios sparse
+    rc1=$?
+fi
 
 # ---- проход 2: контроллер гашения работает --------------------------------
 # --once не годится: политика обязана жить весь проход. Порт-форвард к
@@ -79,7 +91,7 @@ sleep 5
 kill -0 $CTL 2>/dev/null || { echo "контроллер не поднялся, см. $CTL_LOG"; cat "$CTL_LOG"; exit 1; }
 echo "контроллер гашения: pid $CTL, порог ${SUSPEND_TIME} c, лог $CTL_LOG"
 
-.venv/bin/python run_experiment.py --config config-prod-p3-energy-gash.yaml \
+.venv/bin/python run_experiment.py --config "$GASH_CONFIG" \
     --pressure --scenarios sparse
 rc2=$?
 
