@@ -66,7 +66,14 @@ def arm_windows(rows: list[dict], min_tasks: int = 1) -> list[dict]:
     Пропускаются: warmup-строки, строки без времён (ошибка размещения) и
     группы, где задач меньше min_tasks — окно из одной уцелевшей задачи
     даёт Дж/задача, не сопоставимую с полными повторениями."""
-    groups: dict[tuple[str, int], list[dict]] = {}
+    # СЦЕНАРИЙ ВХОДИТ В КЛЮЧ ГРУППЫ. Под одной меткой серии живут несколько
+    # уровней подачи, и повторения в каждом нумеруются с нуля: без сценария
+    # в ключе окно A-default/rep0 склеивается из feed-mid и feed-low и
+    # растягивается на двенадцать часов вместо десяти минут. Это не гипотеза
+    # — так и произошло 22.08.2026: окна ушли в ClickHouse длиной 600 минут
+    # и, поскольку ts_start у склейки совпадает с началом первого сценария,
+    # ЗАМЕНИЛИ собой верные окна feed-mid в ReplacingMergeTree.
+    groups: dict[tuple[str, str, int], list[dict]] = {}
     for r in rows:
         # Прогрев помечен в results полем approximation="warmup" — отдельной
         # колонки warmup в таблице нет и не было. Скрипт запрашивал именно
@@ -79,9 +86,10 @@ def arm_windows(rows: list[dict], min_tasks: int = 1) -> list[dict]:
             continue
         if r.get("start_ts") is None or r.get("end_ts") is None:
             continue
-        groups.setdefault((r["config"], int(r["rep"])), []).append(r)
+        groups.setdefault((str(r.get("scenario", "")), r["config"],
+                           int(r["rep"])), []).append(r)
     out = []
-    for (config, rep), tasks in sorted(groups.items()):
+    for (_scenario, config, rep), tasks in sorted(groups.items()):
         if len(tasks) < min_tasks:
             continue
         out.append({
@@ -94,16 +102,18 @@ def arm_windows(rows: list[dict], min_tasks: int = 1) -> list[dict]:
 
 
 def fetch_results(stand: str, run_label: str, host: str, port: int,
-                  database: str = "sensitivityscore") -> list[dict]:
+                  database: str = "sensitivityscore",
+                  scenario: str = "") -> list[dict]:
     import clickhouse_connect
     client = clickhouse_connect.get_client(host=host, port=port,
                                            username="default", database=database)
     df = client.query_df(
-        "SELECT config, rep, "
+        "SELECT config, rep, scenario, "
         "toUnixTimestamp64Milli(start_ts)/1000.0 AS start_ts, "
         "toUnixTimestamp64Milli(end_ts)/1000.0 AS end_ts, approximation "
-        "FROM results FINAL WHERE stand = %(stand)s AND run_label = %(label)s",
-        parameters={"stand": stand, "label": run_label})
+        "FROM results FINAL WHERE stand = %(stand)s AND run_label = %(label)s"
+        + (" AND scenario = %(scenario)s" if scenario else ""),
+        parameters={"stand": stand, "label": run_label, "scenario": scenario})
     return df.to_dict(orient="records")
 
 
@@ -127,7 +137,8 @@ def run(args) -> int:
     if args.results_file:
         rows = fetch_results_file(args.results_file)
     else:
-        rows = fetch_results(args.stand, args.run_label, args.ch_host, args.ch_port)
+        rows = fetch_results(args.stand, args.run_label, args.ch_host,
+                             args.ch_port, scenario=args.scenario)
     if not rows:
         print(f"результатов с меткой {args.run_label} нет", file=sys.stderr)
         return 1
@@ -205,6 +216,19 @@ def self_test() -> int:
         assert x["t0"] <= min(g["start_ts"] for g in grp), x
         assert x["t1"] >= max(g["end_ts"] for g in grp), x
 
+    # Два сценария под одной меткой: повторения нумеруются заново, и без
+    # сценария в ключе окно A/rep0 склеилось бы из обоих — двенадцать часов
+    # вместо десяти минут. Ровно это и случилось на живой базе 22.08.2026.
+    two = [
+        {"config": "A", "rep": 0, "scenario": "pressure:feed-mid",
+         "start_ts": 100.0, "end_ts": 200.0, "approximation": "none"},
+        {"config": "A", "rep": 0, "scenario": "pressure:feed-low",
+         "start_ts": 40000.0, "end_ts": 40100.0, "approximation": "none"},
+    ]
+    ws = arm_windows(two)
+    assert len(ws) == 2, ws
+    assert max(x["t1"] - x["t0"] for x in ws) < 200, ws
+
     print("self-test: ок (группировка по плечам и повторениям, отсев warmup "
           "и ошибок размещения, min-tasks, покрытие границ)")
     return 0
@@ -221,6 +245,9 @@ def main(argv=None) -> int:
                     help="пропускать повторения с меньшим числом задач")
     ap.add_argument("--ch-host", default="localhost")
     ap.add_argument("--ch-port", type=int, default=8123)
+    ap.add_argument("--scenario", default="",
+                    help="уровень подачи, если под меткой их несколько "
+                         "(без него окна разных сценариев склеиваются)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--results-file", default="",
                     help="parquet харнесса вместо ClickHouse (окна по ходу "
