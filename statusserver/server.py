@@ -70,6 +70,44 @@ def load_cfg(path: Path) -> tuple[dict, str | None]:
         return {}, f"{type(e).__name__}: {e}"
 
 
+def current_pass_files(log_lines, cfg_path: Path) -> tuple[Path, Path | None]:
+    """Конфиг и файл результатов ТЕКУЩЕГО прохода харнесса.
+
+    ЗАЧЕМ. Многопроходная серия (P3) идёт двумя запусками с РАЗНЫМИ
+    конфигами и разными файлами результатов, а странице при развёртывании
+    передан только первый. После перехода ко второму проходу она
+    продолжала считать строки первого — то есть показывала «осталось 0
+    минут» посреди трёхчасового прохода.
+
+    Конфиг текущего прохода виден в логе (раннер идёт с set -x). Файл
+    результатов берётся из секции output этого конфига — там он и задан.
+    """
+    cur = None
+    for line in log_lines or []:
+        if "--pressure" not in line:
+            continue
+        m = re.search(r"run_experiment\.py\s+--config\s+(\S+)", line)
+        if m:
+            cur = m.group(1).rsplit("/", 1)[-1]
+    if not cur or cur == cfg_path.name:
+        return cfg_path, None
+    cand = cfg_path.with_name(cur)
+    if not cand.exists():
+        return cfg_path, None
+    cfg, err = load_cfg(cand)
+    if err:
+        return cfg_path, None
+    out = (cfg.get("output") or {})
+    name = out.get("results_file")
+    if not name:
+        return cand, None
+    # Файл отдаём даже если его ещё нет: проход только начался и строк не
+    # написал, и «ноль сделано» — это правда. Возврат к файлу прошлого
+    # прохода показал бы его законченные 100 % и «осталось 0 минут»
+    # посреди трёхчасового прохода (ровно это и наблюдалось 22.08).
+    return cand, Path(ARGS.results).with_name(name)
+
+
 def collect() -> dict:
     log_path = Path(ARGS.log)
     all_lines = tail_lines(log_path, 4000)
@@ -80,8 +118,9 @@ def collect() -> dict:
     # «эталонные прогоны 100%».
     if ARGS.scope == "baseline" and phase == "baseline" and "baseline" in ends:
         phase = "DONE"
-    cfg, cfg_error = load_cfg(Path(ARGS.config))
-    results = pressure_results(Path(ARGS.results), cfg)
+    cfg_path, res_path = current_pass_files(all_lines, Path(ARGS.config))
+    cfg, cfg_error = load_cfg(cfg_path)
+    results = pressure_results(res_path or Path(ARGS.results), cfg)
     baselines = baseline_summary(Path(ARGS.baselines))
     # Объём считается по СЦЕНАРИЯМ ЭТОГО ПРОГОНА, а не по всем из конфига:
     # раннер умеет гонять уровни подачи по одному (SCENARIOS=feed-mid).
@@ -103,7 +142,7 @@ def collect() -> dict:
         # Причины, по которым цифрам ниже верить нельзя. Пусто в норме;
         # render показывает их плашкой, /json отдаёт как есть.
         "config_error": cfg_error,
-        "config_path": str(ARGS.config),
+        "config_path": str(cfg_path),
         "topology_unknown": exp.get("topology_unknown", False),
         "activity": current_activity(all_lines, profile_scenario_map(cfg)),
         "progress": progress(
