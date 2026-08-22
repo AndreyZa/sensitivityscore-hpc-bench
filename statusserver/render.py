@@ -608,7 +608,17 @@ def render_html(d: dict) -> str:
         # пишем про серию, не дублируя ту же цифру дважды. Раньше основной
         # фазы финальный ETA не оценивается (см. progress.progress) — вместо
         # ложной цифры страница говорит, когда оценка появится.
-        if "series_eta" in prog:
+        cur_pass, n_passes = prog.get("pass", (1, 1))
+        if "series_eta" in prog and n_passes > 1:
+            # Многопроходная серия: финиш серии — не финиш этого прохода,
+            # и говорить «последний этап» нельзя. Оценка остатка включает
+            # проходы, которые ещё не начинались, — об этом сказано прямо.
+            eta = (
+                f"серия завершится ~{prog['series_eta']} "
+                f"(осталось ~{fmt_dur(prog['series_eta_minutes'])}, "
+                f"вместе с оставшимися проходами)"
+            )
+        elif "series_eta" in prog:
             eta = (
                 f"серия завершится ~{prog['series_eta']} "
                 f"(осталось ~{fmt_dur(prog['series_eta_minutes'])}, это последний этап)"
@@ -621,6 +631,9 @@ def render_html(d: dict) -> str:
         else:
             eta = ""
         phase_pct = f"этап «{phase_word}»: {prog['phase_pct']}%" if "phase_pct" in prog else ""
+        if n_passes > 1:
+            phase_pct = (f"проход {cur_pass} из {n_passes} · " + phase_pct
+                         if phase_pct else f"проход {cur_pass} из {n_passes}")
         elapsed = (
             f"идёт уже {fmt_dur(prog['phase_elapsed_min'])}"
             if prog.get("phase_elapsed_min") else ""

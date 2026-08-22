@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import re
 import time
 
@@ -231,15 +232,65 @@ def recent_pace(log_lines: list[str], window: int = 12) -> float | None:
     return rate
 
 
+def passes(log_lines_all: list[str], runner: str | None) -> tuple[int, int]:
+    """Какой проход харнесса идёт и сколько их всего в серии.
+
+    ЗАЧЕМ. Фаза P3 состоит из ДВУХ запусков харнесса под одной меткой:
+    первый без гашения, второй с работающим контроллером — иначе внешний
+    контроллер с состоянием не включить на часть плеч. Странице
+    передаётся конфиг первого прохода, о втором она не знает, и в конце
+    первого объявляла «серия завершится, это последний этап», когда
+    сделана половина фазы (поймано 22.08.2026 в живом прогоне).
+
+    Текущий проход считается по логу: раннер идёт с `set -x`, поэтому
+    каждый запуск виден строкой с `run_experiment.py --config <файл>`.
+    Общее число проходов — по самому раннеру: он лежит рядом с логом и
+    читается как текст, ничего запускать не нужно. Логом общее число не
+    определить по построению: пока второй проход не начался, его в логе
+    нет.
+    """
+    # Считаются только ПРОХОДЫ ПОД НАГРУЗКОЙ. Эталонный запуск идёт тем же
+    # run_experiment.py с тем же конфигом, но это отдельная фаза, которую
+    # страница и так моделирует; без фильтра по --pressure однопроходная
+    # серия с эталонами выглядела бы двухпроходной.
+    seen: list[str] = []
+    for line in log_lines_all or []:
+        if "--pressure" not in line:
+            continue
+        m = re.search(r"run_experiment\.py\s+--config\s+(\S+)", line)
+        if m:
+            cfg = m.group(1).rsplit("/", 1)[-1]
+            if not seen or seen[-1] != cfg:
+                seen.append(cfg)
+    cur = len(seen) or 1
+    total = cur
+    try:
+        if runner:
+            text = pathlib.Path(runner).read_text(encoding="utf-8")
+            # Перенос строки обратным слешем склеиваем: в раннере вызов
+            # разбит на две строки, и построчный поиск нашёл бы «--pressure»
+            # отдельно от «run_experiment.py», то есть ноль проходов.
+            joined = text.replace("\\\n", " ")
+            n = len([ln for ln in joined.splitlines()
+                     if "run_experiment.py" in ln and "--pressure" in ln])
+            total = max(n, cur)
+    except OSError:
+        pass
+    return cur, total
+
+
 def progress(
     phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict,
     scope: str = "full", log_lines: list[str] | None = None,
+    passes_info: tuple[int, int] | None = None,
 ) -> dict:
     """Процент (текущей фазы и всего прогона) + ETA по скорости текущей фазы.
     После завершения — итоговая длительность. scope="baseline" — прогон
     только эталонный (добор): основная серия не входит в общий объём, иначе
     бар делил бы сделанное на строки, которых в этом прогоне не будет."""
     out: dict = {}
+    if passes_info and passes_info != (1, 1):
+        out["pass"] = passes_info
     b_exp, p_exp = exp.get("baseline", 0), exp.get("pressure", 0)
     if scope == "baseline":
         p_exp = 0
@@ -294,8 +345,23 @@ def progress(
                 # разы, хуже отсутствующего. Рендер в этом случае прямо
                 # обещает оценку с началом основной фазы.
                 if phase == "pressure" or not p_exp:
-                    out["series_eta"] = out["eta"]
-                    out["series_eta_minutes"] = out["eta_minutes"]
+                    # ...но только если это последний ПРОХОД харнесса.
+                    # Многопроходная серия (P3) кончается не здесь.
+                    cur_pass, n_passes = out.get("pass", (1, 1))
+                    if cur_pass >= n_passes:
+                        out["series_eta"] = out["eta"]
+                        out["series_eta_minutes"] = out["eta_minutes"]
+                    else:
+                        # Оставшиеся проходы оцениваем по текущему: у них
+                        # тот же поток и то же число повторений, разница
+                        # лишь в работающем контроллере гашения.
+                        rest = (n_passes - cur_pass) * (elapsed + remaining)
+                        total_left = remaining + rest
+                        fin = time.localtime(time.time() + total_left)
+                        out["series_eta"] = time.strftime(
+                            "%H:%M" if fin.tm_yday == time.localtime().tm_yday
+                            else "%d.%m %H:%M", fin)
+                        out["series_eta_minutes"] = round(total_left / 60)
                 else:
                     out["series_eta_pending"] = True
     elif phase == "DONE":

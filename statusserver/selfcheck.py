@@ -264,10 +264,64 @@ def check_running_scenarios() -> bool:
     return ok
 
 
+def check_passes() -> bool:
+    """Многопроходная серия не должна выглядеть законченной на середине.
+
+    Регрессия 22.08.2026: фаза P3 состоит из двух запусков харнесса под
+    одной меткой (без гашения и с гашением), страница знает конфиг только
+    первого — и в конце первого прохода писала «серия завершится, это
+    последний этап», когда сделана половина фазы.
+    """
+    import tempfile
+    from statusserver.progress import passes
+
+    ok = True
+    with tempfile.TemporaryDirectory() as d:
+        two = Path(d) / "run-prod-p3.sh"
+        # Вызов в раннере разбит переносом строки — именно так он и записан,
+        # и построчный поиск на нём ломается.
+        two.write_text(
+            "#!/bin/bash\n"
+            ".venv/bin/python run_experiment.py --config a.yaml \\\n"
+            "    --pressure --scenarios sparse\n"
+            ".venv/bin/python run_experiment.py --config a-gash.yaml \\\n"
+            "    --pressure --scenarios sparse\n", encoding="utf-8")
+        one = Path(d) / "run-prod-p2.sh"
+        one.write_text(
+            "#!/bin/bash\n"
+            ".venv/bin/python run_experiment.py --config b.yaml --baseline\n"
+            ".venv/bin/python run_experiment.py --config b.yaml \\\n"
+            "    --pressure --scenarios feed-high\n", encoding="utf-8")
+
+        log1 = ["+ .venv/bin/python run_experiment.py --config a.yaml --pressure"]
+        log2 = log1 + ["+ .venv/bin/python run_experiment.py --config a-gash.yaml --pressure"]
+        cases = [
+            ("первый проход из двух", passes(log1, str(two)), (1, 2)),
+            ("второй проход из двух", passes(log2, str(two)), (2, 2)),
+            # Эталонный запуск идёт тем же скриптом и тем же конфигом, но
+            # проходом не является: иначе однопроходная серия выглядела бы
+            # двухпроходной.
+            ("однопроходная с эталонами",
+             passes(["+ x run_experiment.py --config b.yaml --baseline",
+                     "+ x run_experiment.py --config b.yaml --pressure"], str(one)), (1, 1)),
+            ("раннера нет", passes(log1, None), (1, 1)),
+        ]
+    for name, got, want in cases:
+        if got != want:
+            print(f"FAIL passes ({name}): {got}, ожидалось {want}")
+            ok = False
+    if ok:
+        print("passes: ok (проход считается по логу, всего проходов — по раннеру)")
+    return ok
+
+
 def main() -> int:
     failed = False
 
     if not check_running_scenarios():
+        failed = True
+
+    if not check_passes():
         failed = True
 
     for mod in sorted(PKG.glob("*.py")):

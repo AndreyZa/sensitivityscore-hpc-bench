@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 import json
 import os
 import re
@@ -15,8 +16,8 @@ from pathlib import Path
 from .cluster import kubectl_snapshot, stand_info
 from .data import analysis_digest, baseline_summary, pressure_results
 from .labels import profile_scenario_map
-from .progress import (current_activity, expected_rows, progress, run_phase,
-                       run_plan, running_scenarios)
+from .progress import (current_activity, expected_rows, passes, progress,
+                       run_phase, run_plan, running_scenarios)
 from .render import render_html
 
 ARGS: argparse.Namespace  # заполняется в main()
@@ -108,6 +109,7 @@ def collect() -> dict:
         "progress": progress(
             phase, starts, ends, baselines.get("rows", 0), results.get("rows", 0),
             exp, ARGS.scope, all_lines,
+            passes(all_lines, runner_for_log(log_path)),
         ),
         "expected_rows": exp,
         "reps": {
@@ -179,6 +181,23 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global ARGS
+def runner_for_log(log_path) -> str | None:
+    """Скрипт-раннер серии по пути её лога: harness/prod-p3-energy.log ->
+    harness/run-prod-p3-energy.sh.
+
+    Нужен, чтобы узнать ОБЩЕЕ число проходов харнесса: пока второй проход
+    не начался, в логе его нет, а в раннере он записан всегда. Имя
+    выводится соглашением run-series.sh, и если файла нет — просто
+    считаем серию однопроходной.
+    """
+    try:
+        pth = pathlib.Path(log_path)
+        cand = pth.with_name("run-" + pth.stem + ".sh")
+        return str(cand) if cand.exists() else None
+    except OSError:
+        return None
+
+
     p = argparse.ArgumentParser(
         description="локальная HTTP-страница прогресса прогонов харнесса"
     )
