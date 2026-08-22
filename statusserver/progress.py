@@ -279,6 +279,24 @@ def passes(log_lines_all: list[str], runner: str | None) -> tuple[int, int]:
     return cur, total
 
 
+def baseline_ran(log_lines_all: list[str]) -> bool:
+    """Был ли в этом прогоне эталонный этап.
+
+    Раннер серии может его пропускать (P3 эталонов не гоняет вовсе, а в P2
+    он под флагом SKIP_BASELINE), но секция baseline в конфиге при этом
+    остаётся — она нужна другим прогонам. Страница складывала ожидаемые
+    строки обеих фаз, и законченный прогон показывал «завершено, 54 %»:
+    32 сделанные строки давления делились на 32 + 27 эталонных, которых
+    никто не собирался снимать (поймано 22.08.2026 на финише P3).
+    """
+    for line in log_lines_all or []:
+        if "BASELINE START" in line:
+            return True
+        if "run_experiment.py" in line and "--baseline" in line:
+            return True
+    return False
+
+
 def progress(
     phase: str, starts: dict, ends: dict, b_rows: int, p_rows: int, exp: dict,
     scope: str = "full", log_lines: list[str] | None = None,
@@ -294,6 +312,9 @@ def progress(
     b_exp, p_exp = exp.get("baseline", 0), exp.get("pressure", 0)
     if scope == "baseline":
         p_exp = 0
+    elif phase != "baseline" and not baseline_ran(log_lines):
+        # Эталонов в этом прогоне не было и не будет — в объём они не идут.
+        b_exp = 0
     total_exp = b_exp + p_exp
     if not total_exp:
         return out

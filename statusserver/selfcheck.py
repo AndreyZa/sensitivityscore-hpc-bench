@@ -315,6 +315,39 @@ def check_passes() -> bool:
     return ok
 
 
+def check_baseline_skipped() -> bool:
+    """Пропущенный эталонный этап не должен висеть в знаменателе.
+
+    Регрессия 22.08.2026: P3 эталонов не гоняет, но секция baseline в
+    конфиге есть — законченный прогон показывал «завершено, 54 %».
+    """
+    from statusserver.progress import progress
+
+    exp = {"baseline": 27, "pressure": 32}
+    done_log = ["=== PRESSURE START 10:15:30 epoch=1787382930 ===",
+                "+ .venv/bin/python run_experiment.py --config a.yaml --pressure",
+                "=== PRESSURE DONE 16:56:50 epoch=1787407010 rc=0 ==="]
+    starts = {"pressure": 1787382930.0}
+    ends = {"pressure": 1787407010.0}
+    out = progress("pressure", starts, ends, 0, 32, exp, "full", done_log)
+    ok = out.get("overall_pct") == 100
+    if not ok:
+        print(f"FAIL baseline skip: overall_pct={out.get('overall_pct')}, ожидалось 100")
+    # ...а если эталоны в прогоне были, они обязаны считаться
+    with_base = ["=== BASELINE START 09:00:00 ==="] + done_log
+    out2 = progress("pressure", starts, ends, 27, 32, exp, "full", with_base)
+    if out2.get("overall_pct") != 100:
+        print(f"FAIL baseline counted: overall_pct={out2.get('overall_pct')}")
+        ok = False
+    out3 = progress("pressure", starts, ends, 0, 32, exp, "full", with_base)
+    if out3.get("overall_pct") == 100:
+        print("FAIL baseline counted: без эталонных строк прогон не может быть 100 %")
+        ok = False
+    if ok:
+        print("baseline skip: ok (пропущенный этап не в знаменателе, снятый — в нём)")
+    return ok
+
+
 def check_server_starts() -> bool:
     """Сервер обязан ПОДНЯТЬСЯ и отдать /json, а не просто импортироваться.
 
@@ -368,6 +401,9 @@ def main() -> int:
         failed = True
 
     if not check_passes():
+        failed = True
+
+    if not check_baseline_skipped():
         failed = True
 
     if not check_server_starts():
