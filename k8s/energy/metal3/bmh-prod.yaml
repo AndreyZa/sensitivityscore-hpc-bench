@@ -1,0 +1,64 @@
+# BareMetalHost'ы для БОЕВЫХ узлов стенда. Адреса — настоящие iDRAC.
+#
+# externallyProvisioned: true — ключевое и обязательное. Узлы уже
+# установлены и работают под k0s; в этом режиме BMO не трогает диски, не
+# гоняет инспекцию и ничего не разворачивает, а управляет ровно одним
+# полем — spec.online. Именно это и сравнивается с прямым вызовом Redfish
+# из scripts/power-save.py.
+#
+# online: true у всех трёх — применение манифеста НИЧЕГО не выключает.
+# Проверка делается потом и по одному узлу: kubectl patch ... online=false.
+#
+# Учётка НЕ хранится здесь. Секрет создаётся из уже существующего
+# idrac-credentials (ns sensitivityscore-monitoring, ключ password)
+# командой из docs/Metal3-гашение.md — пароль при этом не появляется ни в
+# аргументах, ни в выводе.
+#
+# ВАЖНО про имя. BMH назван так же, как узел кластера, но связи между ними
+# нет: Metal3 не знает про k0s. Совпадение имён — для человека, чтобы в
+# kubectl get bmh было видно, о каком узле речь.
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: wrk-b6
+  namespace: baremetal-operator-system
+  labels:
+    stand: prod
+spec:
+  online: true
+  externallyProvisioned: true
+  bmc:
+    address: redfish://10.21.200.106/redfish/v1/Systems/System.Embedded.1
+    credentialsName: idrac-bmc-creds
+    disableCertificateVerification: true
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: wrk-b7
+  namespace: baremetal-operator-system
+  labels:
+    stand: prod
+spec:
+  online: true
+  externallyProvisioned: true
+  bmc:
+    address: redfish://10.21.200.107/redfish/v1/Systems/System.Embedded.1
+    credentialsName: idrac-bmc-creds
+    disableCertificateVerification: true
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: wrk-b8
+  namespace: baremetal-operator-system
+  labels:
+    stand: prod
+spec:
+  online: true
+  externallyProvisioned: true
+  bmc:
+    address: redfish://10.21.200.108/redfish/v1/Systems/System.Embedded.1
+    credentialsName: idrac-bmc-creds
+    disableCertificateVerification: true

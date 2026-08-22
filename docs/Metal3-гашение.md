@@ -82,11 +82,81 @@ immediate»), и первый прогон показал прежний PowerSt
 Для metal3-ветки эмулятор пригодится тем же способом: BMH можно завести
 на sushy-адрес и проверить BMO без прод-железа.
 
-## Шаги (когда решим поднимать)
+## Порядок проверки на проде (готов к выполнению)
 
-1. Манифесты BMO+Ironic (power-only) в k8s/energy/metal3/ + Secret'ы
-   по образцу snmp-secret.
-2. 3 × BMH externallyProvisioned + вычитка статусов.
-3. Валидационный цикл на wrk-b8 (день, вне ночных окон): online false →
-   сверка P_выкл по PDU/BMC → online true → Ready → uncordon.
-4. Контроллер power_save: политика + два исполнителя + тесты.
+Делать ТОЛЬКО когда на стенде не идёт серия: `pgrep -af run_experiment.py`
+пуст и очередь прогонов пуста. Проверка занимает около получаса, из них
+пять минут — собственно цикл питания.
+
+Все команды с `KUBECONFIG=~/.kube/configs/prod` и с лабы.
+
+1. **Оператор без вебхука и Ironic только для питания.**
+
+       kubectl apply -f k8s/energy/metal3/bmo-no-webhook.yaml
+       kubectl apply -f k8s/energy/metal3/ironic-power-only.yaml
+       kubectl -n baremetal-operator-system rollout status deploy/baremetal-operator-controller-manager
+       kubectl -n baremetal-operator-system rollout status deploy/ironic
+
+   Вебхук отключён намеренно: он требует сертификатов и вмешивается в admission, а нам
+   нужно ровно управление питанием. Ironic подрезан до одного контейнера —
+   ни dnsmasq, ни httpd, ни ipa-downloader, PXE не участвует.
+
+2. **Секрет с учёткой BMC — копией из существующего, без печати пароля.**
+
+       kubectl -n sensitivityscore-monitoring get secret idrac-credentials \
+           -o jsonpath='{.data.password}' \
+       | base64 -d \
+       | kubectl -n baremetal-operator-system create secret generic idrac-bmc-creds \
+           --from-literal=username=root --from-file=password=/dev/stdin
+
+   Пароль идёт по конвейеру и не появляется ни в аргументах, ни в выводе,
+   ни в истории оболочки — то же правило, что для `curl -K -`.
+
+3. **Три BareMetalHost, все `online: true`.** Применение ничего не
+   выключает: узлы уже включены, а `externallyProvisioned` запрещает BMO
+   трогать что-либо, кроме питания.
+
+       kubectl apply -f k8s/energy/metal3/bmh-prod.yaml
+       kubectl -n baremetal-operator-system get bmh -w
+
+   Ожидаемое состояние — `externally provisioned`, `ONLINE true`, `ERROR`
+   пуст. Если BMH ушёл в `inspecting` или `provisioning` — немедленно
+   снять манифест: значит `externallyProvisioned` не применился, и Metal3
+   считает узел своим.
+
+4. **Цикл питания на ОДНОМ узле** (wrk-b8, два других остаются в строю):
+
+       kubectl -n baremetal-operator-system patch bmh wrk-b8 \
+           --type merge -p '{"spec":{"online":false}}'
+
+   Сверить: `POWERED ON` в `get bmh` становится `false`; узел уходит в
+   `NotReady`; мощность по BMC падает к ~23 Вт (дашборд ss-energy или
+   `idrac_power_watts{node="wrk-b8"}` в Prometheus). Затем обратно:
+
+       kubectl -n baremetal-operator-system patch bmh wrk-b8 \
+           --type merge -p '{"spec":{"online":true}}'
+
+   Узел обязан вернуться в `Ready` за ~3 мин (измеренное время подъёма
+   179 с). Проверка целостности стенда — тем же скриптом, что и после P3:
+
+       KUBECONFIG=~/.kube/configs/prod python3 scripts/bench-nodes-restore.py \
+           --idrac-map wrk-b6=10.21.200.106,wrk-b7=10.21.200.107,wrk-b8=10.21.200.108
+
+5. **Откат.** `kubectl delete -f bmh-prod.yaml` — узлы остаются как есть,
+   BMH лишь перестают ими управлять; затем при желании снять Ironic и BMO.
+   Питание при удалении BMH не трогается.
+
+### Что именно проверяем
+
+Вопрос один: даёт ли Metal3 что-то сверх прямого вызова Redfish из
+`scripts/power-save.py`, который уже измерен в P3. Ожидаемый ответ —
+декларативность (состояние питания как поле объекта, а не как действие) и
+единый путь ввода нового узла; цена — два дополнительных сервиса в
+кластере. Решение принимается по этой проверке, а не заранее.
+
+## Что нужно доделать для боевого применения
+
+Контроллер `scripts/power-save.py` умеет исполнителя `metal3` (правит
+`spec.online`), но в P3 работал через `redfish` — прямым вызовом. После
+проверки выше исполнителя можно переключить одним флагом, и тогда
+управление питанием станет декларативным без изменения политики.
