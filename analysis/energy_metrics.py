@@ -154,7 +154,7 @@ def per_task_metrics(energy: pd.DataFrame, results: pd.DataFrame,
 
 
 def compare_arms(metrics: pd.DataFrame, baseline: str, metric: str = "j_per_task",
-                 n_boot: int = 2000, rng=None) -> pd.DataFrame:
+                 n_boot: int = 2000, rng=None, alpha: float = 0.05) -> pd.DataFrame:
     """Парное сравнение плеч с базовым, сопоставление по номеру повторения.
 
     Парность здесь не украшение: повторения идут в рандомизированном
@@ -165,7 +165,8 @@ def compare_arms(metrics: pd.DataFrame, baseline: str, metric: str = "j_per_task
     rows = []
     for cfg in sorted(set(metrics["config"]) - {baseline}):
         arm = metrics[metrics["config"] == cfg].set_index("rep")[metric]
-        lo, point, hi = paired_diff_ci(arm, base, n_boot=n_boot, rng=rng)
+        lo, point, hi = paired_diff_ci(arm, base, n_boot=n_boot, rng=rng,
+                                       alpha=alpha)
         rel = point / float(base.median()) * 100.0 if len(base) else float("nan")
         rows.append({"config": cfg, "vs": baseline, "metric": metric,
                      "diff": point, "lo": lo, "hi": hi, "rel_pct": rel,
@@ -220,7 +221,8 @@ def cycle_cost(energy: pd.DataFrame, p_off_w: float, p_idle_w: float,
 
 # ------------------------------------------------------------------ ввод
 
-def figdata_block(metrics: pd.DataFrame, baseline: str, rng=None) -> dict:
+def figdata_block(metrics: pd.DataFrame, baseline: str, rng=None,
+                  comparisons: int = 1, seed: int = 0) -> dict:
     """Числа таблицы политик в том виде, в каком они попадут в статью.
 
     ЗАЧЕМ. Числа §6 до сих пор переносились в статью руками: analysis
@@ -238,11 +240,24 @@ def figdata_block(metrics: pd.DataFrame, baseline: str, rng=None) -> dict:
                     "edp_mln": round(row["edp"] / 1e6, 2),
                     "makespan_s": round(row["median_makespan_s"], 1)}
     if baseline in med.index:
+        b = med.loc[baseline, "j_per_task"]
         cmp = compare_arms(metrics, baseline, rng=rng)
         for _, r in cmp.iterrows():
             out[r["config"]]["diff_pct"] = round(r["rel_pct"], 2)
-            out[r["config"]]["lo_pct"] = round(r["lo"] / med.loc[baseline, "j_per_task"] * 100, 2)
-            out[r["config"]]["hi_pct"] = round(r["hi"] / med.loc[baseline, "j_per_task"] * 100, 2)
+            out[r["config"]]["lo_pct"] = round(r["lo"] / b * 100, 2)
+            out[r["config"]]["hi_pct"] = round(r["hi"] / b * 100, 2)
+        # Поправка на множественность. Сравнений в фазе столько, сколько
+        # плеч на сколько уровней подачи, и при номинальных 5 % одно
+        # «значимое» из девяти — это ровно то, что даёт случай. Интервал на
+        # уровне 1 − 0,05/N считается тем же бутстрепом, а не пересчётом
+        # готовых границ: перцентили нельзя растянуть арифметикой.
+        if comparisons > 1:
+            adj = compare_arms(metrics, baseline,
+                               rng=np.random.default_rng(seed),
+                               alpha=0.05 / comparisons)
+            for _, r in adj.iterrows():
+                out[r["config"]]["lo_adj_pct"] = round(r["lo"] / b * 100, 2)
+                out[r["config"]]["hi_adj_pct"] = round(r["hi"] / b * 100, 2)
     return out
 
 
@@ -414,6 +429,9 @@ def main(argv=None) -> int:
     # статье обязано воспроизводиться командой, а не «примерно».
     ap.add_argument("--seed", type=int, default=0,
                     help="зерно бутстрепа (default 0 — числа воспроизводимы)")
+    ap.add_argument("--comparisons", type=int, default=1,
+                    help="сколько сравнений в семье — для поправки на "
+                         "множественность (3 плеча x 3 уровня = 9)")
     ap.add_argument("--figdata", default="",
                     help="дописать блок p2.<уровень> в figdata.json статьи")
     args = ap.parse_args(argv)
@@ -477,7 +495,8 @@ def main(argv=None) -> int:
             p2["_comment"] = ("политики размещения по уровням подачи; "
                               "медианы по повторениям, ДИ парного бутстрепа")
             p2[key] = figdata_block(m, args.baseline,
-                                    rng=np.random.default_rng(args.seed))
+                                    rng=np.random.default_rng(args.seed),
+                                    comparisons=args.comparisons, seed=args.seed)
             Path(args.figdata).write_text(
                 json.dumps(fd, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8")
