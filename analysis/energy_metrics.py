@@ -436,6 +436,8 @@ def main(argv=None) -> int:
     # статье обязано воспроизводиться командой, а не «примерно».
     ap.add_argument("--seed", type=int, default=0,
                     help="зерно бутстрепа (default 0 — числа воспроизводимы)")
+    ap.add_argument("--figdata-key", default="p2",
+                    help="раздел figdata, куда писать блок (p2 или p3)")
     ap.add_argument("--comparisons", type=int, default=1,
                     help="сколько сравнений в семье — для поправки на "
                          "множественность (3 плеча x 3 уровня = 9)")
@@ -498,7 +500,7 @@ def main(argv=None) -> int:
         if args.figdata:
             key = args.scenario.split(":")[-1] or args.run_label
             fd = json.loads(Path(args.figdata).read_text(encoding="utf-8"))
-            p2 = fd.setdefault("p2", {})
+            p2 = fd.setdefault(args.figdata_key, {})
             p2["_comment"] = ("политики размещения по уровням подачи; "
                               "медианы по повторениям, ДИ парного бутстрепа")
             p2[key] = figdata_block(m, args.baseline,
@@ -507,7 +509,7 @@ def main(argv=None) -> int:
             Path(args.figdata).write_text(
                 json.dumps(fd, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8")
-            print(f"figdata обновлён: p2.{key} в {args.figdata}")
+            print(f"figdata обновлён: {args.figdata_key}.{key} в {args.figdata}")
 
     if args.out:
         with open(args.out, "w") as f:
